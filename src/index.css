@@ -1,0 +1,161 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: "Baloo 2", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-body: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: var(--font-body);
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tactile Monopoly GO-inspired royal navy & gold board-game HUD (zero backdrop-filter over WebGL) */
+.hud-panel {
+  background: linear-gradient(180deg, rgba(24, 52, 98, 0.96) 0%, rgba(13, 30, 62, 0.98) 100%);
+  border: 1.5px solid rgba(186, 230, 253, 0.28);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 12px 28px -6px rgba(9, 18, 38, 0.55);
+}
+
+/* Authentic Monopoly Title-Deed Cream Cardstock */
+.hud-card-light {
+  background: linear-gradient(180deg, #fffefb 0%, #f8f3e6 100%);
+  border: 2px solid #cbd5e1;
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 20px 44px -10px rgba(9, 18, 38, 0.38);
+}
+
+/* Oversized Tactile 3D Monopoly GO! Roll Button */
+.btn-3d-roll {
+  font-family: var(--font-display);
+  background: linear-gradient(180deg, #34d399 0%, #10b981 48%, #059669 100%);
+  border-top: 1.5px solid #a7f3d0;
+  border-left: 1.5px solid #6ee7b7;
+  border-right: 1.5px solid #6ee7b7;
+  border-bottom: 5px solid #065f46;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    0 8px 20px -4px rgba(5, 150, 105, 0.55);
+  text-shadow: 0 1.5px 0 rgba(6, 78, 59, 0.65);
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), filter 120ms ease;
+}
+
+.btn-3d-roll:hover:not(:disabled) {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+.btn-3d-roll:active:not(:disabled) {
+  transform: translateY(2px);
+  border-bottom-width: 3px;
+}
+
+/* Tactile 3D Gold / Crimson / Sky Arcade Buttons */
+.btn-3d-gold {
+  font-family: var(--font-display);
+  background: linear-gradient(180deg, #fde047 0%, #f59e0b 55%, #d97706 100%);
+  border-top: 1.5px solid #fef9c3;
+  border-left: 1px solid #fcd34d;
+  border-right: 1px solid #fcd34d;
+  border-bottom: 4px solid #92400e;
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.55),
+    0 6px 16px -4px rgba(217, 119, 6, 0.45);
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), filter 120ms ease;
+}
+
+.btn-3d-gold:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+.btn-3d-gold:active:not(:disabled) {
+  transform: translateY(2px);
+}
+
+.btn-3d-crimson {
+  font-family: var(--font-display);
+  background: linear-gradient(180deg, #f87171 0%, #ef4444 50%, #dc2626 100%);
+  border-top: 1.5px solid #fecaca;
+  border-left: 1px solid #fca5a5;
+  border-right: 1px solid #fca5a5;
+  border-bottom: 4px solid #991b1b;
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.4),
+    0 8px 20px -4px rgba(220, 38, 38, 0.45);
+  text-shadow: 0 1.5px 0 rgba(127, 29, 29, 0.6);
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), filter 120ms ease;
+}
+
+.btn-3d-crimson:hover:not(:disabled) {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+.btn-3d-crimson:active:not(:disabled) {
+  transform: translateY(2px);
+}
+
+.btn-3d-sky {
+  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+  border-top: 1px solid #bae6fd;
+  border-bottom: 3.5px solid #075985;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), filter 120ms ease;
+}
+
+.btn-3d-sky:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.btn-3d-sky:active:not(:disabled) {
+  transform: translateY(1.5px);
+}
+
+@keyframes popIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.92) translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.animate-pop-in {
+  animation: popIn 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Custom slim scrollbar for property & log lists */
+.slim-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.slim-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.slim-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
