@@ -44,6 +44,9 @@ import {
   getTileTransform,
   getWinner,
   ownsFullColorGroup,
+  parseDeterministicDiceQueue,
+  resolvePostActionTurnPhase,
+  shouldGrantImmediateDoublesRoll,
   TOTAL_TILES,
   TURN_COUNTDOWN_SECONDS,
   validateTradeOffer,
@@ -466,3 +469,46 @@ test('Business Tour currency synchronization: zero legacy dollar symbols across 
   assert.equal(formatCountdownClock(7), '00:07');
   assert.equal(formatCountdownClock(0), '00:00');
 });
+
+test('doubles roll skips end-turn confirmation and transitions directly to AWAIT_ROLL unless jailed or bankrupt', () => {
+  const [basePlayer] = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 1500);
+
+  // Normal roll (streak 0) -> AWAIT_END_TURN
+  assert.equal(shouldGrantImmediateDoublesRoll(basePlayer), false);
+  assert.equal(resolvePostActionTurnPhase(basePlayer), 'AWAIT_END_TURN');
+
+  // 1st and 2nd doubles -> immediate AWAIT_ROLL (no intermediate confirmation)
+  const firstDoubles = { ...basePlayer, doublesStreak: 1 };
+  const secondDoubles = { ...basePlayer, doublesStreak: 2 };
+  assert.equal(shouldGrantImmediateDoublesRoll(firstDoubles), true);
+  assert.equal(resolvePostActionTurnPhase(firstDoubles), 'AWAIT_ROLL');
+  assert.equal(shouldGrantImmediateDoublesRoll(secondDoubles), true);
+  assert.equal(resolvePostActionTurnPhase(secondDoubles), 'AWAIT_ROLL');
+
+  // 3rd doubles, jailed, bankrupt, or null -> AWAIT_END_TURN
+  assert.equal(
+    resolvePostActionTurnPhase({ ...basePlayer, doublesStreak: 3 }),
+    'AWAIT_END_TURN'
+  );
+  assert.equal(
+    resolvePostActionTurnPhase({ ...basePlayer, doublesStreak: 1, inJail: true }),
+    'AWAIT_END_TURN'
+  );
+  assert.equal(
+    resolvePostActionTurnPhase({ ...basePlayer, doublesStreak: 1, bankrupt: true }),
+    'AWAIT_END_TURN'
+  );
+  assert.equal(resolvePostActionTurnPhase(null), 'AWAIT_END_TURN');
+
+  // Optional deterministic dice queue parser
+  assert.deepEqual(parseDeterministicDiceQueue(''), []);
+  assert.deepEqual(
+    parseDeterministicDiceQueue('?autostart=1&dice=3-3,1-5,7-2,bad,6:6'),
+    [
+      [3, 3],
+      [1, 5],
+      [6, 6],
+    ]
+  );
+});
+

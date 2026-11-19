@@ -1415,3 +1415,50 @@ export function buildBotPenaltyQuipPayload(
     extraContext,
   };
 }
+
+/**
+ * Determines whether the active player immediately receives another dice roll
+ * because they rolled doubles (1st or 2nd streak) without being sent to Jail or going bankrupt.
+ */
+export function shouldGrantImmediateDoublesRoll(
+  player: PlayerState | null | undefined
+): boolean {
+  return Boolean(
+    player &&
+      !player.bankrupt &&
+      !player.inJail &&
+      player.doublesStreak > 0 &&
+      player.doublesStreak < 3
+  );
+}
+
+/**
+ * Computes the next TurnPhase right after a landing/card/modal action finishes:
+ * - Returns 'AWAIT_ROLL' immediately (skipping any "Đổ tiếp (đôi)" confirmation) when eligible for a doubles bonus roll.
+ * - Returns 'AWAIT_END_TURN' otherwise.
+ */
+export function resolvePostActionTurnPhase(
+  player: PlayerState | null | undefined
+): 'AWAIT_ROLL' | 'AWAIT_END_TURN' {
+  return shouldGrantImmediateDoublesRoll(player) ? 'AWAIT_ROLL' : 'AWAIT_END_TURN';
+}
+
+/**
+ * Parses an optional `?dice=3-3,1-2` query string into a deterministic queue of valid [1..6, 1..6] pairs.
+ */
+export function parseDeterministicDiceQueue(search: string): Array<[number, number]> {
+  if (!search) return [];
+  const params = new URLSearchParams(search.startsWith('?') ? search : `?${search}`);
+  const raw = params.get('dice');
+  if (!raw) return [];
+
+  const queue: Array<[number, number]> = [];
+  for (const token of raw.split(',')) {
+    const match = token.trim().match(/^([1-6])[-:]([1-6])$/);
+    if (match) {
+      queue.push([Number(match[1]), Number(match[2])]);
+    }
+  }
+  return queue;
+}
+

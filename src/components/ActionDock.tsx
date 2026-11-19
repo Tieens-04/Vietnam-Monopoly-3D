@@ -472,15 +472,9 @@ export const ActionDock: React.FC<ActionDockProps> = ({
                   e.currentTarget.blur();
                   onEndTurn();
                 }}
-                className={`pointer-events-auto ${
-                  currentPlayer.doublesStreak > 0 && !currentPlayer.inJail
-                    ? 'bt-btn-gold'
-                    : 'bt-btn-green'
-                } px-6 sm:px-8 py-2.5 sm:py-3 rounded-full font-black text-sm sm:text-base uppercase tracking-wide cursor-pointer whitespace-nowrap`}
+                className="pointer-events-auto bt-btn-green px-6 sm:px-8 py-2.5 sm:py-3 rounded-full font-black text-sm sm:text-base uppercase tracking-wide cursor-pointer whitespace-nowrap"
               >
-                {currentPlayer.doublesStreak > 0 && !currentPlayer.inJail
-                  ? '🎲 Đổ Tiếp (Đôi!)'
-                  : '✓ Kết Thúc Lượt'}
+                ✓ Kết Thúc Lượt
               </button>
             )}
 

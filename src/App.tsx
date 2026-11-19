@@ -54,6 +54,9 @@ import {
   JAIL_FINE,
   JAIL_TILE_INDEX,
   MAX_JAIL_TURNS,
+  parseDeterministicDiceQueue,
+  resolvePostActionTurnPhase,
+  shouldGrantImmediateDoublesRoll,
   START_SALARY,
   TOTAL_TILES,
   TURN_COUNTDOWN_SECONDS,
@@ -189,6 +192,11 @@ export default function App() {
   const emoteTimerRef = useRef<number>(0);
   const chanceDeckRef = useRef<LuckCard[]>(shuffleCards(CHANCE_CARDS));
   const chestDeckRef = useRef<LuckCard[]>(shuffleCards(CHEST_CARDS));
+  const diceQueueRef = useRef<Array<[number, number]>>(
+    typeof window !== 'undefined'
+      ? parseDeterministicDiceQueue(window.location.search)
+      : []
+  );
 
   // Keep live state mirror in refs for async animation callbacks
   const playersRef = useRef(players);
@@ -205,6 +213,32 @@ export default function App() {
   speedRef.current = speedMultiplier;
   const turnCountRef = useRef(turnCount);
   turnCountRef.current = turnCount;
+
+  const commitPlayers = useCallback(
+    (updater: PlayerState[] | ((prev: PlayerState[]) => PlayerState[])): PlayerState[] => {
+      const next =
+        typeof updater === 'function' ? updater(playersRef.current) : updater;
+      playersRef.current = next;
+      setPlayers(next);
+      return next;
+    },
+    []
+  );
+
+  const commitProperties = useCallback(
+    (
+      updater:
+        | Record<number, PropertyState>
+        | ((prev: Record<number, PropertyState>) => Record<number, PropertyState>)
+    ): Record<number, PropertyState> => {
+      const next =
+        typeof updater === 'function' ? updater(propertiesRef.current) : updater;
+      propertiesRef.current = next;
+      setProperties(next);
+      return next;
+    },
+    []
+  );
 
   // Sync document.body.dataset attributes for testability & state machine contract
   useEffect(() => {
@@ -287,6 +321,34 @@ export default function App() {
       return true;
     },
     [addLog]
+  );
+
+  /**
+   * Completes the current roll's tile/card/modal action:
+   * - Checks instant match victory first.
+   * - If the active player rolled doubles (1st or 2nd streak) and is neither jailed nor bankrupt,
+   *   skips any "Đổ tiếp (đôi)" confirmation and transitions straight to 'AWAIT_ROLL'.
+   * - Otherwise transitions to 'AWAIT_END_TURN'.
+   */
+  const completeTurnAfterAction = useCallback(
+    (overridePlayer?: PlayerState) => {
+      const currPlayers = playersRef.current;
+      const currProps = propertiesRef.current;
+      if (checkAndTriggerMatchVictory(currPlayers, currProps)) {
+        return;
+      }
+      const activePlayer = overridePlayer ?? currPlayers[activeIdxRef.current];
+      const nextPhase = resolvePostActionTurnPhase(activePlayer);
+      if (nextPhase === 'AWAIT_ROLL' && activePlayer) {
+        addLog(
+          `${activePlayer.name} được thưởng thêm 1 lượt đổ xúc xắc nhờ ra đôi!`,
+          activePlayer.color,
+          'highlight'
+        );
+      }
+      setTurnPhase(nextPhase);
+    },
+    [addLog, checkAndTriggerMatchVictory]
   );
 
   const dismissBotBubble = useCallback((botId: number) => {
@@ -409,8 +471,8 @@ export default function App() {
     chanceDeckRef.current = shuffleCards(CHANCE_CARDS);
     chestDeckRef.current = shuffleCards(CHEST_CARDS);
 
-    setPlayers(initPlayers);
-    setProperties(initProps);
+    commitPlayers(initPlayers);
+    commitProperties(initProps);
     setActivePlayerIndex(0);
     setTurnPhase('AWAIT_ROLL');
     setTurnCount(1);
@@ -443,7 +505,7 @@ export default function App() {
       document.activeElement.blur();
     }
     canvasRef.current?.resetCamera();
-  }, []);
+  }, [commitPlayers, commitProperties]);
 
   const drawNextCard = useCallback((deck: 'CHANCE' | 'CHEST'): LuckCard => {
     if (deck === 'CHANCE') {
@@ -478,7 +540,11 @@ export default function App() {
       if (!payer) return false;
 
       if (amount <= 0) {
-        setTurnPhase(options?.nextPhaseOnImmediatePay ?? 'AWAIT_END_TURN');
+        if (options?.nextPhaseOnImmediatePay) {
+          setTurnPhase(options.nextPhaseOnImmediatePay);
+        } else {
+          completeTurnAfterAction(payer);
+        }
         return true;
       }
 
@@ -487,7 +553,7 @@ export default function App() {
       if (payer.cash >= amount) {
         const creditor =
           creditorId !== null ? currPlayers.find((p) => p.id === creditorId) : null;
-        setPlayers((prev) =>
+        const nextPlayers = commitPlayers((prev) =>
           prev.map((p) => {
             if (p.id === payerId) return { ...p, cash: p.cash - amount };
             if (creditorId !== null && p.id === creditorId) {
@@ -540,7 +606,11 @@ export default function App() {
             );
           }
         }
-        setTurnPhase(options?.nextPhaseOnImmediatePay ?? 'AWAIT_END_TURN');
+        if (options?.nextPhaseOnImmediatePay) {
+          setTurnPhase(options.nextPhaseOnImmediatePay);
+        } else {
+          completeTurnAfterAction(nextPlayers.find((p) => p.id === payerId));
+        }
         return true;
       }
 
@@ -562,7 +632,7 @@ export default function App() {
       );
       return false;
     },
-    [addLog, triggerBotQuip]
+    [addLog, commitPlayers, completeTurnAfterAction, triggerBotQuip]
   );
 
   /**
@@ -585,13 +655,13 @@ export default function App() {
       if (!player || !tile) return;
 
       if (tile.kind === TileKind.START) {
-        setTurnPhase('AWAIT_END_TURN');
+        completeTurnAfterAction(player);
         return;
       }
 
       if (tile.kind === TileKind.JAIL) {
         addLog(`${player.name} ghé Thăm Đảo Hoang bình thường.`, player.color);
-        setTurnPhase('AWAIT_END_TURN');
+        completeTurnAfterAction(player);
         return;
       }
 
@@ -611,7 +681,7 @@ export default function App() {
           return;
         }
         addLog(`${player.name} dừng nghỉ chân miễn phí tại ${tile.name}.`, player.color);
-        setTurnPhase('AWAIT_END_TURN');
+        completeTurnAfterAction(player);
         return;
       }
 
@@ -635,7 +705,7 @@ export default function App() {
         );
         if (sessionEpochRef.current !== epoch) return;
 
-        setPlayers((prev) =>
+        const nextPlayers = commitPlayers((prev) =>
           prev.map((p) =>
             p.id === playerId
               ? {
@@ -648,7 +718,7 @@ export default function App() {
               : p
           )
         );
-        setTurnPhase('AWAIT_END_TURN');
+        completeTurnAfterAction(nextPlayers.find((p) => p.id === playerId));
         return;
       }
 
@@ -699,13 +769,13 @@ export default function App() {
             return;
           }
           addLog(`${player.name} dừng tại đô thị sở hữu ${tile.name}.`, player.color);
-          setTurnPhase('AWAIT_END_TURN');
+          completeTurnAfterAction(player);
           return;
         }
 
         const owner = currPlayers.find((p) => p.id === prop.ownerId && !p.bankrupt);
         if (!owner) {
-          setTurnPhase('AWAIT_END_TURN');
+          completeTurnAfterAction(player);
           return;
         }
 
@@ -731,9 +801,7 @@ export default function App() {
         if (!okBeat) return;
 
         applyPaymentOrDebt(player.id, rent, owner.id, tile.name, {
-          nextPhaseOnImmediatePay: buyoutCheck.allowed
-            ? 'BUYOUT_DECISION'
-            : 'AWAIT_END_TURN',
+          nextPhaseOnImmediatePay: buyoutCheck.allowed ? 'BUYOUT_DECISION' : undefined,
         });
         return;
       }
@@ -761,9 +829,16 @@ export default function App() {
         return;
       }
 
-      setTurnPhase('AWAIT_END_TURN');
+      completeTurnAfterAction(player);
     },
-    [addLog, applyPaymentOrDebt, drawNextCard, waitGameBeat]
+    [
+      addLog,
+      applyPaymentOrDebt,
+      commitPlayers,
+      completeTurnAfterAction,
+      drawNextCard,
+      waitGameBeat,
+    ]
   );
 
   /**
@@ -778,8 +853,9 @@ export default function App() {
     const player = playersRef.current[activeIdxRef.current];
     if (!player || player.bankrupt) return;
 
-    const die1 = Math.floor(Math.random() * 6) + 1;
-    const die2 = Math.floor(Math.random() * 6) + 1;
+    const queuedPair = diceQueueRef.current.shift();
+    const die1 = queuedPair ? queuedPair[0] : Math.floor(Math.random() * 6) + 1;
+    const die2 = queuedPair ? queuedPair[1] : Math.floor(Math.random() * 6) + 1;
     const sum = die1 + die2;
     const isDoubles = die1 === die2;
 
@@ -807,7 +883,7 @@ export default function App() {
           freshPlayer.color,
           'positive'
         );
-        setPlayers((prev) =>
+        commitPlayers((prev) =>
           prev.map((p) =>
             p.id === freshPlayer.id
               ? { ...p, inJail: false, jailTurns: 0, doublesStreak: 0 }
@@ -823,7 +899,7 @@ export default function App() {
         if (freshPlayer.cash >= JAIL_FINE) {
           soundEngine.playCashPay();
           setTaxPool((prev) => prev + JAIL_FINE);
-          setPlayers((prev) =>
+          commitPlayers((prev) =>
             prev.map((p) =>
               p.id === freshPlayer.id
                 ? {
@@ -846,7 +922,7 @@ export default function App() {
             );
           }
         } else {
-          setPlayers((prev) =>
+          commitPlayers((prev) =>
             prev.map((p) =>
               p.id === freshPlayer.id
                 ? { ...p, inJail: false, jailTurns: 0, doublesStreak: 0 }
@@ -864,7 +940,7 @@ export default function App() {
           `${freshPlayer.name} đổ (${die1}-${die2}) không ra đôi, tiếp tục ở Nhà Tù (${nextTry}/${MAX_JAIL_TURNS}).`,
           freshPlayer.color
         );
-        setPlayers((prev) =>
+        commitPlayers((prev) =>
           prev.map((p) =>
             p.id === freshPlayer.id ? { ...p, jailTurns: nextTry, doublesStreak: 0 } : p
           )
@@ -890,7 +966,7 @@ export default function App() {
         );
         if (sessionEpochRef.current !== epoch) return;
 
-        setPlayers((prev) =>
+        commitPlayers((prev) =>
           prev.map((p) =>
             p.id === freshPlayer.id
               ? {
@@ -907,7 +983,7 @@ export default function App() {
         return;
       }
 
-      setPlayers((prev) =>
+      commitPlayers((prev) =>
         prev.map((p) =>
           p.id === freshPlayer.id ? { ...p, doublesStreak: nextStreak } : p
         )
@@ -933,7 +1009,7 @@ export default function App() {
     );
     if (sessionEpochRef.current !== epoch) return;
 
-    setPlayers((prev) =>
+    commitPlayers((prev) =>
       prev.map((p) =>
         p.id === freshPlayer.id
           ? {
@@ -955,7 +1031,14 @@ export default function App() {
     }
 
     await resolveTileLanding(freshPlayer.id, finalTile, sum, epoch);
-  }, [addLog, applyPaymentOrDebt, resolveTileLanding, triggerBotQuip, waitGameBeat]);
+  }, [
+    addLog,
+    applyPaymentOrDebt,
+    commitPlayers,
+    resolveTileLanding,
+    triggerBotQuip,
+    waitGameBeat,
+  ]);
 
   const handlePayJailFine = useCallback(() => {
     const player = playersRef.current[activeIdxRef.current];
@@ -963,7 +1046,7 @@ export default function App() {
 
     soundEngine.playCashPay();
     setTaxPool((prev) => prev + JAIL_FINE);
-    setPlayers((prev) =>
+    commitPlayers((prev) =>
       prev.map((p) =>
         p.id === player.id
           ? { ...p, cash: p.cash - JAIL_FINE, inJail: false, jailTurns: 0 }
@@ -984,14 +1067,14 @@ export default function App() {
         )
       );
     }
-  }, [addLog, triggerBotQuip]);
+  }, [addLog, commitPlayers, triggerBotQuip]);
 
   const handleUseJailCard = useCallback(() => {
     const player = playersRef.current[activeIdxRef.current];
     if (!player || !player.inJail || player.jailFreeCards <= 0) return;
 
     soundEngine.playCardDraw();
-    setPlayers((prev) =>
+    commitPlayers((prev) =>
       prev.map((p) =>
         p.id === player.id
           ? {
@@ -1008,7 +1091,7 @@ export default function App() {
       player.color,
       'positive'
     );
-  }, [addLog]);
+  }, [addLog, commitPlayers]);
 
   const handleBuyProperty = useCallback(
     (requestedInitialLevel: number = 0) => {
@@ -1019,7 +1102,7 @@ export default function App() {
       const tile = BOARD_TILES[player.position];
       const basePrice = tile?.price || 0;
       if (!tile) {
-        setTurnPhase('AWAIT_END_TURN');
+        completeTurnAfterAction(player);
         return;
       }
 
@@ -1030,7 +1113,7 @@ export default function App() {
       const totalCost = basePrice + safeLevel * (tile.houseCost ?? 0);
 
       if (player.cash < totalCost) {
-        setTurnPhase('AWAIT_END_TURN');
+        completeTurnAfterAction(player);
         return;
       }
 
@@ -1052,8 +1135,8 @@ export default function App() {
       } else {
         soundEngine.playBuyProperty();
       }
-      setPlayers(nextPlayers);
-      setProperties(nextProps);
+      commitPlayers(nextPlayers);
+      commitProperties(nextProps);
 
       const compactCost = formatBusinessTourCompact(totalCost);
       addLog(
@@ -1076,12 +1159,9 @@ export default function App() {
         );
       }
 
-      if (checkAndTriggerMatchVictory(nextPlayers, nextProps)) {
-        return;
-      }
-      setTurnPhase('AWAIT_END_TURN');
+      completeTurnAfterAction(nextPlayers.find((p) => p.id === player.id));
     },
-    [addLog, checkAndTriggerMatchVictory, triggerBotQuip]
+    [addLog, commitPlayers, commitProperties, completeTurnAfterAction, triggerBotQuip]
   );
 
   const handleSkipBuy = useCallback(() => {
@@ -1091,8 +1171,8 @@ export default function App() {
       const tile = BOARD_TILES[player.position];
       addLog(`${player.name} bỏ qua cơ hội mua ${tile.name}.`, player.color);
     }
-    setTurnPhase('AWAIT_END_TURN');
-  }, [addLog]);
+    completeTurnAfterAction(player);
+  }, [addLog, completeTurnAfterAction]);
 
   const handleOnTileUpgrade = useCallback(
     (targetLevel: number) => {
@@ -1106,15 +1186,15 @@ export default function App() {
         targetLevel,
       });
       if (!check.allowed) {
-        setTurnPhase('AWAIT_END_TURN');
+        completeTurnAfterAction(player);
         return;
       }
 
       soundEngine.playBuildHouse(targetLevel);
-      setPlayers((prev) =>
+      const nextPlayers = commitPlayers((prev) =>
         prev.map((p) => (p.id === player.id ? { ...p, cash: p.cash - check.cost } : p))
       );
-      setProperties((prev) => ({
+      commitProperties((prev) => ({
         ...prev,
         [tileIndex]: {
           ...prev[tileIndex],
@@ -1131,15 +1211,15 @@ export default function App() {
         player.color,
         'positive'
       );
-      setTurnPhase('AWAIT_END_TURN');
+      completeTurnAfterAction(nextPlayers.find((p) => p.id === player.id));
     },
-    [addLog]
+    [addLog, commitPlayers, commitProperties, completeTurnAfterAction]
   );
 
   const handleSkipOnTileUpgrade = useCallback(() => {
     if (turnPhaseRef.current !== 'UPGRADE_DECISION') return;
-    setTurnPhase('AWAIT_END_TURN');
-  }, []);
+    completeTurnAfterAction();
+  }, [completeTurnAfterAction]);
 
   const handleConfirmBuyout = useCallback(() => {
     if (turnPhaseRef.current !== 'BUYOUT_DECISION') return;
@@ -1151,7 +1231,7 @@ export default function App() {
     const prop = currProps[tileIndex];
     const check = canBuyoutProperty(buyer, tileIndex, currProps);
     if (!check.allowed || !prop || prop.ownerId === null) {
-      setTurnPhase('AWAIT_END_TURN');
+      completeTurnAfterAction(buyer);
       return;
     }
 
@@ -1171,8 +1251,8 @@ export default function App() {
     };
 
     soundEngine.playAuctionGavel();
-    setPlayers(nextPlayers);
-    setProperties(nextProps);
+    commitPlayers(nextPlayers);
+    commitProperties(nextProps);
 
     const tile = BOARD_TILES[tileIndex];
     addLog(
@@ -1202,14 +1282,21 @@ export default function App() {
     if (prop.level < 4 && updatedBuyer.cash >= (tile.houseCost ?? 100)) {
       setTurnPhase('UPGRADE_DECISION');
     } else {
-      setTurnPhase('AWAIT_END_TURN');
+      completeTurnAfterAction(updatedBuyer);
     }
-  }, [addLog, checkAndTriggerMatchVictory, triggerBotQuip]);
+  }, [
+    addLog,
+    checkAndTriggerMatchVictory,
+    commitPlayers,
+    commitProperties,
+    completeTurnAfterAction,
+    triggerBotQuip,
+  ]);
 
   const handleSkipBuyout = useCallback(() => {
     if (turnPhaseRef.current !== 'BUYOUT_DECISION') return;
-    setTurnPhase('AWAIT_END_TURN');
-  }, []);
+    completeTurnAfterAction();
+  }, [completeTurnAfterAction]);
 
   const handleSkipWorldTour = useCallback(() => {
     if (turnPhaseRef.current !== 'WORLD_TOUR') return;
@@ -1220,8 +1307,8 @@ export default function App() {
         player.color
       );
     }
-    setTurnPhase('AWAIT_END_TURN');
-  }, [addLog]);
+    completeTurnAfterAction(player);
+  }, [addLog, completeTurnAfterAction]);
 
   const handleSelectWorldTourTarget = useCallback(
     async (targetTile: number) => {
@@ -1234,7 +1321,7 @@ export default function App() {
       const epoch = sessionEpochRef.current;
       const player = playersRef.current[activeIdxRef.current];
       if (!player || player.cash < WORLD_TOUR_FEE) {
-        setTurnPhase('AWAIT_END_TURN');
+        completeTurnAfterAction(player);
         return;
       }
 
@@ -1244,7 +1331,7 @@ export default function App() {
       soundEngine.playCashPay();
       const { path, passedStart } = computePathToTile(player.position, targetTile, true);
 
-      setPlayers((prev) =>
+      commitPlayers((prev) =>
         prev.map((p) =>
           p.id === player.id ? { ...p, cash: p.cash - WORLD_TOUR_FEE } : p
         )
@@ -1266,7 +1353,7 @@ export default function App() {
       }
       if (sessionEpochRef.current !== epoch) return;
 
-      setPlayers((prev) =>
+      commitPlayers((prev) =>
         prev.map((p) =>
           p.id === player.id
             ? {
@@ -1289,7 +1376,14 @@ export default function App() {
 
       await resolveTileLanding(player.id, targetTile, lastDiceSum || 7, epoch);
     },
-    [addLog, handleSkipWorldTour, lastDiceSum, resolveTileLanding]
+    [
+      addLog,
+      commitPlayers,
+      completeTurnAfterAction,
+      handleSkipWorldTour,
+      lastDiceSum,
+      resolveTileLanding,
+    ]
   );
 
   const handleExecuteTrade = useCallback(
@@ -1302,8 +1396,8 @@ export default function App() {
         propertiesRef.current
       );
 
-      setPlayers(nextPlayers);
-      setProperties(nextProps);
+      commitPlayers(nextPlayers);
+      commitProperties(nextProps);
       setShowTradeModal(false);
       soundEngine.playAuctionGavel();
 
@@ -1340,7 +1434,7 @@ export default function App() {
 
       checkAndTriggerMatchVictory(nextPlayers, nextProps);
     },
-    [addLog, checkAndTriggerMatchVictory, triggerBotQuip]
+    [addLog, checkAndTriggerMatchVictory, commitPlayers, commitProperties, triggerBotQuip]
   );
 
   const handleConfirmCard = useCallback(async () => {
@@ -1354,7 +1448,7 @@ export default function App() {
     const eff = card.effect;
     if (eff.type === 'GAIN_CASH') {
       soundEngine.playCashGain();
-      setPlayers((prev) =>
+      const nextPlayers = commitPlayers((prev) =>
         prev.map((p) => (p.id === player.id ? { ...p, cash: p.cash + eff.amount } : p))
       );
       addLog(
@@ -1362,12 +1456,12 @@ export default function App() {
         player.color,
         'positive'
       );
-      setTurnPhase('AWAIT_END_TURN');
+      completeTurnAfterAction(nextPlayers.find((p) => p.id === player.id));
     } else if (eff.type === 'PAY_CASH') {
       applyPaymentOrDebt(player.id, eff.amount, null, card.title);
     } else if (eff.type === 'COLLECT_FROM_ALL') {
       let collected = 0;
-      setPlayers((prev) => {
+      const nextPlayers = commitPlayers((prev) => {
         const updated = prev.map((p) => {
           if (p.id === player.id || p.bankrupt) return p;
           const give = Math.min(Math.max(0, p.cash), eff.amountEach);
@@ -1384,9 +1478,9 @@ export default function App() {
         player.color,
         'positive'
       );
-      setTurnPhase('AWAIT_END_TURN');
+      completeTurnAfterAction(nextPlayers.find((p) => p.id === player.id));
     } else if (eff.type === 'JAIL_FREE_CARD') {
-      setPlayers((prev) =>
+      const nextPlayers = commitPlayers((prev) =>
         prev.map((p) =>
           p.id === player.id ? { ...p, jailFreeCards: p.jailFreeCards + 1 } : p
         )
@@ -1396,7 +1490,7 @@ export default function App() {
         player.color,
         'positive'
       );
-      setTurnPhase('AWAIT_END_TURN');
+      completeTurnAfterAction(nextPlayers.find((p) => p.id === player.id));
     } else if (eff.type === 'GO_TO_JAIL') {
       soundEngine.playJailAlert();
       setTurnPhase('MOVING_TOKEN');
@@ -1406,7 +1500,7 @@ export default function App() {
         speedRef.current
       );
       if (sessionEpochRef.current !== epoch) return;
-      setPlayers((prev) =>
+      const nextPlayers = commitPlayers((prev) =>
         prev.map((p) =>
           p.id === player.id
             ? {
@@ -1419,7 +1513,7 @@ export default function App() {
             : p
         )
       );
-      setTurnPhase('AWAIT_END_TURN');
+      completeTurnAfterAction(nextPlayers.find((p) => p.id === player.id));
     } else if (eff.type === 'MOVE_TO') {
       const { path, passedStart } = computePathToTile(
         player.position,
@@ -1436,7 +1530,7 @@ export default function App() {
         );
       }
       if (sessionEpochRef.current !== epoch) return;
-      setPlayers((prev) =>
+      commitPlayers((prev) =>
         prev.map((p) =>
           p.id === player.id
             ? {
@@ -1473,7 +1567,7 @@ export default function App() {
         (stepIdx) => soundEngine.playTokenHop(stepIdx)
       );
       if (sessionEpochRef.current !== epoch) return;
-      setPlayers((prev) =>
+      commitPlayers((prev) =>
         prev.map((p) => (p.id === player.id ? { ...p, position: cur } : p))
       );
       await resolveTileLanding(player.id, cur, lastDiceSum || 7, epoch);
@@ -1492,12 +1586,20 @@ export default function App() {
           `${player.name} chưa có công trình nào cần bảo trì (0K).`,
           player.color
         );
-        setTurnPhase('AWAIT_END_TURN');
+        completeTurnAfterAction(player);
       } else {
         applyPaymentOrDebt(player.id, bill, null, card.title);
       }
     }
-  }, [addLog, applyPaymentOrDebt, drawnCard, lastDiceSum, resolveTileLanding]);
+  }, [
+    addLog,
+    applyPaymentOrDebt,
+    commitPlayers,
+    completeTurnAfterAction,
+    drawnCard,
+    lastDiceSum,
+    resolveTileLanding,
+  ]);
 
   const handleSellHouse = useCallback(
     (tileIndex: number) => {
@@ -1509,10 +1611,10 @@ export default function App() {
       if (!check.allowed) return;
 
       soundEngine.playCashGain();
-      setPlayers((prev) =>
+      commitPlayers((prev) =>
         prev.map((p) => (p.id === player.id ? { ...p, cash: p.cash + check.refund } : p))
       );
-      setProperties((prev) => ({
+      commitProperties((prev) => ({
         ...prev,
         [tileIndex]: {
           ...prev[tileIndex],
@@ -1526,7 +1628,7 @@ export default function App() {
         player.color
       );
     },
-    [addLog]
+    [addLog, commitPlayers, commitProperties]
   );
 
   const handleSellProperty = useCallback(
@@ -1537,10 +1639,10 @@ export default function App() {
 
       const refund = getPropertySellRefund(tileIndex);
       soundEngine.playCashGain();
-      setPlayers((prev) =>
+      commitPlayers((prev) =>
         prev.map((p) => (p.id === player.id ? { ...p, cash: p.cash + refund } : p))
       );
-      setProperties((prev) => ({
+      commitProperties((prev) => ({
         ...prev,
         [tileIndex]: {
           ...prev[tileIndex],
@@ -1556,7 +1658,7 @@ export default function App() {
         player.color
       );
     },
-    [addLog]
+    [addLog, commitPlayers, commitProperties]
   );
 
   const handlePayPendingDebt = useCallback(async () => {
@@ -1570,7 +1672,7 @@ export default function App() {
       creditorId !== null ? playersRef.current.find((p) => p.id === creditorId) : null;
     const updatedPayerCash = player.cash - amount;
 
-    setPlayers((prev) =>
+    const nextPlayers = commitPlayers((prev) =>
       prev.map((p) => {
         if (p.id === player.id) return { ...p, cash: updatedPayerCash };
         if (creditorId !== null && p.id === creditorId) {
@@ -1628,7 +1730,7 @@ export default function App() {
       );
       if (sessionEpochRef.current !== epoch) return;
 
-      setPlayers((prev) =>
+      commitPlayers((prev) =>
         prev.map((p) =>
           p.id === player.id
             ? {
@@ -1651,8 +1753,8 @@ export default function App() {
       return;
     }
 
-    setTurnPhase('AWAIT_END_TURN');
-  }, [addLog, pendingDebt, resolveTileLanding, triggerBotQuip]);
+    completeTurnAfterAction(nextPlayers.find((p) => p.id === player.id));
+  }, [addLog, commitPlayers, completeTurnAfterAction, pendingDebt, resolveTileLanding, triggerBotQuip]);
 
   const handleDeclareBankruptcy = useCallback(() => {
     const player = playersRef.current[activeIdxRef.current];
@@ -1690,8 +1792,8 @@ export default function App() {
       }
     }
 
-    setPlayers(updatedPlayers);
-    setProperties(nextProps);
+    commitPlayers(updatedPlayers);
+    commitProperties(nextProps);
     setPendingDebt(null);
     setShowAssetsModal(false);
     soundEngine.playJailAlert();
@@ -1709,7 +1811,7 @@ export default function App() {
     setActivePlayerIndex(nextIdx);
     setTurnCount((t) => t + 1);
     setTurnPhase('AWAIT_ROLL');
-  }, [addLog, checkAndTriggerMatchVictory, pendingDebt]);
+  }, [addLog, checkAndTriggerMatchVictory, commitPlayers, commitProperties, pendingDebt]);
 
   const handleEndTurn = useCallback(() => {
     if (turnPhaseRef.current !== 'AWAIT_END_TURN') return;
@@ -1721,8 +1823,7 @@ export default function App() {
       return;
     }
 
-    // Extra turn if player rolled doubles and was not sent to Jail
-    if (current && !current.bankrupt && !current.inJail && current.doublesStreak > 0) {
+    if (shouldGrantImmediateDoublesRoll(current)) {
       addLog(
         `${current.name} được thưởng thêm 1 lượt đổ xúc xắc nhờ ra đôi!`,
         current.color,
@@ -2077,6 +2178,11 @@ export default function App() {
     if (turnPhase === 'BUYOUT_DECISION') return 'Mua lại 2×?';
     if (turnPhase === 'WORLD_TOUR') return 'Bay du lịch! ✈️';
     if (turnPhase === 'AWAIT_ROLL') {
+      if (shouldGrantImmediateDoublesRoll(currentPlayer)) {
+        return currentPlayer.isBot
+          ? 'Ra đôi! Đang đổ thêm lượt... 🎲'
+          : 'Ra đôi! Đổ thêm lượt nữa! 🎲';
+      }
       return currentPlayer.isBot ? 'Đang chuẩn bị đổ...' : 'Tới lượt bạn! 🎲';
     }
     return null;
