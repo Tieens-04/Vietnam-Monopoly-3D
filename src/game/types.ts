@@ -39,8 +39,9 @@ export interface TileDefinition {
 export interface PropertyState {
   tileIndex: number;
   ownerId: number | null;
-  /** 0 = land only, 1..3 = green houses, 4 = hotel */
+  /** 0 = land only, 1..3 = green houses, 4 = hotel / protected landmark */
   level: number;
+  mortgaged?: boolean;
 }
 
 export interface PlayerSetupConfig {
@@ -96,22 +97,23 @@ export type TurnPhase =
   | 'ROLLING_DICE'
   | 'MOVING_TOKEN'
   | 'BUY_DECISION'
-  | 'AUCTION'
+  | 'UPGRADE_DECISION'
+  | 'BUYOUT_DECISION'
+  | 'WORLD_TOUR'
   | 'CARD_REVEAL'
   | 'DEBT_RESOLUTION'
   | 'AWAIT_END_TURN'
   | 'GAME_OVER';
 
-export interface AuctionState {
-  tileIndex: number;
-  startingBid: number;
-  currentBid: number;
-  highestBidderId: number | null;
-  activeBidderIds: number[];
-  currentTurnBidderId: number;
-  status: 'ACTIVE' | 'COMPLETED';
-  winnerId: number | null;
-  history: string[];
+export type VictoryConditionKind =
+  | 'LAST_STANDING'
+  | 'TRIPLE_MONOPOLY'
+  | 'SIDE_MONOPOLY';
+
+export interface MatchWinnerResult {
+  winner: PlayerState;
+  condition: VictoryConditionKind;
+  label: string;
 }
 
 export interface TradeOffer {
@@ -141,6 +143,8 @@ export interface PendingDebt {
   amount: number;
   creditorId: number | null; // null = bank
   reason: string;
+  /** Optional steps to advance once mandatory 3rd-turn Jail bail debt is paid */
+  postPayMoveSteps?: number;
 }
 
 export interface DiceRollVisualRequest {

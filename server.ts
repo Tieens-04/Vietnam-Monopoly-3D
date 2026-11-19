@@ -16,9 +16,30 @@ interface BotQuipRequestBody {
   extraContext?: string;
 }
 
+const BT_PROMPT_MULTIPLIER = 3000;
+
+function formatPromptCompact(rawDollars: number): string {
+  const absScaled = Math.abs(rawDollars) * BT_PROMPT_MULTIPLIER;
+  if (absScaled < 1000) return '0K';
+  if (absScaled >= 1_000_000) {
+    const millions = Math.round((absScaled / 1_000_000) * 100) / 100;
+    return `${Number(millions.toFixed(2))}M`;
+  }
+  return `${Math.round(absScaled / 1000)}K`;
+}
+
+function formatPromptSpaced(rawDollars: number): string {
+  const scaled = Math.round(rawDollars * BT_PROMPT_MULTIPLIER);
+  if (scaled === 0) return '0';
+  const sign = scaled < 0 ? '-' : '';
+  const grouped = String(Math.abs(scaled)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return `${sign}${grouped}`;
+}
+
 const SYSTEM_INSTRUCTION = [
-  'Bạn là AI nhập vai một tỷ phú đối thủ đang chơi Cờ Tỷ Phú Việt Nam 3D.',
+  'Bạn là AI nhập vai một tỷ phú đối thủ đang chơi Cờ Tỷ Phú Việt Nam 3D (luật Business Tour).',
   'Nhiệm vụ: Viết ĐÚNG 1 câu bình luận ngắn gọn bằng Tiếng Việt (từ 8 đến 20 từ, chỉ 1 câu duy nhất, không xuống dòng, không bọc dấu ngoặc kép, không dùng markdown hay hashtag).',
+  'Tuyệt đối KHÔNG dùng ký hiệu đô la ($); nếu nhắc đến tiền hãy dùng đúng định dạng K hoặc M (ví dụ 600K, 1.2M).',
   'Câu nói phải thể hiện rõ cá tính riêng của Bot, nhắc khéo tới địa danh hoặc số tiền vừa xảy ra, hài hước, tự nhiên và dí dỏm đúng chất đại gia bất động sản.',
 ].join(' ');
 
@@ -43,18 +64,20 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 function buildEventPrompt(body: Required<Omit<BotQuipRequestBody, 'botId'>>): string {
+  const compactAmt = formatPromptCompact(body.amount);
+  const spacedCash = formatPromptSpaced(body.botCashAfter);
   const eventDesc =
     body.eventKind === 'BUY_PRIME_LAND'
-      ? `Vừa chốt mua thành công bất động sản "${body.tileName}" với giá $${body.amount}.`
+      ? `Vừa chốt mua thành công bất động sản "${body.tileName}" với mức chi ${compactAmt}.`
       : body.eventKind === 'COLLECT_BIG_RENT'
-        ? `Vừa thu được khoản tiền thuê đậm $${body.amount} tại "${body.tileName}".`
-        : `Vừa bị trừ/phạt khoản tiền $${body.amount} vì "${body.tileName}".`;
+        ? `Vừa thu được khoản tiền thuê đậm ${compactAmt} tại "${body.tileName}".`
+        : `Vừa bị trừ/phạt khoản tiền ${compactAmt} vì "${body.tileName}".`;
 
   return [
     `Tên Bot: ${body.botName}`,
     `Cá tính: ${body.botPersona}`,
     `Sự kiện vừa xảy ra: ${eventDesc}`,
-    `Ngữ cảnh ván đấu: ${body.extraContext} Số dư tiền mặt còn lại của Bot: $${body.botCashAfter}.`,
+    `Ngữ cảnh ván đấu: ${body.extraContext} Số dư tiền mặt còn lại của Bot: ${spacedCash}.`,
     'Hãy buông 1 câu bình luận hài hước đúng ngữ cảnh ngay lúc này:',
   ].join('\n');
 }

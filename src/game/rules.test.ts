@@ -8,33 +8,45 @@ import {
   DEFAULT_PLAYER_CONFIGS,
 } from './boardData';
 import {
-  applyAuctionBid,
-  applyAuctionPass,
-  botDecideAuctionTurn,
+  botPickAssetToLiquidate,
+  botPickInitialPurchaseTier,
+  botPickOnTileUpgradeTargetLevel,
+  botPickWorldTourTarget,
+  botShouldBuyoutProperty,
   botShouldBuyProperty,
   buildBotBuyQuipPayload,
   buildBotPenaltyQuipPayload,
   buildBotRentCollectedQuipPayload,
+  calculateBuyoutPrice,
   calculateLiquidationPotential,
   calculateRent,
+  canBuyoutProperty,
+  canPropertyBeTraded,
+  canSellHouse,
   canUpgradeProperty,
   computeCinematicCameraPose,
   computeDayNightLightingState,
   computeForwardSteps,
-  createAuctionState,
   createInitialPlayers,
   createInitialProperties,
   DICE_BOX_FACE_VALUES,
   evaluateBotTradeOffer,
+  evaluateMatchWinner,
   executeTradeOffer,
+  formatBusinessTourCompact,
+  formatBusinessTourSpaced,
+  formatCountdownClock,
+  formatTilePriceLabel,
   getDiceFaceBaseEuler,
   getHouseSellRefund,
-  getMinimumNextBid,
+  getInitialPurchaseTiers,
   getPropertySellRefund,
   getTileTransform,
   getWinner,
   ownsFullColorGroup,
   TOTAL_TILES,
+  TURN_COUNTDOWN_SECONDS,
+  validateTradeOffer,
 } from './rules';
 import { ColorGroup, TileKind } from './types';
 
@@ -60,12 +72,10 @@ test('board has exact 28 Vietnam tiles with 4 corners, 16 properties, and 8 func
   assert.equal(utilities.length, 1);
   assert.equal(taxes[0].taxAmount, 150);
 
-  // Check total Chance + Community Chest cards >= 15
   assert.ok(CHANCE_CARDS.length + CHEST_CARDS.length >= 15);
 });
 
 test('3D dice base Euler orientations point exact face normal straight up (+Y)', () => {
-  // BoxGeometry material slot normals: +X, -X, +Y, -Y, +Z, -Z
   const slotNormals = [
     new THREE.Vector3(1, 0, 0),
     new THREE.Vector3(-1, 0, 0),
@@ -83,7 +93,6 @@ test('3D dice base Euler orientations point exact face normal straight up (+Y)',
     const euler = new THREE.Euler(rx, ry, rz, 'XYZ');
     const qBase = new THREE.Quaternion().setFromEuler(euler);
 
-    // Also test with arbitrary yaw around world +Y
     const qYaw = new THREE.Quaternion().setFromAxisAngle(
       new THREE.Vector3(0, 1, 0),
       1.234
@@ -104,7 +113,6 @@ test('28-tile spatial coordinates form a continuous non-overlapping perimeter', 
   assert.equal(transforms[14].isCorner, true);
   assert.equal(transforms[21].isCorner, true);
 
-  // Adjacent centers should be close (~1.9 to ~2.25 units apart)
   for (let i = 0; i < TOTAL_TILES; i++) {
     const curr = transforms[i];
     const next = transforms[(i + 1) % TOTAL_TILES];
@@ -113,9 +121,9 @@ test('28-tile spatial coordinates form a continuous non-overlapping perimeter', 
   }
 });
 
-test('rent calculation doubles on full color group and scales with houses/hotel', () => {
+test('Business Tour rent calculation applies full-set ×2 multiplier across all building levels', () => {
   const props = createInitialProperties();
-  // Tile 1 = Đà Lạt ($60, rents [8, 35, 95, 220, 360]), Tile 3 = Nha Trang (same BROWN group)
+  // Tile 1 = Đà Lạt (rents [8, 35, 95, 220, 360]), Tile 3 = Nha Trang (same BROWN group)
   props[1].ownerId = 0;
   assert.equal(ownsFullColorGroup(0, ColorGroup.BROWN, props), false);
   assert.equal(calculateRent(1, props, 7), 8);
@@ -125,13 +133,11 @@ test('rent calculation doubles on full color group and scales with houses/hotel'
   assert.equal(ownsFullColorGroup(0, ColorGroup.BROWN, props), true);
   assert.equal(calculateRent(1, props, 7), 16);
 
-  // Upgrade Đà Lạt to 2 houses and Hotel (level 4)
+  // Upgrade Đà Lạt to 2 houses (95 base) -> Business Tour with full set doubles to 190
   props[1].level = 2;
-  assert.equal(calculateRent(1, props, 7), 95);
-  props[1].level = 4;
-  assert.equal(calculateRent(1, props, 7), 360);
+  assert.equal(calculateRent(1, props, 7), 190);
 
-  // Transports: 1 station = $50, 2 stations = $120
+  // Transports: 1 station = 50 (150K), 2 stations = 120 (360K)
   props[5].ownerId = 1;
   assert.equal(calculateRent(5, props, 8), 50);
   props[20].ownerId = 1;
@@ -142,7 +148,7 @@ test('rent calculation doubles on full color group and scales with houses/hotel'
   assert.equal(calculateRent(12, props, 9), 72);
 });
 
-test('forward movement detects passing Start ($200 trigger) accurately', () => {
+test('forward movement detects passing Start (+600K trigger) accurately', () => {
   const stepNoPass = computeForwardSteps(23, 3);
   assert.deepEqual(stepNoPass.path, [24, 25, 26]);
   assert.equal(stepNoPass.passedStart, false);
@@ -153,26 +159,35 @@ test('forward movement detects passing Start ($200 trigger) accurately', () => {
   assert.equal(stepPass.passedStart, true);
 });
 
-test('property upgrade, liquidation refund (50%), Bot AI buy rule, and winner check', () => {
+test('Business Tour liquidation, house selling without even-sell lock, and bankruptcy winner work accurately', () => {
   const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 1500);
   const props = createInitialProperties();
-  props[27].ownerId = 0; // TP. Hồ Chí Minh ($400, houseCost $200)
+  props[26].ownerId = 0;
+  props[27].ownerId = 0;
+  props[26].level = 1;
+  props[27].level = 3;
 
-  const check = canUpgradeProperty(players[0], 27, props);
-  assert.equal(check.allowed, true);
-  assert.equal(check.cost, 200);
+  // In Business Tour, player can sell houses freely from any owned city with houses
+  assert.equal(canSellHouse(0, 26, props).allowed, true);
+  assert.equal(canSellHouse(0, 27, props).allowed, true);
 
+  // Cannot trade Hà Nội while houses stand in Emerald group
+  assert.equal(canPropertyBeTraded(26, 0, props), false);
+
+  props[26].level = 0;
   props[27].level = 2;
   assert.equal(getHouseSellRefund(27), 100);
   assert.equal(getPropertySellRefund(27), 200);
-  assert.equal(calculateLiquidationPotential(0, props), 400); // 2*100 + 200
+  assert.equal(calculateLiquidationPotential(0, props), 575);
 
-  // Bot AI buy check (>=$300 reserve rule)
+  const nextLiq = botPickAssetToLiquidate(0, props);
+  assert.ok(nextLiq);
+  assert.equal(nextLiq.action, 'SELL_HOUSE');
+
   const bot = { ...players[1], cash: 550 };
-  assert.equal(botShouldBuyProperty(bot, 22, props), true); // Đà Nẵng $240 -> $310 left
-  assert.equal(botShouldBuyProperty(bot, 27, props), false); // TP.HCM $400 -> $150 left
+  assert.equal(botShouldBuyProperty(bot, 22, props), true);
+  assert.equal(botShouldBuyProperty(bot, 25, props), false);
 
-  // Winner check when 3 of 4 players go bankrupt
   players[1].bankrupt = true;
   players[2].bankrupt = true;
   assert.equal(getWinner(players), null);
@@ -180,50 +195,83 @@ test('property upgrade, liquidation refund (50%), Bot AI buy rule, and winner ch
   assert.equal(getWinner(players)?.id, 0);
 });
 
-test('public auction cycles bidders, enforces increments, and crowns highest bidder when others pass', () => {
-  const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 1500);
-  // Tile 8 = Huế ($110) -> startingBid = $60
-  let auction = createAuctionState(8, players, 0);
-  assert.equal(auction.status, 'ACTIVE');
-  assert.equal(auction.startingBid, 60);
-  assert.equal(auction.currentTurnBidderId, 1); // clockwise after player 0
-  assert.equal(getMinimumNextBid(auction), 60);
+test('Business Tour enforces on-tile building, 0-3 initial tiers, 2x Buyout (Level 4 immune), World Tour AI, and Triple/Side Monopoly wins', () => {
+  const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2000);
+  const props = createInitialProperties();
 
-  // Player 1 bids $60
-  auction = applyAuctionBid(auction, 1, 60, players);
-  assert.equal(auction.highestBidderId, 1);
-  assert.equal(auction.currentBid, 60);
-  assert.equal(auction.currentTurnBidderId, 2);
-  assert.equal(getMinimumNextBid(auction), 70);
+  // 1. Initial purchase tiers on Đà Lạt (index 1, 60 -> 180K, houseCost 50 -> 150K) -> 4 tiers (0..3 houses)
+  const tiers = getInitialPurchaseTiers(players[0], 1);
+  assert.equal(tiers.length, 4);
+  assert.deepEqual(
+    tiers.map((t) => t.totalCost),
+    [60, 110, 160, 210]
+  );
+  assert.ok(botPickInitialPurchaseTier(players[1], 1, props) >= 1);
 
-  // Player 2 passes, Player 3 bids $80
-  auction = applyAuctionPass(auction, 2, players);
-  assert.equal(auction.currentTurnBidderId, 3);
-  auction = applyAuctionBid(auction, 3, 80, players);
-  assert.equal(auction.highestBidderId, 3);
-  assert.equal(auction.currentTurnBidderId, 0);
+  // 2. Remote building blocked in Business Tour; on-tile landing allowed up to Level 4 Landmark
+  props[1].ownerId = 0;
+  props[1].level = 2;
+  assert.equal(
+    canUpgradeProperty(players[0], 1, props, {
+      isOnTileLanding: false,
+    }).allowed,
+    false
+  );
+  const onTileToHotel = canUpgradeProperty(players[0], 1, props, {
+    isOnTileLanding: true,
+    targetLevel: 4,
+  });
+  assert.equal(onTileToHotel.allowed, true);
+  assert.equal(onTileToHotel.cost, 100);
+  assert.equal(
+    botPickOnTileUpgradeTargetLevel(players[1], 1, {
+      ...props,
+      1: { ...props[1], ownerId: 1 },
+    }),
+    4
+  );
 
-  // Player 0 passes, Player 1 passes -> only Player 3 left holding highest bid -> wins!
-  auction = applyAuctionPass(auction, 0, players);
-  assert.equal(auction.status, 'ACTIVE');
-  auction = applyAuctionPass(auction, 1, players);
-  assert.equal(auction.status, 'COMPLETED');
-  assert.equal(auction.winnerId, 3);
-  assert.equal(auction.currentBid, 80);
+  // 3. Opponent 2x Buyout: Đà Lạt (60) + 2 houses (100) = 160 invested -> 320 (960K) Buyout!
+  assert.equal(calculateBuyoutPrice(1, 2), 320);
+  assert.equal(canBuyoutProperty(players[1], 1, props).allowed, true);
+  assert.equal(botShouldBuyoutProperty(players[1], 1, players, props), true);
 
-  // Bot auction decision respects valuation & reserve
-  const freshAuction = createAuctionState(1, players, 0); // Đà Lạt $60, start $30
-  const botDecision = botDecideAuctionTurn(players[1], freshAuction, createInitialProperties());
-  assert.equal(botDecision.action, 'BID');
+  // Level 4 Hotel / Landmark is immune to Buyout!
+  props[1].level = 4;
+  assert.equal(canBuyoutProperty(players[1], 1, props).allowed, false);
+
+  // 4. World Tour AI snipes monopoly-completing tile (owns Đà Lạt [1], Nha Trang [3] is unowned)
+  assert.equal(botPickWorldTourTarget(players[0], players, props), 3);
+
+  // 5. Instant Victory: Side Monopoly (South edge [1, 3, 5, 6])
+  props[1].ownerId = 0;
+  props[3].ownerId = 0;
+  props[5].ownerId = 0;
+  assert.equal(evaluateMatchWinner(players, props), null);
+  props[6].ownerId = 0;
+  const sideWin = evaluateMatchWinner(players, props);
+  assert.equal(sideWin?.condition, 'SIDE_MONOPOLY');
+  assert.equal(sideWin?.winner.id, 0);
+
+  // 6. Instant Victory: Triple Monopoly (BROWN [1,3], PINK [11,13,15], EMERALD [26,27])
+  props[5].ownerId = null;
+  props[6].ownerId = null;
+  props[11].ownerId = 0;
+  props[13].ownerId = 0;
+  props[15].ownerId = 0;
+  props[26].ownerId = 0;
+  props[27].ownerId = 0;
+  const tripleWin = evaluateMatchWinner(players, props);
+  assert.equal(tripleWin?.condition, 'TRIPLE_MONOPOLY');
+  assert.equal(tripleWin?.winner.id, 0);
 });
 
 test('trade validation, Bot AI trade evaluation, and property+cash execution work accurately', () => {
   const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 1500);
   const props = createInitialProperties();
-  props[1].ownerId = 0; // Đà Lạt ($60) owned by Human (0)
-  props[6].ownerId = 1; // Hội An ($100) owned by Bot (1)
+  props[1].ownerId = 0;
+  props[6].ownerId = 1;
 
-  // Lowball offer ($20 for $100 Hội An) -> rejected by Bot
   const lowOffer = {
     fromPlayerId: 0,
     toPlayerId: 1,
@@ -236,7 +284,6 @@ test('trade validation, Bot AI trade evaluation, and property+cash execution wor
   assert.equal(lowEval.valid, true);
   assert.equal(lowEval.accepted, false);
 
-  // Fair swap: Đà Lạt ($60) + $50 cash (= $110) for Hội An ($100, required $105) -> accepted!
   const fairOffer = {
     fromPlayerId: 0,
     toPlayerId: 1,
@@ -261,7 +308,6 @@ test('cinematic camera pose tracks moving tokens and day/night lighting interpol
   const hopPoseNW = computeCinematicCameraPose('hop', { x: -7, y: 0.28, z: -7 });
   const dicePose = computeCinematicCameraPose('dice', { x: 0, y: 0.66, z: 0 });
 
-  // Hop camera target follows token quadrant while maintaining consistent isometric offset
   assert.ok(hopPoseSE.target.x > 4 && hopPoseSE.target.z > 4);
   assert.ok(hopPoseNW.target.x < -4 && hopPoseNW.target.z < -4);
   assert.equal(
@@ -270,7 +316,6 @@ test('cinematic camera pose tracks moving tokens and day/night lighting interpol
   );
   assert.ok(dicePose.position.y < 15);
 
-  // Day (0) vs Night (1) lighting & emissive curves
   const day = computeDayNightLightingState(0);
   const twilight = computeDayNightLightingState(0.5);
   const night = computeDayNightLightingState(1);
@@ -290,15 +335,13 @@ test('cinematic camera pose tracks moving tokens and day/night lighting interpol
 
 test('Bot AI Gemini quip builders generate rich contextual payloads and ignore humans or tiny rents', () => {
   const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 1500);
-  const human = players[0]; // isBot = false
-  const botBlue = players[1]; // yacht persona
-  const botGold = players[2]; // jet persona
+  const human = players[0];
+  const botBlue = players[1];
+  const botGold = players[2];
   const props = createInitialProperties();
 
-  // Human never triggers Bot AI quips
   assert.equal(buildBotBuyQuipPayload(human, 27, 400, props), null);
 
-  // Bot buying prime TP. Hồ Chí Minh ($400) builds BUY_PRIME_LAND payload
   props[27].ownerId = botBlue.id;
   const buyPayload = buildBotBuyQuipPayload(
     { ...botBlue, cash: 1100 },
@@ -313,7 +356,6 @@ test('Bot AI Gemini quip builders generate rich contextual payloads and ignore h
   assert.equal(buyPayload.amount, 400);
   assert.ok(buyPayload.botPersona.includes('du thuyền'));
 
-  // Tiny $6 starter rent does not spam COLLECT_BIG_RENT, whereas $120 house rent triggers it
   assert.equal(
     buildBotRentCollectedQuipPayload(botBlue, human.name, 1, 6, props),
     null
@@ -330,7 +372,6 @@ test('Bot AI Gemini quip builders generate rich contextual payloads and ignore h
   assert.equal(rentPayload.eventKind, 'COLLECT_BIG_RENT');
   assert.ok(rentPayload.extraContext.includes('Người chơi 1'));
 
-  // Bot paying Income Tax ($150) triggers PAY_PENALTY
   const penaltyPayload = buildBotPenaltyQuipPayload(
     { ...botGold, cash: 1350 },
     'Thuế Thu Nhập',
@@ -342,3 +383,86 @@ test('Bot AI Gemini quip builders generate rich contextual payloads and ignore h
   assert.ok(penaltyPayload.botPersona.includes('Shark'));
 });
 
+test('Business Tour currency synchronization: zero legacy dollar symbols across tiles, cards, trade/buyout messages, and quips', () => {
+  assert.equal(TURN_COUNTDOWN_SECONDS, 45);
+  assert.equal(formatBusinessTourCompact(0), '0K');
+  assert.equal(formatBusinessTourCompact(220), '660K');
+  assert.equal(formatBusinessTourCompact(350), '1.05M');
+  assert.equal(formatBusinessTourCompact(400), '1.2M');
+  assert.equal(formatBusinessTourCompact(-150, true), '-450K');
+
+  assert.equal(formatTilePriceLabel(BOARD_TILES[19], 0), '660K');
+  assert.equal(formatTilePriceLabel(BOARD_TILES[26], 0), '1.05M');
+  assert.equal(formatTilePriceLabel(BOARD_TILES[27], 0), '1.2M');
+  assert.equal(formatTilePriceLabel(BOARD_TILES[27], 2), '2.4M');
+  assert.equal(formatTilePriceLabel(BOARD_TILES[4], 0), '-450K');
+  assert.equal(formatTilePriceLabel(BOARD_TILES[0], 0), null);
+
+  assert.equal(formatBusinessTourSpaced(0), '0');
+  assert.equal(formatBusinessTourSpaced(220), '660 000');
+  assert.equal(formatBusinessTourSpaced(1500), '4 500 000');
+  assert.equal(formatBusinessTourSpaced(-150), '-450 000');
+
+  for (const tile of BOARD_TILES) {
+    assert.equal(tile.description.includes('$'), false, `Tile ${tile.name} contains legacy symbol`);
+  }
+  for (const card of [...CHANCE_CARDS, ...CHEST_CARDS]) {
+    assert.equal(card.description.includes('$'), false, `Card ${card.title} contains legacy symbol`);
+  }
+
+  const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 100);
+  const props = createInitialProperties();
+  props[1].ownerId = 0;
+
+  const poorUpgrade = canUpgradeProperty({ ...players[0], cash: 10 }, 1, props, {
+    isOnTileLanding: true,
+    targetLevel: 1,
+  });
+  assert.equal(poorUpgrade.allowed, false);
+  assert.equal((poorUpgrade.reason ?? '').includes('$'), false);
+  assert.ok((poorUpgrade.reason ?? '').includes('150K'));
+
+  const poorBuyout = canBuyoutProperty({ ...players[1], cash: 10 }, 1, props);
+  assert.equal(poorBuyout.allowed, false);
+  assert.equal((poorBuyout.reason ?? '').includes('$'), false);
+  assert.ok((poorBuyout.reason ?? '').includes('360K'));
+
+  const invalidCashTrade = validateTradeOffer(
+    {
+      fromPlayerId: 0,
+      toPlayerId: 1,
+      offeredTileIndices: [],
+      requestedTileIndices: [1],
+      offeredCash: 500,
+      requestedCash: 0,
+    },
+    players,
+    props
+  );
+  assert.equal(invalidCashTrade.valid, false);
+  assert.equal((invalidCashTrade.reason ?? '').includes('$'), false);
+
+  props[6].ownerId = 1;
+  const lowTrade = evaluateBotTradeOffer(
+    {
+      fromPlayerId: 0,
+      toPlayerId: 1,
+      offeredTileIndices: [],
+      requestedTileIndices: [6],
+      offeredCash: 10,
+      requestedCash: 0,
+    },
+    players,
+    props
+  );
+  assert.equal(lowTrade.reason.includes('$'), false);
+
+  assert.deepEqual(
+    DEFAULT_PLAYER_CONFIGS.map((p) => p.color),
+    ['#F5B800', '#66C61C', '#E91E63', '#29B6F6']
+  );
+
+  assert.equal(formatCountdownClock(45), '00:45');
+  assert.equal(formatCountdownClock(7), '00:07');
+  assert.equal(formatCountdownClock(0), '00:00');
+});

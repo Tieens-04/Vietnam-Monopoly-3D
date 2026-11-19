@@ -30,13 +30,13 @@ export async function fetchBotQuip(
 
   if (!response.ok) {
     throw new Error(
-      data.error || `Lỗi kết nối máy chủ Gemini (${response.status}).`
+      data.error || `Lỗi kết nối máy chủ bình luận (${response.status}).`
     );
   }
 
   const quip = (data.quip ?? '').trim();
   if (!quip) {
-    throw new Error('Phản hồi bình luận từ Gemini rỗng.');
+    throw new Error('Phản hồi bình luận rỗng.');
   }
   return quip;
 }

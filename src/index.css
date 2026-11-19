@@ -2,9 +2,16 @@
 
 @layer base {
   :root {
-    --font-display: "Baloo 2", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-display: "Be Vietnam Pro", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
     --font-body: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    --surface-ivory: #ffffff;
+    --surface-parchment: #f0f9ff;
+    --surface-obsidian: #0284c7;
+    --border-hairline: #bae6fd;
+    --accent-gold: #f5b800;
+    --accent-emerald: #66c61c;
   }
 
   html,
@@ -23,113 +30,255 @@
   font-family: var(--font-display);
 }
 
+.font-mono-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
 
-/* Tactile Monopoly GO-inspired royal navy & gold board-game HUD (zero backdrop-filter over WebGL) */
-.hud-panel {
-  background: linear-gradient(180deg, rgba(24, 52, 98, 0.96) 0%, rgba(13, 30, 62, 0.98) 100%);
-  border: 1.5px solid rgba(186, 230, 253, 0.28);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 12px 28px -6px rgba(9, 18, 38, 0.55);
-}
+/* ==========================================================================
+   BUSINESS TOUR CASUAL 3D GLOSSY UI DESIGN SYSTEM
+   (Strictly zero backdrop-filter over active WebGL canvas)
+   ========================================================================== */
 
-/* Authentic Monopoly Title-Deed Cream Cardstock */
-.hud-card-light {
-  background: linear-gradient(180deg, #fffefb 0%, #f8f3e6 100%);
-  border: 2px solid #cbd5e1;
-  box-shadow:
-    inset 0 1px 0 #ffffff,
-    0 20px 44px -10px rgba(9, 18, 38, 0.38);
-}
+@layer components {
+  /* Bright Casual White & Sky-Bordered Modal Shell */
+  .id-modal-shell,
+  .bt-casual-modal {
+    background: linear-gradient(180deg, #ffffff 0%, #f4f9ff 100%);
+    border: 3px solid #ffffff;
+    outline: 2px solid #7dd3fc;
+    box-shadow:
+      0 22px 46px -10px rgba(14, 42, 71, 0.34),
+      0 6px 0 rgba(2, 132, 199, 0.22);
+  }
 
-/* Oversized Tactile 3D Monopoly GO! Roll Button */
-.btn-3d-roll {
-  font-family: var(--font-display);
-  background: linear-gradient(180deg, #34d399 0%, #10b981 48%, #059669 100%);
-  border-top: 1.5px solid #a7f3d0;
-  border-left: 1.5px solid #6ee7b7;
-  border-right: 1.5px solid #6ee7b7;
-  border-bottom: 5px solid #065f46;
-  box-shadow:
-    inset 0 2px 0 rgba(255, 255, 255, 0.45),
-    0 8px 20px -4px rgba(5, 150, 105, 0.55);
-  text-shadow: 0 1.5px 0 rgba(6, 78, 59, 0.65);
-  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), filter 120ms ease;
-}
+  /* Vibrant Glossy Sky-Azure Header Strip (replaces dark obsidian) */
+  .id-header-obsidian,
+  .bt-header-sky {
+    background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+    border-bottom: 3px solid #0369a1;
+    box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45);
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(3, 52, 86, 0.45);
+  }
 
-.btn-3d-roll:hover:not(:disabled) {
-  filter: brightness(1.06);
-  transform: translateY(-1px);
-}
+  /* Glossy Lime-Emerald Header Strip */
+  .id-header-emerald,
+  .bt-header-green {
+    background: linear-gradient(180deg, #7ae22e 0%, #4ea812 100%);
+    border-bottom: 3px solid #387c0b;
+    box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45);
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(20, 56, 6, 0.45);
+  }
 
-.btn-3d-roll:active:not(:disabled) {
-  transform: translateY(2px);
-  border-bottom-width: 3px;
-}
+  /* Glossy Hot-Pink / Coral Alert Header Strip */
+  .id-header-crimson,
+  .bt-header-pink {
+    background: linear-gradient(180deg, #fb4b84 0%, #e11d48 100%);
+    border-bottom: 3px solid #9f1239;
+    box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.42);
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(88, 10, 32, 0.45);
+  }
 
-/* Tactile 3D Gold / Crimson / Sky Arcade Buttons */
-.btn-3d-gold {
-  font-family: var(--font-display);
-  background: linear-gradient(180deg, #fde047 0%, #f59e0b 55%, #d97706 100%);
-  border-top: 1.5px solid #fef9c3;
-  border-left: 1px solid #fcd34d;
-  border-right: 1px solid #fcd34d;
-  border-bottom: 4px solid #92400e;
-  box-shadow:
-    inset 0 1.5px 0 rgba(255, 255, 255, 0.55),
-    0 6px 16px -4px rgba(217, 119, 6, 0.45);
-  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), filter 120ms ease;
-}
+  /* Soft Sky Table Subheader Strip */
+  .id-subheader-strip {
+    background-color: #e0f2fe;
+    border-bottom: 1.5px solid #bae6fd;
+    color: #0369a1;
+  }
 
-.btn-3d-gold:hover:not(:disabled) {
-  filter: brightness(1.05);
-  transform: translateY(-1px);
-}
+  /* Circular Glossy Cyan/Blue Floating Utility Button (Middle-Right Toolbar) */
+  .bt-float-circle-cyan {
+    background: radial-gradient(circle at 35% 22%, #7dd3fc 0%, #29b6f6 45%, #0284c7 100%);
+    border: 2.5px solid #ffffff;
+    box-shadow:
+      0 4px 0 #0369a1,
+      0 10px 20px -4px rgba(3, 105, 161, 0.45),
+      inset 0 2px 2px rgba(255, 255, 255, 0.65);
+    color: #ffffff;
+    transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
+  }
 
-.btn-3d-gold:active:not(:disabled) {
-  transform: translateY(2px);
-}
+  .bt-float-circle-cyan:hover:not(:disabled) {
+    transform: translateY(-2px) scale(1.04);
+    filter: brightness(1.06);
+  }
 
-.btn-3d-crimson {
-  font-family: var(--font-display);
-  background: linear-gradient(180deg, #f87171 0%, #ef4444 50%, #dc2626 100%);
-  border-top: 1.5px solid #fecaca;
-  border-left: 1px solid #fca5a5;
-  border-right: 1px solid #fca5a5;
-  border-bottom: 4px solid #991b1b;
-  box-shadow:
-    inset 0 1.5px 0 rgba(255, 255, 255, 0.4),
-    0 8px 20px -4px rgba(220, 38, 38, 0.45);
-  text-shadow: 0 1.5px 0 rgba(127, 29, 29, 0.6);
-  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), filter 120ms ease;
-}
+  .bt-float-circle-cyan:active:not(:disabled) {
+    transform: translateY(2px) scale(0.97);
+    box-shadow:
+      0 1px 0 #0369a1,
+      0 5px 10px -3px rgba(3, 105, 161, 0.4),
+      inset 0 2px 2px rgba(255, 255, 255, 0.5);
+  }
 
-.btn-3d-crimson:hover:not(:disabled) {
-  filter: brightness(1.06);
-  transform: translateY(-1px);
-}
+  .bt-float-circle-active {
+    background: radial-gradient(circle at 35% 22%, #fde047 0%, #f5b800 50%, #d97706 100%);
+    border: 2.5px solid #ffffff;
+    box-shadow:
+      0 4px 0 #92400e,
+      0 10px 20px -4px rgba(180, 83, 9, 0.45),
+      inset 0 2px 2px rgba(255, 255, 255, 0.7);
+    color: #ffffff;
+  }
 
-.btn-3d-crimson:active:not(:disabled) {
-  transform: translateY(2px);
-}
+  /* Glossy Lime-Green 3D Casual Button (Buy / Start / Confirm) */
+  .id-btn-emerald,
+  .bt-btn-green {
+    font-family: var(--font-display);
+    background: linear-gradient(180deg, #84e83a 0%, #58b916 55%, #469a0d 100%);
+    border: 2px solid #ffffff;
+    box-shadow:
+      0 4px 0 #2f6f07,
+      0 8px 18px -4px rgba(70, 154, 13, 0.45),
+      inset 0 2px 1px rgba(255, 255, 255, 0.55);
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(22, 62, 4, 0.55);
+    transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
+  }
 
-.btn-3d-sky {
-  background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
-  border-top: 1px solid #bae6fd;
-  border-bottom: 3.5px solid #075985;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
-  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), filter 120ms ease;
-}
+  .id-btn-emerald:hover:not(:disabled),
+  .bt-btn-green:hover:not(:disabled) {
+    transform: translateY(-1.5px);
+    filter: brightness(1.05);
+  }
 
-.btn-3d-sky:hover:not(:disabled) {
-  filter: brightness(1.06);
-}
+  .id-btn-emerald:active:not(:disabled),
+  .bt-btn-green:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 #2f6f07;
+  }
 
-.btn-3d-sky:active:not(:disabled) {
-  transform: translateY(1.5px);
+  /* Glossy Golden-Amber 3D Casual Button (Roll / Featured CTA) */
+  .id-btn-gold,
+  .bt-btn-gold {
+    font-family: var(--font-display);
+    background: linear-gradient(180deg, #ffe047 0%, #f5b800 55%, #ea8c00 100%);
+    border: 2px solid #ffffff;
+    box-shadow:
+      0 4px 0 #b45309,
+      0 8px 18px -4px rgba(217, 119, 6, 0.45),
+      inset 0 2px 1px rgba(255, 255, 255, 0.65);
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(120, 53, 15, 0.65);
+    transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
+  }
+
+  .id-btn-gold:hover:not(:disabled),
+  .bt-btn-gold:hover:not(:disabled) {
+    transform: translateY(-1.5px);
+    filter: brightness(1.05);
+  }
+
+  .id-btn-gold:active:not(:disabled),
+  .bt-btn-gold:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 #b45309;
+  }
+
+  /* Glossy Hot-Pink 3D Dice Roll Button */
+  .bt-btn-pink {
+    font-family: var(--font-display);
+    background: linear-gradient(180deg, #ff629d 0%, #e91e63 55%, #c2185b 100%);
+    border: 2.5px solid #ffffff;
+    box-shadow:
+      0 4px 0 #880e4f,
+      0 10px 22px -4px rgba(233, 30, 99, 0.5),
+      inset 0 2px 1px rgba(255, 255, 255, 0.55);
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(88, 10, 42, 0.6);
+    transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
+  }
+
+  .bt-btn-pink:hover:not(:disabled) {
+    transform: translateY(-2px);
+    filter: brightness(1.05);
+  }
+
+  .bt-btn-pink:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 #880e4f;
+  }
+
+  /* Glossy Sky-Cyan Action Button */
+  .id-btn-sapphire,
+  .bt-btn-cyan {
+    font-family: var(--font-display);
+    background: linear-gradient(180deg, #56ccf8 0%, #29b6f6 50%, #0284c7 100%);
+    border: 2px solid #ffffff;
+    box-shadow:
+      0 4px 0 #0369a1,
+      0 8px 18px -4px rgba(2, 132, 199, 0.42),
+      inset 0 2px 1px rgba(255, 255, 255, 0.55);
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(3, 52, 86, 0.55);
+    transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
+  }
+
+  .id-btn-sapphire:hover:not(:disabled),
+  .bt-btn-cyan:hover:not(:disabled) {
+    transform: translateY(-1.5px);
+    filter: brightness(1.05);
+  }
+
+  .id-btn-sapphire:active:not(:disabled),
+  .bt-btn-cyan:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 #0369a1;
+  }
+
+  /* Glossy Coral-Red Danger / Sell Button */
+  .id-btn-crimson {
+    font-family: var(--font-display);
+    background: linear-gradient(180deg, #fb5679 0%, #e11d48 55%, #be123c 100%);
+    border: 2px solid #ffffff;
+    box-shadow:
+      0 4px 0 #881337,
+      0 8px 16px -4px rgba(190, 18, 60, 0.4),
+      inset 0 2px 1px rgba(255, 255, 255, 0.45);
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(76, 5, 25, 0.55);
+    transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
+  }
+
+  .id-btn-crimson:hover:not(:disabled) {
+    transform: translateY(-1.5px);
+  }
+
+  .id-btn-crimson:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 #881337;
+  }
+
+  /* Crisp Cloud-White Secondary Casual Button */
+  .id-btn-neutral,
+  .bt-btn-white {
+    font-family: var(--font-display);
+    background: linear-gradient(180deg, #ffffff 0%, #e2f1fc 100%);
+    border: 2px solid #93c5fd;
+    box-shadow:
+      0 3px 0 #60a5fa,
+      inset 0 1px 0 #ffffff;
+    color: #0f3b66;
+    transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), background-color 130ms ease;
+  }
+
+  .id-btn-neutral:hover:not(:disabled),
+  .bt-btn-white:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .id-btn-neutral:active:not(:disabled),
+  .bt-btn-white:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 #60a5fa;
+  }
 }
 
 @keyframes popIn {
@@ -147,6 +296,27 @@
   animation: popIn 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+@keyframes floatGentle {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+.animate-float-gentle {
+  animation: floatGentle 2.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pop-in,
+  .animate-float-gentle {
+    animation: none;
+  }
+}
+
 /* Custom slim scrollbar for property & log lists */
 .slim-scroll::-webkit-scrollbar {
   width: 5px;
@@ -156,6 +326,6 @@
   background: transparent;
 }
 .slim-scroll::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.35);
+  background: rgba(56, 189, 248, 0.45);
   border-radius: 9999px;
 }

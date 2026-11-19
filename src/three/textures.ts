@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { TileDefinition, TileKind } from '../game/types';
+import { ColorGroup, TileDefinition, TileKind } from '../game/types';
 
 function roundRect(
   ctx: CanvasRenderingContext2D,
@@ -46,56 +46,162 @@ function drawWrappedTitle(
   if (current) lines.push(current);
 
   const totalH = (lines.length - 1) * lineHeight;
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.96)';
+  ctx.lineWidth = 6;
   lines.forEach((line, idx) => {
-    ctx.fillText(line, cx, startY - totalH / 2 + idx * lineHeight);
+    const ly = startY - totalH / 2 + idx * lineHeight;
+    ctx.strokeText(line, cx, ly);
+    ctx.fillText(line, cx, ly);
   });
+  ctx.restore();
 }
 
-function drawStar(
+function addSubtleStoneMicroGrid(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  seedOffset = 0
+): void {
+  ctx.save();
+  for (let i = 0; i < 44; i++) {
+    const gx = ((i * 97 + seedOffset * 31) % (W - 48)) + 24;
+    const gy = ((i * 151 + seedOffset * 53) % (H - 48)) + 24;
+    ctx.fillStyle =
+      i % 2 === 0 ? 'rgba(148, 163, 184, 0.08)' : 'rgba(255, 255, 255, 0.7)';
+    ctx.fillRect(gx, gy, 3, 3);
+  }
+  ctx.restore();
+}
+
+/**
+ * Vibrant Business Tour city group color palette.
+ */
+export function resolveDeedGroupPalette(
+  group?: ColorGroup,
+  fallbackHex?: string
+): {
+  topHex: string;
+  bottomHex: string;
+  emblemHex: string;
+} {
+  switch (group) {
+    case ColorGroup.BROWN:
+      return { topHex: '#B45309', bottomHex: '#92400E', emblemHex: '#78350F' };
+    case ColorGroup.CYAN:
+      return { topHex: '#0EA5E9', bottomHex: '#0284C7', emblemHex: '#0369A1' };
+    case ColorGroup.PINK:
+      return { topHex: '#EC4899', bottomHex: '#DB2777', emblemHex: '#BE185D' };
+    case ColorGroup.ORANGE:
+      return { topHex: '#FB923C', bottomHex: '#EA580C', emblemHex: '#C2410C' };
+    case ColorGroup.RED:
+      return { topHex: '#F43F5E', bottomHex: '#E11D48', emblemHex: '#BE123C' };
+    case ColorGroup.EMERALD:
+      return { topHex: '#10B981', bottomHex: '#059669', emblemHex: '#047857' };
+    default:
+      return {
+        topHex: fallbackHex || '#38BDF8',
+        bottomHex: fallbackHex || '#0284C7',
+        emblemHex: fallbackHex || '#0369A1',
+      };
+  }
+}
+
+/**
+ * Draws the Business Tour colorful 8-slice rainbow spinning-wheel decal for Chance / Chest tiles.
+ */
+function drawRainbowSpinWheel(
   ctx: CanvasRenderingContext2D,
   cx: number,
   cy: number,
   outerR: number,
-  innerR: number,
-  points = 5
+  centerSymbol: '?' | '★'
 ): void {
-  ctx.beginPath();
-  for (let i = 0; i < points * 2; i++) {
-    const r = i % 2 === 0 ? outerR : innerR;
-    const angle = (i * Math.PI) / points - Math.PI / 2;
-    const px = cx + Math.cos(angle) * r;
-    const py = cy + Math.sin(angle) * r;
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  }
-  ctx.closePath();
-}
+  const sliceColors = [
+    '#FF3B5C',
+    '#FF9800',
+    '#FFD600',
+    '#66C61C',
+    '#00BCD4',
+    '#29B6F6',
+    '#AB47BC',
+    '#EC407A',
+  ];
 
-function drawPropertyEmblem(
-  ctx: CanvasRenderingContext2D,
-  cx: number,
-  cy: number,
-  color: string
-): void {
   ctx.save();
-  ctx.globalAlpha = 0.13;
-  ctx.fillStyle = color;
 
-  // Stylized miniature Vietnamese skyline silhouette
-  roundRect(ctx, cx - 72, cy - 8, 36, 56, 6);
-  ctx.fill();
-  roundRect(ctx, cx - 26, cy - 42, 52, 90, 8);
-  ctx.fill();
-  roundRect(ctx, cx + 36, cy + 2, 36, 46, 6);
-  ctx.fill();
-
-  // Spire crown
+  // Outer white-gold rim
+  ctx.fillStyle = '#F59E0B';
   ctx.beginPath();
-  ctx.moveTo(cx - 26, cy - 40);
-  ctx.lineTo(cx, cy - 66);
-  ctx.lineTo(cx + 26, cy - 40);
+  ctx.arc(cx, cy, outerR + 12, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath();
+  ctx.arc(cx, cy, outerR + 5, 0, Math.PI * 2);
+  ctx.fill();
+
+  const sliceAngle = (Math.PI * 2) / sliceColors.length;
+  for (let i = 0; i < sliceColors.length; i++) {
+    const a0 = i * sliceAngle - Math.PI / 2;
+    const a1 = a0 + sliceAngle;
+    ctx.fillStyle = sliceColors[i];
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, outerR, a0, a1);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    // Rim peg stud
+    const midA = (a0 + a1) * 0.5;
+    ctx.fillStyle = '#FEF08A';
+    ctx.beginPath();
+    ctx.arc(
+      cx + Math.cos(midA) * (outerR - 12),
+      cy + Math.sin(midA) * (outerR - 12),
+      5.5,
+      0,
+      Math.PI * 2
+    );
+    ctx.fill();
+  }
+
+  // Center glossy gold hub
+  const hubGrad = ctx.createRadialGradient(cx - 8, cy - 8, 4, cx, cy, 42);
+  hubGrad.addColorStop(0, '#FFFBEB');
+  hubGrad.addColorStop(0.55, '#FACC15');
+  hubGrad.addColorStop(1, '#D97706');
+  ctx.fillStyle = hubGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 40, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.stroke();
+
+  ctx.fillStyle = '#78350F';
+  ctx.font = '900 48px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(centerSymbol, cx, cy + 3);
+
+  // Top pointer clapper triangle
+  ctx.fillStyle = '#EF4444';
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(cx - 18, cy - outerR - 16);
+  ctx.lineTo(cx + 18, cy - outerR - 16);
+  ctx.lineTo(cx, cy - outerR + 14);
   ctx.closePath();
   ctx.fill();
+  ctx.stroke();
+
   ctx.restore();
 }
 
@@ -107,189 +213,114 @@ function drawFunctionalArtwork(
   tileIndex: number
 ): void {
   ctx.save();
+
   if (kind === TileKind.CHANCE) {
-    // Monopoly GO! Vibrant Orange-Gold Sunburst Medallion + Glossy 3D '?'
-    const bgGrad = ctx.createRadialGradient(cx, cy - 20, 12, cx, cy, 108);
-    bgGrad.addColorStop(0, '#FEF08A');
-    bgGrad.addColorStop(0.6, '#F59E0B');
-    bgGrad.addColorStop(1, '#EA580C');
-    ctx.fillStyle = bgGrad;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 98, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.lineWidth = 10;
-    ctx.strokeStyle = '#FFFBEB';
-    ctx.stroke();
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = '#9A3412';
-    ctx.stroke();
-
-    // Drop shadow '?' + Crisp White '?'
-    ctx.font = '900 134px "Baloo 2", "Plus Jakarta Sans", Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#7C2D12';
-    ctx.fillText('?', cx + 4, cy + 12);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillText('?', cx, cy + 6);
+    drawRainbowSpinWheel(ctx, cx, cy + 6, 112, '?');
   } else if (kind === TileKind.CHEST) {
-    // Monopoly GO! Royal Blue & Gold Overflowing Treasure Vault Chest
-    const bgGrad = ctx.createRadialGradient(cx, cy - 20, 12, cx, cy, 106);
-    bgGrad.addColorStop(0, '#BAE6FD');
-    bgGrad.addColorStop(0.65, '#0284C7');
-    bgGrad.addColorStop(1, '#1E3A8A');
-    ctx.fillStyle = bgGrad;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 98, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.lineWidth = 10;
-    ctx.strokeStyle = '#EFF6FF';
-    ctx.stroke();
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = '#1E3A8A';
-    ctx.stroke();
-
-    // Gold coins peeking out
-    ctx.fillStyle = '#FACC15';
-    for (const [ox, oy] of [
-      [-32, -26],
-      [-10, -34],
-      [14, -32],
-      [34, -24],
-    ]) {
-      ctx.beginPath();
-      ctx.arc(cx + ox, cy + oy, 16, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Chest body
-    ctx.fillStyle = '#92400E';
-    roundRect(ctx, cx - 58, cy - 22, 116, 74, 14);
-    ctx.fill();
-    ctx.strokeStyle = '#FBBF24';
-    ctx.lineWidth = 8;
-    ctx.stroke();
-
-    // Gold latch
-    ctx.fillStyle = '#FEF08A';
-    roundRect(ctx, cx - 15, cy - 6, 30, 32, 7);
-    ctx.fill();
-    ctx.fillStyle = '#78350F';
-    ctx.beginPath();
-    ctx.arc(cx, cy + 10, 5, 0, Math.PI * 2);
-    ctx.fill();
+    drawRainbowSpinWheel(ctx, cx, cy + 6, 112, '★');
   } else if (kind === TileKind.TRANSPORT) {
     const isAirport = tileIndex === 20;
-    const medalGrad = ctx.createLinearGradient(cx, cy - 95, cx, cy + 95);
-    medalGrad.addColorStop(0, isAirport ? '#E0F2FE' : '#F1F5F9');
-    medalGrad.addColorStop(1, isAirport ? '#7DD3FC' : '#CBD5E1');
+    const medalGrad = ctx.createLinearGradient(cx, cy - 94, cx, cy + 94);
+    medalGrad.addColorStop(0, '#38BDF8');
+    medalGrad.addColorStop(1, '#0284C7');
     ctx.fillStyle = medalGrad;
     ctx.beginPath();
-    ctx.arc(cx, cy, 94, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 96, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#0F172A';
-    ctx.lineWidth = 9;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 7;
     ctx.stroke();
 
     if (isAirport) {
-      // Sleek Sky-Blue & Navy Jetliner
-      ctx.fillStyle = '#0F172A';
+      ctx.fillStyle = '#FFFFFF';
       ctx.beginPath();
-      ctx.moveTo(cx, cy - 62);
-      ctx.lineTo(cx + 14, cy - 20);
-      ctx.lineTo(cx + 66, cy + 8);
-      ctx.lineTo(cx + 66, cy + 24);
-      ctx.lineTo(cx + 14, cy + 12);
-      ctx.lineTo(cx + 11, cy + 44);
-      ctx.lineTo(cx + 30, cy + 56);
-      ctx.lineTo(cx + 30, cy + 66);
-      ctx.lineTo(cx, cy + 57);
-      ctx.lineTo(cx - 30, cy + 66);
-      ctx.lineTo(cx - 30, cy + 56);
-      ctx.lineTo(cx - 11, cy + 44);
-      ctx.lineTo(cx - 14, cy + 12);
-      ctx.lineTo(cx - 66, cy + 24);
-      ctx.lineTo(cx - 66, cy + 8);
-      ctx.lineTo(cx - 14, cy - 20);
+      ctx.moveTo(cx, cy - 58);
+      ctx.lineTo(cx + 13, cy - 16);
+      ctx.lineTo(cx + 60, cy + 8);
+      ctx.lineTo(cx + 60, cy + 22);
+      ctx.lineTo(cx + 13, cy + 11);
+      ctx.lineTo(cx + 10, cy + 42);
+      ctx.lineTo(cx + 26, cy + 54);
+      ctx.lineTo(cx + 26, cy + 62);
+      ctx.lineTo(cx, cy + 53);
+      ctx.lineTo(cx - 26, cy + 62);
+      ctx.lineTo(cx - 26, cy + 54);
+      ctx.lineTo(cx - 10, cy + 42);
+      ctx.lineTo(cx - 13, cy + 11);
+      ctx.lineTo(cx - 60, cy + 22);
+      ctx.lineTo(cx - 60, cy + 8);
+      ctx.lineTo(cx - 13, cy - 16);
       ctx.closePath();
       ctx.fill();
     } else {
-      // Express Locomotive with Red-Gold Accent
-      ctx.fillStyle = '#1E293B';
-      roundRect(ctx, cx - 46, cy - 52, 92, 94, 20);
+      ctx.fillStyle = '#FFFFFF';
+      roundRect(ctx, cx - 42, cy - 48, 84, 88, 16);
       ctx.fill();
       ctx.fillStyle = '#EF4444';
-      ctx.fillRect(cx - 46, cy - 4, 92, 14);
-      ctx.fillStyle = '#BAE6FD';
-      roundRect(ctx, cx - 34, cy - 38, 68, 28, 8);
+      ctx.fillRect(cx - 42, cy - 2, 84, 14);
+      ctx.fillStyle = '#0F172A';
+      roundRect(ctx, cx - 30, cy - 34, 60, 24, 6);
       ctx.fill();
       ctx.fillStyle = '#FACC15';
       ctx.beginPath();
-      ctx.arc(cx - 21, cy + 24, 9, 0, Math.PI * 2);
-      ctx.arc(cx + 21, cy + 24, 9, 0, Math.PI * 2);
+      ctx.arc(cx - 18, cy + 24, 7.5, 0, Math.PI * 2);
+      ctx.arc(cx + 18, cy + 24, 7.5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = '#0F172A';
-      ctx.lineWidth = 8;
-      ctx.beginPath();
-      ctx.moveTo(cx - 28, cy + 44);
-      ctx.lineTo(cx - 48, cy + 66);
-      ctx.moveTo(cx + 28, cy + 44);
-      ctx.lineTo(cx + 48, cy + 66);
-      ctx.stroke();
     }
   } else if (kind === TileKind.UTILITY) {
-    // Golden Power Crest
-    const utilGrad = ctx.createRadialGradient(cx, cy - 16, 10, cx, cy, 94);
-    utilGrad.addColorStop(0, '#FEF9C3');
-    utilGrad.addColorStop(1, '#FDE047');
+    const utilGrad = ctx.createRadialGradient(cx, cy - 16, 10, cx, cy, 96);
+    utilGrad.addColorStop(0, '#FEF08A');
+    utilGrad.addColorStop(1, '#F59E0B');
     ctx.fillStyle = utilGrad;
     ctx.beginPath();
-    ctx.arc(cx, cy, 92, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 94, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#CA8A04';
-    ctx.lineWidth = 9;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 7;
     ctx.stroke();
 
-    ctx.fillStyle = '#EA580C';
+    ctx.fillStyle = '#1E293B';
     ctx.beginPath();
-    ctx.moveTo(cx + 14, cy - 64);
-    ctx.lineTo(cx - 36, cy + 6);
-    ctx.lineTo(cx + 2, cy + 6);
-    ctx.lineTo(cx - 14, cy + 64);
-    ctx.lineTo(cx + 40, cy - 8);
-    ctx.lineTo(cx + 2, cy - 8);
+    ctx.moveTo(cx + 12, cy - 56);
+    ctx.lineTo(cx - 32, cy + 4);
+    ctx.lineTo(cx + 2, cy + 4);
+    ctx.lineTo(cx - 12, cy + 56);
+    ctx.lineTo(cx + 34, cy - 6);
+    ctx.lineTo(cx + 2, cy - 6);
     ctx.closePath();
     ctx.fill();
   } else if (kind === TileKind.TAX) {
-    // Luxury Diamond Ring / Tax Crest
-    ctx.fillStyle = '#FFE4E6';
+    const taxGrad = ctx.createRadialGradient(cx, cy - 16, 10, cx, cy, 96);
+    taxGrad.addColorStop(0, '#FB7185');
+    taxGrad.addColorStop(1, '#E11D48');
+    ctx.fillStyle = taxGrad;
     ctx.beginPath();
-    ctx.arc(cx, cy, 90, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 94, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#E11D48';
-    ctx.lineWidth = 9;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 7;
     ctx.stroke();
 
-    // Faceted blue diamond
-    ctx.fillStyle = '#38BDF8';
-    ctx.strokeStyle = '#0284C7';
-    ctx.lineWidth = 6;
-    ctx.beginPath();
-    ctx.moveTo(cx - 36, cy - 28);
-    ctx.lineTo(cx + 36, cy - 28);
-    ctx.lineTo(cx + 56, cy - 2);
-    ctx.lineTo(cx, cy + 52);
-    ctx.lineTo(cx - 56, cy - 2);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '900 84px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('%', cx, cy + 4);
   }
+
   ctx.restore();
 }
 
+/**
+ * Business Tour Extruded #F4F5F7 Off-White Stone/Plastic Block Top Texture.
+ * - Property name sits cleanly centered on the #F4F5F7 block surface (inner half reserved for full-color 3D buildings!).
+ * - Chance/Chest tiles feature colorful rainbow spinning-wheel decals.
+ * - 4 Corner tiles feature themed floor pads supporting their 3D dioramas.
+ */
 export function createTileTopTexture(
   tile: TileDefinition,
-  maxAnisotropy: number
+  maxAnisotropy: number,
+  flipReadability = false
 ): THREE.CanvasTexture {
   const isCorner =
     tile.kind === TileKind.START ||
@@ -298,263 +329,210 @@ export function createTileTopTexture(
     tile.kind === TileKind.GO_TO_JAIL;
 
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = isCorner ? 512 : 704;
+  canvas.width = isCorner ? 640 : 512;
+  canvas.height = isCorner ? 640 : 768;
   const ctx = canvas.getContext('2d')!;
 
   const W = canvas.width;
   const H = canvas.height;
 
-  // Classic Monopoly Mint-Cream outer border + crisp dark-ink architectural frame
-  ctx.fillStyle = '#D8F1E2';
+  // 1. Crisp #D6DCE5 bevel rim + #F4F5F7 light gray/off-white block surface
+  ctx.fillStyle = '#D6DCE5';
   ctx.fillRect(0, 0, W, H);
 
-  ctx.fillStyle = '#FFFEFA';
-  roundRect(ctx, 14, 14, W - 28, H - 28, 18);
+  const bodyGrad = ctx.createLinearGradient(0, 0, W, H);
+  bodyGrad.addColorStop(0, '#F9FAFB');
+  bodyGrad.addColorStop(0.55, '#F4F5F7');
+  bodyGrad.addColorStop(1, '#EAEEF3');
+  ctx.fillStyle = bodyGrad;
+  roundRect(ctx, 14, 14, W - 28, H - 28, 22);
   ctx.fill();
 
-  ctx.strokeStyle = '#1E293B';
-  ctx.lineWidth = 8;
-  roundRect(ctx, 14, 14, W - 28, H - 28, 18);
+  addSubtleStoneMicroGrid(ctx, W, H, tile.index);
+
+  ctx.strokeStyle = '#E2E8F0';
+  ctx.lineWidth = 5;
+  roundRect(ctx, 24, 24, W - 48, H - 48, 16);
   ctx.stroke();
 
   if (isCorner) {
+    ctx.save();
+    if (flipReadability) {
+      ctx.translate(W / 2, H / 2);
+      ctx.rotate(Math.PI);
+      ctx.translate(-W / 2, -H / 2);
+    }
+
     if (tile.kind === TileKind.START) {
-      // MONOPOLY GO! Vibrant Mint-Gold & Crimson GO! / BẮT ĐẦU Corner
-      const grad = ctx.createLinearGradient(0, 0, W, H);
-      grad.addColorStop(0, '#ECFDF5');
-      grad.addColorStop(0.55, '#D1FAE5');
-      grad.addColorStop(1, '#A7F3D0');
-      ctx.fillStyle = grad;
-      roundRect(ctx, 20, 20, W - 40, H - 40, 14);
+      // Red/Green celebratory floor pad beneath the 3D START Arch
+      const padGrad = ctx.createLinearGradient(56, 56, W - 56, H - 56);
+      padGrad.addColorStop(0, '#22C55E');
+      padGrad.addColorStop(0.5, '#16A34A');
+      padGrad.addColorStop(1, '#EF4444');
+      ctx.fillStyle = padGrad;
+      roundRect(ctx, 48, 48, W - 96, H - 96, 36);
       ctx.fill();
 
-      // Big festive GO! / BẮT ĐẦU header
-      ctx.textAlign = 'center';
-      ctx.font = '900 102px "Baloo 2", "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillStyle = '#991B1B';
-      ctx.fillText('GO!', W / 2 + 4, 134);
-      ctx.fillStyle = '#EF4444';
-      ctx.fillText('GO!', W / 2, 128);
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 10;
+      roundRect(ctx, 64, 64, W - 128, H - 128, 28);
+      ctx.stroke();
 
-      ctx.fillStyle = '#064E3B';
-      ctx.font = '900 54px "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText('BẮT ĐẦU', W / 2, 202);
-
-      // Gold salary ribbon
-      ctx.fillStyle = '#F59E0B';
-      roundRect(ctx, 88, 226, W - 176, 62, 16);
-      ctx.fill();
-      ctx.fillStyle = '#FFFBEB';
-      ctx.font = '900 38px "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText('NHẬN +$200', W / 2, 269);
-
-      // Bold 3D-outlined crimson arrow pointing clockwise
-      ctx.fillStyle = '#DC2626';
-      ctx.strokeStyle = '#7F1D1D';
-      ctx.lineWidth = 8;
+      // White celebratory directional chevron
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
       ctx.beginPath();
-      ctx.moveTo(410, 356);
-      ctx.lineTo(192, 356);
-      ctx.lineTo(192, 310);
-      ctx.lineTo(96, 384);
-      ctx.lineTo(192, 458);
-      ctx.lineTo(192, 412);
-      ctx.lineTo(410, 412);
+      ctx.moveTo(492, 320);
+      ctx.lineTo(250, 320);
+      ctx.lineTo(250, 250);
+      ctx.lineTo(136, 350);
+      ctx.lineTo(250, 450);
+      ctx.lineTo(250, 380);
+      ctx.lineTo(492, 380);
       ctx.closePath();
       ctx.fill();
-      ctx.stroke();
-    } else if (tile.kind === TileKind.JAIL) {
-      // Inner cell = NHÀ TÙ (vibrant orange-amber), outer L-corridor = THĂM TÙ
-      ctx.fillStyle = '#F1F5F9';
-      roundRect(ctx, 20, 20, W - 40, H - 40, 14);
-      ctx.fill();
 
-      const cellGrad = ctx.createLinearGradient(130, 34, 476, 344);
-      cellGrad.addColorStop(0, '#FFEDD5');
-      cellGrad.addColorStop(1, '#FDBA74');
-      ctx.fillStyle = cellGrad;
-      roundRect(ctx, 132, 34, 346, 310, 20);
-      ctx.fill();
-      ctx.strokeStyle = '#C2410C';
-      ctx.lineWidth = 10;
-      ctx.stroke();
-
-      // Metallic iron bars with highlight
-      for (let bx = 186; bx <= 426; bx += 60) {
-        ctx.strokeStyle = '#0F172A';
-        ctx.lineWidth = 14;
-        ctx.beginPath();
-        ctx.moveTo(bx, 114);
-        ctx.lineTo(bx, 294);
-        ctx.stroke();
-
-        ctx.strokeStyle = '#64748B';
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(bx - 3, 114);
-        ctx.lineTo(bx - 3, 294);
-        ctx.stroke();
-      }
-
-      ctx.fillStyle = '#7C2D12';
-      ctx.font = '900 46px "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('NHÀ TÙ', 305, 92);
-
-      ctx.fillStyle = '#0F172A';
-      ctx.font = '900 46px "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText('THĂM TÙ', W / 2 + 18, 444);
-    } else if (tile.kind === TileKind.FREE_PARKING) {
-      const fpGrad = ctx.createLinearGradient(0, 0, W, H);
-      fpGrad.addColorStop(0, '#FEF9C3');
-      fpGrad.addColorStop(1, '#FDE047');
-      ctx.fillStyle = fpGrad;
-      roundRect(ctx, 20, 20, W - 40, H - 40, 14);
-      ctx.fill();
-
-      // Glossy red Monopoly GO! Parking Shield
-      ctx.fillStyle = '#DC2626';
-      roundRect(ctx, W / 2 - 92, 130, 184, 176, 38);
-      ctx.fill();
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 8;
-      ctx.stroke();
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '900 120px "Baloo 2", "Plus Jakarta Sans", Arial, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('P', W / 2, 224);
-
-      ctx.textBaseline = 'alphabetic';
-      ctx.fillStyle = '#0F172A';
-      ctx.font = '900 48px "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText('BÃI ĐỖ XE', W / 2, 96);
-      ctx.fillStyle = '#991B1B';
-      ctx.font = '900 42px "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText('MIỄN PHÍ', W / 2, 396);
-    } else if (tile.kind === TileKind.GO_TO_JAIL) {
-      const gtjGrad = ctx.createLinearGradient(0, 0, W, H);
-      gtjGrad.addColorStop(0, '#DBEAFE');
-      gtjGrad.addColorStop(1, '#FEE2E2');
-      ctx.fillStyle = gtjGrad;
-      roundRect(ctx, 20, 20, W - 40, H - 40, 14);
-      ctx.fill();
-
-      // Police siren medallion
-      ctx.fillStyle = '#1D4ED8';
-      ctx.beginPath();
-      ctx.arc(W / 2, 232, 102, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#FBBF24';
-      ctx.lineWidth = 10;
-      ctx.stroke();
-
-      ctx.fillStyle = '#EF4444';
-      ctx.beginPath();
-      ctx.arc(W / 2, 232, 70, 0, Math.PI * 2);
-      ctx.fill();
-
       ctx.fillStyle = '#FFFFFF';
-      ctx.font = '900 100px "Baloo 2", "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('!', W / 2, 236);
+      ctx.font = '900 66px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+      ctx.fillText('BẮT ĐẦU', W / 2, 148);
 
-      ctx.textBaseline = 'alphabetic';
-      ctx.fillStyle = '#991B1B';
-      ctx.font = '900 58px "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText('VÀO TÙ', W / 2, 98);
-      ctx.fillStyle = '#0F172A';
-      ctx.font = '800 38px "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText('ĐI THẲNG TỚI TÙ', W / 2, 418);
-    }
-  } else if (tile.kind === TileKind.PROPERTY) {
-    // Glossy 3D-shaded Color Group Header Ribbon (Monopoly GO! style)
-    const headerH = 192;
-    const baseHex = tile.groupColor || '#3B82F6';
-    ctx.fillStyle = baseHex;
-    roundRect(ctx, 20, 20, W - 40, headerH, 12);
-    ctx.fill();
-
-    // Top specular sheen across color band
-    const sheenGrad = ctx.createLinearGradient(0, 20, 0, 105);
-    sheenGrad.addColorStop(0, 'rgba(255, 255, 255, 0.36)');
-    sheenGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
-    ctx.fillStyle = sheenGrad;
-    roundRect(ctx, 24, 24, W - 48, 72, 10);
-    ctx.fill();
-
-    // Crisp inner white pin-stripe & dark divider under color band
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
-    ctx.lineWidth = 4;
-    roundRect(ctx, 30, 30, W - 60, headerH - 20, 8);
-    ctx.stroke();
-
-    ctx.fillStyle = '#0F172A';
-    ctx.fillRect(18, 20 + headerH, W - 36, 8);
-
-    // Subtle skyline watermark in center
-    drawPropertyEmblem(ctx, W / 2, 444, baseHex);
-
-    // Bold high-contrast Vietnamese city name
-    ctx.fillStyle = '#0F172A';
-    ctx.font = '800 66px "Plus Jakarta Sans", "Segoe UI", Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    drawWrappedTitle(ctx, tile.name, W / 2, 334, W - 64, 74);
-
-    // Gold-trimmed Royal Navy Price Plaque at bottom
-    ctx.fillStyle = '#0F2342';
-    roundRect(ctx, 56, H - 154, W - 112, 108, 22);
-    ctx.fill();
-    ctx.strokeStyle = '#F59E0B';
-    ctx.lineWidth = 6;
-    ctx.stroke();
-
-    ctx.fillStyle = '#FEF08A';
-    ctx.font = '800 62px "Baloo 2", "Plus Jakarta Sans", Arial, sans-serif';
-    ctx.fillText(`$${tile.price}`, W / 2, H - 96);
-  } else {
-    // Functional tile (Chance, Chest, Transport, Utility, Tax)
-    ctx.fillStyle = '#0F172A';
-    ctx.font = '800 56px "Plus Jakarta Sans", "Segoe UI", Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    drawWrappedTitle(ctx, tile.name, W / 2, 126, W - 56, 64);
-
-    drawFunctionalArtwork(ctx, tile.kind, W / 2, 366, tile.index);
-
-    if (tile.price) {
-      ctx.fillStyle = '#0F2342';
-      roundRect(ctx, 58, H - 148, W - 116, 104, 22);
-      ctx.fill();
-      ctx.strokeStyle = '#F59E0B';
-      ctx.lineWidth = 6;
-      ctx.stroke();
       ctx.fillStyle = '#FEF08A';
-      ctx.font = '800 58px "Baloo 2", "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText(`$${tile.price}`, W / 2, H - 94);
-    } else if (tile.taxAmount) {
-      ctx.fillStyle = '#991B1B';
-      roundRect(ctx, 54, H - 148, W - 108, 104, 22);
+      ctx.font = '800 42px "JetBrains Mono", "Be Vietnam Pro", sans-serif';
+      ctx.fillText('+600K', W / 2, 520);
+    } else if (tile.kind === TileKind.JAIL) {
+      // Tropical Lost Island turquoise lagoon water rim + warm sandy shore pad
+      const waterGrad = ctx.createRadialGradient(W / 2, H / 2, 70, W / 2, H / 2, 275);
+      waterGrad.addColorStop(0, '#67E8F9');
+      waterGrad.addColorStop(0.65, '#06B6D4');
+      waterGrad.addColorStop(1, '#0284C7');
+      ctx.fillStyle = waterGrad;
+      roundRect(ctx, 44, 44, W - 88, H - 88, 42);
       ctx.fill();
-      ctx.strokeStyle = '#FCA5A5';
-      ctx.lineWidth = 5;
+
+      // White ocean surf foam ring
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.82)';
+      ctx.lineWidth = 10;
+      ctx.beginPath();
+      ctx.arc(W / 2, H / 2, 198, 0, Math.PI * 2);
       ctx.stroke();
+
+      // Sandy beach center
+      ctx.fillStyle = '#FDE68A';
+      ctx.beginPath();
+      ctx.arc(W / 2, H / 2, 168, 0, Math.PI * 2);
+      ctx.fill();
+
       ctx.fillStyle = '#FFFFFF';
-      ctx.font = '800 56px "Baloo 2", "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText(`-$${tile.taxAmount}`, W / 2, H - 94);
-    } else {
-      ctx.fillStyle = tile.kind === TileKind.CHANCE ? '#B45309' : '#1D4ED8';
-      ctx.font = '800 40px "Plus Jakarta Sans", Arial, sans-serif';
-      ctx.fillText(
-        tile.kind === TileKind.CHANCE ? 'RÚT THẺ MAY MẮN' : 'QUỸ CỘNG ĐỒNG',
-        W / 2,
-        H - 88
-      );
+      ctx.font = '900 44px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('ĐẢO HOANG', W / 2, 566);
+    } else if (tile.kind === TileKind.FREE_PARKING) {
+      // World Championships Stadium plaza pad
+      ctx.fillStyle = '#E2E8F0';
+      roundRect(ctx, 48, 48, W - 96, H - 96, 36);
+      ctx.fill();
+
+      ctx.fillStyle = '#65C434';
+      ctx.beginPath();
+      ctx.arc(W / 2, H / 2 - 12, 188, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#FACC15';
+      ctx.lineWidth = 10;
+      ctx.stroke();
+
+      ctx.fillStyle = '#0F172A';
+      ctx.font = '900 44px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('LỄ HỘI CÚP', W / 2, 566);
+    } else if (tile.kind === TileKind.GO_TO_JAIL) {
+      // World Tour Airport diagonal asphalt apron & runway markings
+      ctx.fillStyle = '#475569';
+      roundRect(ctx, 48, 48, W - 96, H - 96, 36);
+      ctx.fill();
+
+      ctx.save();
+      ctx.translate(W / 2, H / 2);
+      ctx.rotate(-Math.PI / 4);
+      ctx.fillStyle = '#1E293B';
+      roundRect(ctx, -230, -68, 460, 136, 18);
+      ctx.fill();
+
+      ctx.strokeStyle = '#F8FAFC';
+      ctx.lineWidth = 8;
+      ctx.setLineDash([28, 22]);
+      ctx.beginPath();
+      ctx.moveTo(-190, 0);
+      ctx.lineTo(190, 0);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = '900 46px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('DU LỊCH', W / 2, 562);
     }
+    ctx.restore();
+  } else if (tile.kind === TileKind.PROPERTY) {
+    const pal = resolveDeedGroupPalette(tile.group, tile.groupColor);
+
+    // Subtle recessed architectural foundation pad on the inner half (y = 38..304) where 3D buildings sit
+    ctx.fillStyle = '#E8ECF2';
+    roundRect(ctx, 36, 38, W - 72, 256, 18);
+    ctx.fill();
+    ctx.strokeStyle = '#D5DCE6';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    // Small crisp group-color indicator pill bar separating building plot from city name
+    ctx.fillStyle = pal.topHex;
+    roundRect(ctx, 96, 314, W - 192, 18, 9);
+    ctx.fill();
+
+    // Centered bold dark-slate city name on the #F4F5F7 tile surface
+    ctx.save();
+    if (flipReadability) {
+      ctx.translate(W / 2, 526);
+      ctx.rotate(Math.PI);
+      ctx.translate(-W / 2, -526);
+    }
+
+    ctx.fillStyle = '#1E293B';
+    ctx.font = '900 76px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    drawWrappedTitle(ctx, tile.name, W / 2, 512, W - 56, 84);
+
+    if (tile.groupLabel) {
+      ctx.fillStyle = '#64748B';
+      ctx.font = '800 28px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+      ctx.fillText(tile.groupLabel.toUpperCase(), W / 2, 682);
+    }
+    ctx.restore();
+  } else {
+    // Functional Tile (Chance, Chest, Transport, Utility, Tax)
+    ctx.save();
+    if (flipReadability) {
+      ctx.translate(W / 2, H / 2);
+      ctx.rotate(Math.PI);
+      ctx.translate(-W / 2, -H / 2);
+    }
+
+    ctx.fillStyle = '#1E293B';
+    ctx.font = '900 62px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    drawWrappedTitle(ctx, tile.name, W / 2, 146, W - 56, 68);
+
+    drawFunctionalArtwork(ctx, tile.kind, W / 2, 438, tile.index);
+
+    if (tile.kind === TileKind.CHANCE || tile.kind === TileKind.CHEST) {
+      const isChance = tile.kind === TileKind.CHANCE;
+      ctx.fillStyle = isChance ? '#EA580C' : '#0284C7';
+      ctx.font = '900 38px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+      ctx.fillText(isChance ? 'VÒNG QUAY CƠ HỘI' : 'VÒNG QUAY KHÍ VẬN', W / 2, H - 92);
+    }
+    ctx.restore();
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -565,76 +543,183 @@ export function createTileTopTexture(
 }
 
 /**
- * Iconic Diagonal Red & Gold "CỜ TỶ PHÚ VIỆT NAM" Centerpiece Banner Plaque
- * (inspired directly by MONOPOLY GO!'s signature diagonal board logo).
+ * High-readability top texture for the protruding 3D Business Tour Price Tab
+ * extending OUTWARD from the outer edge of each property/purchasable/tax tile.
+ * Uses bold dark-slate (#1E293B) shorthand typography (180K, 660K, 1.2M) on a crisp off-white
+ * inner plate framed by either crisp stone-slate (unowned) or vibrant owner color!
  */
-export function createMonopolyCenterBannerTexture(maxAnisotropy: number): THREE.CanvasTexture {
-  const W = 1024;
-  const H = 384;
+export function createOuterPriceTabTexture(
+  label: string,
+  accentHex: string,
+  ownerHex: string | null,
+  isMortgaged: boolean,
+  flip180: boolean,
+  maxAnisotropy: number
+): THREE.CanvasTexture {
+  const W = 320;
+  const H = 192;
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext('2d')!;
 
-  // Brushed gold outer frame
-  const goldGrad = ctx.createLinearGradient(0, 0, W, H);
-  goldGrad.addColorStop(0, '#FEF08A');
-  goldGrad.addColorStop(0.5, '#F59E0B');
-  goldGrad.addColorStop(1, '#B45309');
-  ctx.fillStyle = goldGrad;
-  roundRect(ctx, 6, 6, W - 12, H - 12, 36);
-  ctx.fill();
-
-  // Crisp white inner mat
-  ctx.fillStyle = '#FFFFFF';
-  roundRect(ctx, 20, 20, W - 40, H - 40, 28);
-  ctx.fill();
-
-  // Rich Monopoly crimson inner banner
-  const redGrad = ctx.createLinearGradient(0, 32, 0, H - 32);
-  redGrad.addColorStop(0, '#EF4444');
-  redGrad.addColorStop(0.5, '#DC2626');
-  redGrad.addColorStop(1, '#991B1B');
-  ctx.fillStyle = redGrad;
-  roundRect(ctx, 32, 32, W - 64, H - 64, 22);
-  ctx.fill();
-
-  // Subtle glossy top highlight across red plaque
-  const gloss = ctx.createLinearGradient(0, 34, 0, 150);
-  gloss.addColorStop(0, 'rgba(255,255,255,0.28)');
-  gloss.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = gloss;
-  roundRect(ctx, 38, 38, W - 76, 110, 18);
-  ctx.fill();
-
-  // Golden corner stars
-  ctx.fillStyle = '#FDE047';
-  for (const [sx, sy] of [
-    [76, 76],
-    [W - 76, 76],
-    [76, H - 76],
-    [W - 76, H - 76],
-  ]) {
-    drawStar(ctx, sx, sy, 18, 8, 5);
-    ctx.fill();
+  ctx.save();
+  if (flip180) {
+    ctx.translate(W / 2, H / 2);
+    ctx.rotate(Math.PI);
+    ctx.translate(-W / 2, -H / 2);
   }
 
-  // Bold 3D-extruded "CỜ TỶ PHÚ" lettering
+  const isNegative = label.startsWith('-');
+
+  // Outer 3D tab frame (owner signature color when owned, crisp #D5DCE6 when unowned)
+  ctx.fillStyle = isMortgaged
+    ? '#64748B'
+    : ownerHex
+      ? ownerHex
+      : isNegative
+        ? '#FB7185'
+        : '#D5DCE6';
+  ctx.fillRect(0, 0, W, H);
+
+  // Inner #F4F5F7 sculpted off-white plate so dark-slate shorthand is readable at a glance!
+  if (isMortgaged) {
+    ctx.fillStyle = '#475569';
+  } else if (isNegative) {
+    ctx.fillStyle = '#FFF1F2';
+  } else {
+    const g = ctx.createLinearGradient(0, 12, 0, H - 12);
+    g.addColorStop(0, '#FFFFFF');
+    g.addColorStop(1, '#F1F5F9');
+    ctx.fillStyle = g;
+  }
+  const pad = ownerHex ? 16 : 10;
+  roundRect(ctx, pad, pad, W - pad * 2, H - pad * 2, 20);
+  ctx.fill();
+
+  // Top color accent strip linking tab to its city group / owner
+  ctx.fillStyle = isMortgaged ? '#94A3B8' : ownerHex || accentHex;
+  roundRect(ctx, 26, 16, W - 52, 16, 8);
+  ctx.fill();
+
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = '900 142px "Baloo 2", "Plus Jakarta Sans", Arial, sans-serif';
-  ctx.fillStyle = '#450A0A';
-  ctx.fillText('CỜ TỶ PHÚ', W / 2 + 6, 168);
-  ctx.strokeStyle = '#7F1D1D';
-  ctx.lineWidth = 14;
-  ctx.strokeText('CỜ TỶ PHÚ', W / 2, 160);
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillText('CỜ TỶ PHÚ', W / 2, 160);
+  if (isMortgaged) {
+    ctx.fillStyle = '#E2E8F0';
+    ctx.font = '900 46px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+    ctx.fillText('THẾ CHẤP', W / 2, H / 2 + 10);
+  } else {
+    ctx.fillStyle = isNegative ? '#BE123C' : '#1E293B';
+    const labelFontPx = label.length >= 5 ? 74 : 86;
+    ctx.font = `900 ${labelFontPx}px "JetBrains Mono", "Be Vietnam Pro", sans-serif`;
+    ctx.fillText(label, W / 2, H / 2 + 12);
+  }
 
-  // Golden "VIỆT NAM" sub-ribbon
-  ctx.fillStyle = '#FEF08A';
-  ctx.font = '800 46px "Plus Jakarta Sans", Arial, sans-serif';
-  ctx.fillText('★  V I Ệ T   N A M   3 D  ★', W / 2, 286);
+  ctx.restore();
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Clean square level badge ("1", "2", "3", "4") shown above upgraded or hovered owned tiles.
+ */
+export function createLevelBadgeTexture(
+  level: number,
+  ownerHex: string,
+  maxAnisotropy: number
+): THREE.CanvasTexture {
+  const S = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = S;
+  canvas.height = S;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.clearRect(0, 0, S, S);
+
+  // Crisp white outer rounded-square border
+  ctx.fillStyle = '#FFFFFF';
+  roundRect(ctx, 8, 8, S - 16, S - 16, 24);
+  ctx.fill();
+
+  // Vibrant owner-colored inner badge square
+  ctx.fillStyle = ownerHex || '#29B6F6';
+  roundRect(ctx, 16, 16, S - 32, S - 32, 18);
+  ctx.fill();
+
+  // Subtle top glossy highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.28)';
+  roundRect(ctx, 20, 20, S - 40, (S - 40) * 0.45, 12);
+  ctx.fill();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
+  ctx.lineWidth = 6;
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = '900 72px "JetBrains Mono", "Be Vietnam Pro", sans-serif';
+  const text = level >= 4 ? '★' : String(Math.max(1, level));
+  ctx.strokeText(text, S / 2, S / 2 + 4);
+  ctx.fillText(text, S / 2, S / 2 + 4);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Business Tour Sunken Courtyard Grass Texture (#8CD756 to #A3E66A)
+ * featuring a subtle checker + mown lawn stripe texture and NO center dice ring.
+ */
+export function createBusinessTourPitchTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const S = 1024;
+  const canvas = document.createElement('canvas');
+  canvas.width = S;
+  canvas.height = S;
+  const ctx = canvas.getContext('2d')!;
+
+  // Base bright lime-green (#7ED348 calibrates under bright GI to #8CD756..#A3E66A!)
+  ctx.fillStyle = '#7ED348';
+  ctx.fillRect(0, 0, S, S);
+
+  // Subtle checker grid squares across the sunken grass courtyard
+  const cell = 128;
+  for (let gy = 0; gy < S; gy += cell) {
+    for (let gx = 0; gx < S; gx += cell) {
+      const isAlt = ((gx / cell + gy / cell) & 1) === 0;
+      ctx.fillStyle = isAlt
+        ? 'rgba(182, 248, 126, 0.22)'
+        : 'rgba(104, 188, 52, 0.12)';
+      ctx.fillRect(gx, gy, cell, cell);
+    }
+  }
+
+  // Diagonal soft lawn-mower sheen bands
+  const stripeW = 128;
+  ctx.save();
+  for (let d = -S; d < S * 2; d += stripeW * 2) {
+    ctx.fillStyle = 'rgba(215, 255, 168, 0.11)';
+    ctx.beginPath();
+    ctx.moveTo(d, 0);
+    ctx.lineTo(d + stripeW, 0);
+    ctx.lineTo(d + stripeW - S, S);
+    ctx.lineTo(d - S, S);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Crisp subtle white inner chalk border inside the sunken courtyard walls
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.72)';
+  ctx.lineWidth = 6;
+  roundRect(ctx, 36, 36, S - 72, S - 72, 22);
+  ctx.stroke();
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -643,7 +728,247 @@ export function createMonopolyCenterBannerTexture(maxAnisotropy: number): THREE.
 }
 
 /**
- * Illustrated Top Texture for 3D Chance (Cơ Hội) & Community Chest (Khí Vận) Card Decks on the court.
+ * Generates crisp alpha-cutout layers for the Center Grass Flat-Shaded Bold White 3D Tax/Pot Text
+ * (e.g., "660 000", "450 000", "0").
+ */
+export function create3DTaxGrassTexture(
+  taxSpacedText: string,
+  layerRole: 'cap' | 'extrude' | 'shadow',
+  maxAnisotropy: number
+): THREE.CanvasTexture {
+  const W = 1024;
+  const H = 384;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+
+  const fillStyle =
+    layerRole === 'cap'
+      ? '#FFFFFF'
+      : layerRole === 'extrude'
+        ? '#B8C4D4'
+        : 'rgba(28, 74, 14, 0.45)';
+
+  ctx.fillStyle = fillStyle;
+  ctx.strokeStyle = fillStyle;
+
+  // Clean compact label above center jackpot number
+  ctx.font = '900 44px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+  ctx.lineWidth = layerRole === 'extrude' ? 4 : 1;
+  ctx.fillText('QUỸ THUẾ', W / 2, 76);
+
+  // Large bold flat-shaded white 3D Tax/Pot value in spaced format (e.g. "660 000" or "0")
+  const fontSize = taxSpacedText.length >= 9 ? 164 : 196;
+  ctx.font = `900 ${fontSize}px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif`;
+  ctx.lineWidth = layerRole === 'extrude' ? 10 : 3;
+  ctx.strokeText(taxSpacedText, W / 2, 236);
+  ctx.fillText(taxSpacedText, W / 2, 236);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Generates the sleek dark-gray 3D digital timer + active turn counter face texture
+ * placed at the top inner corner of the green courtyard.
+ */
+export function createCountdownClockBoardTexture(
+  timeStr: string,
+  turnNumber: number,
+  secondsLeft: number,
+  activeColorHex: string,
+  maxAnisotropy: number
+): THREE.CanvasTexture {
+  const W = 512;
+  const H = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+
+  // Sleek dark-gray digital casing face
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#263238');
+  bg.addColorStop(1, '#111827');
+  ctx.fillStyle = bg;
+  roundRect(ctx, 0, 0, W, H, 24);
+  ctx.fill();
+
+  // Top header row with active turn number pill + active player color indicator
+  ctx.fillStyle = '#1E293B';
+  roundRect(ctx, 18, 16, W - 36, 58, 14);
+  ctx.fill();
+
+  ctx.fillStyle = activeColorHex || '#29B6F6';
+  roundRect(ctx, 24, 22, 196, 46, 10);
+  ctx.fill();
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = '900 28px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`LƯỢT ${Math.max(1, turnNumber)}`, 122, 46);
+
+  ctx.fillStyle = '#94A3B8';
+  ctx.font = '800 24px "JetBrains Mono", "Be Vietnam Pro", sans-serif';
+  ctx.fillText('TIMER', 362, 46);
+
+  // Inner digital MM:SS LCD recess
+  ctx.fillStyle = '#0B1320';
+  roundRect(ctx, 20, 86, W - 40, H - 104, 16);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  const digitColor =
+    secondsLeft <= 5 ? '#FF5252' : secondsLeft <= 10 ? '#FFD740' : '#A3E66A';
+  ctx.fillStyle = digitColor;
+  ctx.font = '900 116px "JetBrains Mono", "Be Vietnam Pro", monospace';
+  ctx.fillText(timeStr, W / 2, 168);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Crisp emerald-green Business Tour banknote face texture for 3D Cash Stacks on left/top outer sides.
+ */
+export function createCashBillTopTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const W = 256;
+  const H = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#DCFCE7';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#22C55E';
+  roundRect(ctx, 8, 8, W - 16, H - 16, 10);
+  ctx.fill();
+
+  ctx.fillStyle = '#BBF7D0';
+  roundRect(ctx, 18, 18, W - 36, H - 36, 6);
+  ctx.fill();
+
+  ctx.strokeStyle = '#15803D';
+  ctx.lineWidth = 3;
+  roundRect(ctx, 24, 24, W - 48, H - 48, 4);
+  ctx.stroke();
+
+  ctx.fillStyle = '#16A34A';
+  ctx.beginPath();
+  ctx.ellipse(W / 2, H / 2, 34, 24, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = '900 30px "JetBrains Mono", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('★', W / 2, H / 2 + 2);
+
+  ctx.fillStyle = '#14532D';
+  ctx.font = '800 18px "JetBrains Mono", sans-serif';
+  ctx.fillText('500K', 48, 40);
+  ctx.fillText('500K', W - 48, 40);
+  ctx.fillText('500K', 48, H - 38);
+  ctx.fillText('500K', W - 48, H - 38);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+
+/**
+ * Layered paper banknote stack edge texture for 3D Cash Stacks.
+ */
+export function createCashBillSideTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const W = 128;
+  const H = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+
+  for (let y = 0; y < H; y += 4) {
+    ctx.fillStyle = y % 8 === 0 ? '#DCFCE7' : '#4ADE80';
+    ctx.fillRect(0, y, W, 2);
+    ctx.fillStyle = '#16A34A';
+    ctx.fillRect(0, y + 2, W, 2);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+
+/**
+ * Embossed Gold / Silver / Bronze Coin face texture for 3D Coin Stacks on the bottom-right outer side.
+ */
+export function createMetallicCoinTopTexture(
+  tier: 'gold' | 'silver' | 'bronze',
+  maxAnisotropy: number
+): THREE.CanvasTexture {
+  const S = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = S;
+  canvas.height = S;
+  const ctx = canvas.getContext('2d')!;
+
+  const stops =
+    tier === 'gold'
+      ? ['#FEF08A', '#FACC15', '#CA8A04', '#FEF9C3', '#92400E']
+      : tier === 'silver'
+        ? ['#FFFFFF', '#CBD5E1', '#64748B', '#F8FAFC', '#334155']
+        : ['#FED7AA', '#EA580C', '#9A3412', '#FFEDD5', '#7C2D12'];
+
+  const g = ctx.createRadialGradient(S * 0.38, S * 0.35, 6, S / 2, S / 2, S / 2);
+  g.addColorStop(0, stops[0]);
+  g.addColorStop(0.65, stops[1]);
+  g.addColorStop(1, stops[2]);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+
+  ctx.strokeStyle = stops[3];
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.arc(S / 2, S / 2, 48, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = stops[4];
+  ctx.font = '900 50px "JetBrains Mono", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('★', S / 2, S / 2 + 2);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+
+export function createGoldCoinTopTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  return createMetallicCoinTopTexture('gold', maxAnisotropy);
+}
+
+/**
+ * Business Tour Top Texture for 3D Question-Mark Chance Card Stack resting outside the top-left board edge.
  */
 export function createCardDeckTopTexture(
   deckType: 'CHANCE' | 'CHEST',
@@ -659,36 +984,33 @@ export function createCardDeckTopTexture(
   const isChance = deckType === 'CHANCE';
   const grad = ctx.createLinearGradient(0, 0, W, H);
   if (isChance) {
-    grad.addColorStop(0, '#FDBA74');
-    grad.addColorStop(1, '#EA580C');
+    grad.addColorStop(0, '#FF6B9D');
+    grad.addColorStop(0.5, '#FF8E53');
+    grad.addColorStop(1, '#FFB300');
   } else {
-    grad.addColorStop(0, '#7DD3FC');
-    grad.addColorStop(1, '#0284C7');
+    grad.addColorStop(0, '#29B6F6');
+    grad.addColorStop(1, '#0288D1');
   }
   ctx.fillStyle = grad;
   roundRect(ctx, 0, 0, W, H, 28);
   ctx.fill();
 
   ctx.strokeStyle = '#FFFFFF';
-  ctx.lineWidth = 14;
+  ctx.lineWidth = 12;
   roundRect(ctx, 18, 18, W - 36, H - 36, 20);
   ctx.stroke();
 
-  ctx.setLineDash([18, 12]);
-  ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-  ctx.lineWidth = 5;
-  roundRect(ctx, 36, 36, W - 72, H - 72, 14);
-  ctx.stroke();
-  ctx.setLineDash([]);
+  // Central white badge circle with bold '?'
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+  ctx.beginPath();
+  ctx.arc(W / 2, H / 2, 92, 0, Math.PI * 2);
+  ctx.fill();
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '900 108px "Baloo 2", "Plus Jakarta Sans", Arial, sans-serif';
-  ctx.fillText(isChance ? '?' : '★', W / 2, 124);
-
-  ctx.font = '800 48px "Plus Jakarta Sans", Arial, sans-serif';
-  ctx.fillText(isChance ? 'CƠ HỘI' : 'KHÍ VẬN', W / 2, 232);
+  ctx.font = '900 148px "Be Vietnam Pro", "Plus Jakarta Sans", sans-serif';
+  ctx.fillText('?', W / 2, H / 2 + 6);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -696,118 +1018,14 @@ export function createCardDeckTopTexture(
   return tex;
 }
 
-/**
- * Procedural City Boulevard Ring-Road Texture surrounding the 3D Monopoly board
- * (two-lane urban asphalt, sidewalks, dashed lane dividers & 4 zebra crosswalks,
- * inspired directly by MONOPOLY GO!'s city block environment).
- */
 export function createBoulevardRoadTexture(maxAnisotropy: number): THREE.CanvasTexture {
-  const S = 1024;
+  const S = 256;
   const canvas = document.createElement('canvas');
   canvas.width = S;
   canvas.height = S;
   const ctx = canvas.getContext('2d')!;
-
-  // Base urban park grass for outer city blocks
-  ctx.fillStyle = '#5BBD72';
+  ctx.fillStyle = '#F4F5F7';
   ctx.fillRect(0, 0, S, S);
-
-  // Subtle park grid texture
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
-  ctx.lineWidth = 2;
-  for (let p = 0; p < S; p += 64) {
-    ctx.beginPath();
-    ctx.moveTo(p, 0);
-    ctx.lineTo(p, S);
-    ctx.moveTo(0, p);
-    ctx.lineTo(S, p);
-    ctx.stroke();
-  }
-
-  // World scale mapping: plane covers [-34, +34] (68m across => ~15.06 px per meter).
-  // Board plinth occupies [-9.1, +9.1] => [375..649] px.
-  // Ring road boulevard occupies [-13.4, +13.4] outside plinth, plus 4 radiating avenues!
-  const pxPerMeter = S / 68;
-  const toPx = (m: number) => S / 2 + m * pxPerMeter;
-
-  const roadHalfOuter = 13.5;
-  const roadHalfInner = 9.2;
-
-  // Sidewalk curb apron
-  ctx.fillStyle = '#CBD5E1';
-  const swOuter = roadHalfOuter + 0.85;
-  const swInner = roadHalfInner - 0.55;
-  ctx.fillRect(
-    toPx(-swOuter),
-    toPx(-swOuter),
-    (swOuter * 2) * pxPerMeter,
-    (swOuter * 2) * pxPerMeter
-  );
-  // Radiating avenue sidewalks
-  ctx.fillRect(toPx(-swOuter), 0, (swOuter - swInner) * pxPerMeter, S);
-  ctx.fillRect(toPx(swInner), 0, (swOuter - swInner) * pxPerMeter, S);
-  ctx.fillRect(0, toPx(-swOuter), S, (swOuter - swInner) * pxPerMeter);
-  ctx.fillRect(0, toPx(swInner), S, (swOuter - swInner) * pxPerMeter);
-
-  // Dark slate asphalt roads (ring boulevard + 4 radiating city streets)
-  ctx.fillStyle = '#334155';
-  const rOuterPx = toPx(-roadHalfOuter);
-  const rSpanPx = roadHalfOuter * 2 * pxPerMeter;
-  ctx.fillRect(rOuterPx, rOuterPx, rSpanPx, rSpanPx);
-
-  const laneW = (roadHalfOuter - roadHalfInner) * pxPerMeter;
-  // North/South/East/West avenues extending to horizon
-  ctx.fillRect(toPx(-roadHalfOuter), 0, laneW, S);
-  ctx.fillRect(toPx(roadHalfInner), 0, laneW, S);
-  ctx.fillRect(0, toPx(-roadHalfOuter), S, laneW);
-  ctx.fillRect(0, toPx(roadHalfInner), S, laneW);
-
-  // Cut out inner island under board plinth
-  ctx.fillStyle = '#E2E8F0';
-  ctx.fillRect(
-    toPx(-roadHalfInner),
-    toPx(-roadHalfInner),
-    roadHalfInner * 2 * pxPerMeter,
-    roadHalfInner * 2 * pxPerMeter
-  );
-
-  // Dashed golden-yellow center lane dividers along ring boulevard
-  const midM = (roadHalfOuter + roadHalfInner) / 2;
-  ctx.strokeStyle = '#FACC15';
-  ctx.lineWidth = 4;
-  ctx.setLineDash([16, 14]);
-  ctx.strokeRect(
-    toPx(-midM),
-    toPx(-midM),
-    midM * 2 * pxPerMeter,
-    midM * 2 * pxPerMeter
-  );
-  ctx.setLineDash([]);
-
-  // Crisp white zebra crosswalks at the 4 boulevard corners
-  ctx.fillStyle = '#F8FAFC';
-  const drawCrosswalkH = (cxM: number, cyM: number) => {
-    const startX = toPx(cxM - 1.5);
-    const yTop = toPx(cyM - 0.55);
-    for (let i = 0; i < 5; i++) {
-      ctx.fillRect(startX + i * 9, yTop, 5, 1.1 * pxPerMeter);
-    }
-  };
-  const drawCrosswalkV = (cxM: number, cyM: number) => {
-    const xLeft = toPx(cxM - 0.55);
-    const startY = toPx(cyM - 1.5);
-    for (let i = 0; i < 5; i++) {
-      ctx.fillRect(xLeft, startY + i * 9, 1.1 * pxPerMeter, 5);
-    }
-  };
-
-  for (const sx of [-1, 1]) {
-    for (const sy of [-1, 1]) {
-      drawCrosswalkH(sx * midM, sy * (roadHalfInner - 0.2));
-      drawCrosswalkV(sx * (roadHalfInner - 0.2), sy * midM);
-    }
-  }
-
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = maxAnisotropy;
@@ -815,8 +1033,8 @@ export function createBoulevardRoadTexture(maxAnisotropy: number): THREE.CanvasT
 }
 
 /**
- * Creates 6 high-contrast glossy 3D dice face materials matching DICE_BOX_FACE_VALUES:
- * [2, 5, 1, 6, 3, 4]
+ * Creates 6 high-saturation Glossy Hot-Pink (#FF2975 -> #E91E63) 3D dice face materials
+ * with crisp white pips matching DICE_BOX_FACE_VALUES: [2, 5, 1, 6, 3, 4].
  */
 export function createDiceFaceMaterials(
   faceValues: [number, number, number, number, number, number],
@@ -863,52 +1081,46 @@ export function createDiceFaceMaterials(
     canvas.height = size;
     const ctx = canvas.getContext('2d')!;
 
-    // Soft pearl-gold chamfer edge + glossy warm ivory face
-    ctx.fillStyle = '#E2E8F0';
+    // Rich magenta-pink bevel edge
+    ctx.fillStyle = '#AD1457';
     ctx.fillRect(0, 0, size, size);
 
-    const faceGrad = ctx.createRadialGradient(size * 0.38, size * 0.35, 12, size / 2, size / 2, 165);
-    faceGrad.addColorStop(0, '#FFFFFF');
-    faceGrad.addColorStop(1, '#F8F4E6');
+    // High-saturation vibrant hot-pink face gradient
+    const faceGrad = ctx.createRadialGradient(
+      size * 0.36,
+      size * 0.32,
+      14,
+      size / 2,
+      size / 2,
+      172
+    );
+    faceGrad.addColorStop(0, '#FF4785');
+    faceGrad.addColorStop(0.65, '#E91E63');
+    faceGrad.addColorStop(1, '#C2185B');
     ctx.fillStyle = faceGrad;
     roundRect(ctx, 10, 10, size - 20, size - 20, 38);
     ctx.fill();
 
-    ctx.strokeStyle = '#CBD5E1';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
     ctx.lineWidth = 4;
     ctx.stroke();
 
-    const isRed = val === 1 || val === 4;
-    const radius = val === 1 ? 40 : 27;
-
-    if (val === 1) {
-      // Signature Monopoly GO! golden halo ring around the Ace pip
-      ctx.strokeStyle = '#F59E0B';
-      ctx.lineWidth = 7;
-      ctx.beginPath();
-      ctx.arc(size / 2, size / 2, 54, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+    const radius = val === 1 ? 38 : 26;
 
     for (const [px, py] of pipCoords[val]) {
       const cx = px * size;
       const cy = py * size;
 
-      // Subtle recessed pip rim
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.16)';
+      // Subtle inset crimson rim around each white pip
+      ctx.fillStyle = 'rgba(136, 14, 79, 0.55)';
       ctx.beginPath();
-      ctx.arc(cx, cy - 2, radius + 2, 0, Math.PI * 2);
+      ctx.arc(cx, cy + 2, radius + 3, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = isRed ? '#EF4444' : '#0F172A';
+      // Pure crisp white pip
+      ctx.fillStyle = '#FFFFFF';
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Tiny specular dot on pip
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-      ctx.beginPath();
-      ctx.arc(cx - radius * 0.28, cy - radius * 0.28, radius * 0.22, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -919,19 +1131,30 @@ export function createDiceFaceMaterials(
     return new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
       map: tex,
-      roughness: 0.28,
-      metalness: 0.02,
-      clearcoat: 0.72,
+      roughness: 0.24,
+      metalness: 0.06,
+      clearcoat: 0.85,
       clearcoatRoughness: 0.14,
     });
   });
 }
 
-/**
- * Generates a subtle procedural wood/stone grain bump map (linear space).
- */
 export function createWoodGrainBumpMap(): THREE.CanvasTexture {
-  const size = 256;
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+export function createStonePaperBumpMap(): THREE.CanvasTexture {
+  const size = 128;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
@@ -940,15 +1163,18 @@ export function createWoodGrainBumpMap(): THREE.CanvasTexture {
   ctx.fillStyle = '#808080';
   ctx.fillRect(0, 0, size, size);
 
-  for (let y = 0; y < size; y += 2) {
-    const shade = 118 + Math.floor(Math.sin(y * 0.25) * 14 + (Math.random() - 0.5) * 16);
-    ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
-    ctx.fillRect(0, y, size, 2);
+  for (let y = 0; y < size; y += 4) {
+    for (let x = 0; x < size; x += 4) {
+      const hash = ((x * 37 + y * 91) % 13) - 6;
+      const v = 128 + hash;
+      ctx.fillStyle = `rgb(${v},${v},${v})`;
+      ctx.fillRect(x, y, 4, 4);
+    }
   }
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(4, 4);
+  tex.repeat.set(3, 3);
   return tex;
 }

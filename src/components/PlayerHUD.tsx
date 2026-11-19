@@ -1,85 +1,124 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { deriveAvatarMood, getPlayerPersona } from '../game/avatarLogic';
 import { BOARD_TILES } from '../game/boardData';
+import { formatBusinessTourSpaced } from '../game/rules';
 import {
   BotChatBubbleState,
   BotQuipEventKind,
-  GameLogEntry,
   PlayerState,
   PropertyState,
 } from '../game/types';
+import { PlayerAvatar3D } from './PlayerAvatar3D';
 
 interface PlayerHUDProps {
   players: PlayerState[];
   activePlayerIndex: number;
   properties: Record<number, PropertyState>;
-  logs: GameLogEntry[];
   botBubbles: Record<number, BotChatBubbleState>;
   onDismissBubble: (botId: number) => void;
   onSelectTile: (tileIndex: number) => void;
 }
 
-const PlayerTokenAvatar: React.FC<{
-  tokenType: PlayerState['tokenType'];
-  color: string;
-}> = ({ tokenType, color }) => (
-  <span
-    aria-hidden="true"
-    className="h-8 w-8 rounded-lg shrink-0 border-2 border-amber-300/90 flex items-center justify-center text-white shadow-sm"
-    style={{
-      background: `linear-gradient(180deg, ${color} 0%, rgba(15, 23, 42, 0.42) 160%)`,
-    }}
-  >
-    {tokenType === 'yacht' ? (
-      <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2">
-        <path d="M12 4v9l5-3-5-6z" />
-        <path d="M3 16l2.5 3h13L21 16H3z" />
-      </svg>
-    ) : tokenType === 'jet' ? (
-      <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2">
-        <path d="M21 15l-8-4V4.5a1.5 1.5 0 0 0-3 0V11l-8 4v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-4.5l8 2.5v-2z" />
-      </svg>
-    ) : tokenType === 'crown' ? (
-      <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2">
-        <path d="M3 18h18v2H3v-2zm0-11l4.5 4L12 5l4.5 6L21 7l-2 9H5L3 7z" />
-      </svg>
-    ) : (
-      <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2">
-        <path d="M5 11l1.5-4.5h11L19 11M3 11h18v6H3v-6z" />
-        <circle cx="7" cy="17" r="1.5" />
-        <circle cx="17" cy="17" r="1.5" />
-      </svg>
-    )}
-  </span>
-);
-
 function getBubbleBadgeMeta(kind: BotQuipEventKind): {
   label: string;
-  accentClass: string;
+  textClass: string;
 } {
   if (kind === 'BUY_PRIME_LAND') {
     return {
-      label: 'Chốt đất đẹp',
-      accentClass: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+      label: 'Thâu tóm đất đẹp',
+      textClass: 'text-[#15803d]',
     };
   }
   if (kind === 'COLLECT_BIG_RENT') {
     return {
-      label: 'Thu tiền thuê lớn',
-      accentClass: 'text-amber-800 bg-amber-50 border-amber-200',
+      label: 'Thu phí thuê lớn',
+      textClass: 'text-[#b45309]',
     };
   }
   return {
-    label: 'Bị phạt tiền',
-    accentClass: 'text-rose-700 bg-rose-50 border-rose-200',
+    label: 'Nộp phạt / Trả phí',
+    textClass: 'text-[#e11d48]',
+  };
+}
+
+interface BannerColorPalette {
+  topHex: string;
+  bottomHex: string;
+  lipHex: string;
+}
+
+function getPlayerBannerPalette(colorHex: string): BannerColorPalette {
+  const upper = colorHex.toUpperCase();
+  // Player 1: Vibrant Yellow/Gold (#F5B800)
+  if (upper === '#F5B800' || upper.startsWith('#F5') || upper.startsWith('#D9')) {
+    return {
+      topHex: '#FFD426',
+      bottomHex: '#E59F00',
+      lipHex: '#B47100',
+    };
+  }
+  // Player 2: Lime Green (#66C61C)
+  if (upper === '#66C61C' || upper.startsWith('#66') || upper.startsWith('#10')) {
+    return {
+      topHex: '#84E635',
+      bottomHex: '#52B110',
+      lipHex: '#377D07',
+    };
+  }
+  // Player 3: Hot Pink/Magenta (#E91E63)
+  if (upper === '#E91E63' || upper.startsWith('#E9') || upper.startsWith('#F4')) {
+    return {
+      topHex: '#FF4F8B',
+      bottomHex: '#D81557',
+      lipHex: '#980B3B',
+    };
+  }
+  // Player 4: Sky Blue (#29B6F6)
+  return {
+    topHex: '#56CCF8',
+    bottomHex: '#0E94D8',
+    lipHex: '#06669B',
   };
 }
 
 /**
- * Smoothly animates cash changes with rolling integer count and brief +/- delta indicator.
+ * Green Business Tour Money / Leaf Icon inside the white rounded cash pill.
  */
-const AnimatedCash: React.FC<{ value: number }> = ({ value }) => {
+const GreenMoneyLeafIcon: React.FC = () => (
+  <svg
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+    className="h-4 w-4 sm:h-4.5 sm:w-4.5 shrink-0"
+  >
+    <rect
+      x="2"
+      y="5"
+      width="20"
+      height="14"
+      rx="3.5"
+      fill="#22C55E"
+      stroke="#15803D"
+      strokeWidth="1.6"
+    />
+    <circle cx="12" cy="12" r="3.4" fill="#DCFCE7" />
+    <path
+      d="M12 9.4c1.5 0 2.4 1.1 2.4 2.6 0 1.4-1.1 2.6-2.4 2.6-1.3 0-2.4-1.2-2.4-2.6 0-1.5.9-2.6 2.4-2.6z"
+      fill="#16A34A"
+    />
+    <circle cx="5.2" cy="8.5" r="1" fill="#BBF7D0" />
+    <circle cx="18.8" cy="15.5" r="1" fill="#BBF7D0" />
+  </svg>
+);
+
+/**
+ * Smoothly animates cash changes in Business Tour spaced format (`1 435 000` / `4 500 000`).
+ */
+const AnimatedCashPill: React.FC<{
+  value: number;
+  delta: number | null;
+  bankrupt: boolean;
+}> = ({ value, delta, bankrupt }) => {
   const [displayed, setDisplayed] = useState(value);
-  const [delta, setDelta] = useState<number | null>(null);
   const prevRef = useRef(value);
 
   useEffect(() => {
@@ -88,9 +127,7 @@ const AnimatedCash: React.FC<{ value: number }> = ({ value }) => {
     if (diff === 0) return;
 
     prevRef.current = value;
-    setDelta(diff);
-
-    const duration = 380;
+    const duration = 360;
     const t0 = performance.now();
     let raf = 0;
 
@@ -104,34 +141,279 @@ const AnimatedCash: React.FC<{ value: number }> = ({ value }) => {
     };
     raf = requestAnimationFrame(step);
 
-    const hideTimer = window.setTimeout(() => {
-      setDelta(null);
-    }, 1400);
-
-    return () => {
-      cancelAnimationFrame(raf);
-      clearTimeout(hideTimer);
-    };
+    return () => cancelAnimationFrame(raf);
   }, [value]);
 
   return (
-    <div className="flex items-baseline gap-1.5">
-      <span
-        className={`font-display text-xl sm:text-2xl font-extrabold tabular-nums tracking-tight leading-none ${
-          value < 0 ? 'text-rose-400' : 'text-amber-300'
-        }`}
-      >
-        {displayed < 0 ? `-$${Math.abs(displayed).toLocaleString('en-US')}` : `$${displayed.toLocaleString('en-US')}`}
-      </span>
-      {delta !== null && (
+    <div className="relative w-full rounded-full bg-white border border-black/10 shadow-[inset_0_2px_3px_rgba(15,23,42,0.12)] px-2.5 py-1 flex items-center justify-between gap-1.5">
+      <div className="flex items-center gap-1.5 min-w-0">
+        <GreenMoneyLeafIcon />
         <span
-          className={`text-xs font-bold tabular-nums ${
-            delta > 0 ? 'text-emerald-400' : 'text-rose-400'
+          className={`font-mono-num text-xs sm:text-[15px] font-extrabold tracking-tight leading-none truncate ${
+            bankrupt || value < 0 ? 'text-rose-600' : 'text-slate-800'
           }`}
         >
-          {delta > 0 ? `+$${delta}` : `-$${Math.abs(delta)}`}
+          {bankrupt ? '0' : formatBusinessTourSpaced(displayed)}
+        </span>
+      </div>
+
+      {delta !== null && !bankrupt && (
+        <span
+          className={`font-mono-num text-[10px] font-extrabold shrink-0 ${
+            delta > 0 ? 'text-[#16A34A]' : 'text-rose-600'
+          }`}
+        >
+          {delta > 0
+            ? `+${formatBusinessTourSpaced(delta)}`
+            : formatBusinessTourSpaced(delta)}
         </span>
       )}
+    </div>
+  );
+};
+
+interface CornerPositionSpec {
+  containerClass: string;
+  isRight: boolean;
+  isBottom: boolean;
+}
+
+const CORNER_SPECS: CornerPositionSpec[] = [
+  // Slot 0: Top-Left (Player 1 - Yellow/Gold)
+  {
+    containerClass: 'top-2.5 left-2.5 sm:top-3.5 sm:left-3.5',
+    isRight: false,
+    isBottom: false,
+  },
+  // Slot 1: Top-Right (Player 2 - Lime Green)
+  {
+    containerClass: 'top-2.5 right-2.5 sm:top-3.5 sm:right-3.5',
+    isRight: true,
+    isBottom: false,
+  },
+  // Slot 2: Bottom-Right (Player 3 - Hot Pink)
+  {
+    containerClass: 'bottom-2.5 right-2.5 sm:bottom-3.5 sm:right-3.5',
+    isRight: true,
+    isBottom: true,
+  },
+  // Slot 3: Bottom-Left (Player 4 - Sky Blue)
+  {
+    containerClass: 'bottom-2.5 left-2.5 sm:bottom-3.5 sm:left-3.5',
+    isRight: false,
+    isBottom: true,
+  },
+];
+
+interface PlayerCornerCardProps {
+  player: PlayerState;
+  slotIndex: number;
+  corner: CornerPositionSpec;
+  isActive: boolean;
+  ownedProps: PropertyState[];
+  bubble?: BotChatBubbleState;
+  onDismissBubble: (botId: number) => void;
+  onSelectTile: (tileIndex: number) => void;
+}
+
+const PlayerCornerCard: React.FC<PlayerCornerCardProps> = ({
+  player,
+  slotIndex,
+  corner,
+  isActive,
+  ownedProps,
+  bubble,
+  onDismissBubble,
+  onSelectTile,
+}) => {
+  const [recentDelta, setRecentDelta] = useState<number | null>(null);
+  const prevCashRef = useRef(player.cash);
+
+  useEffect(() => {
+    const diff = player.cash - prevCashRef.current;
+    if (diff === 0) return;
+    prevCashRef.current = player.cash;
+    setRecentDelta(diff);
+    const timer = window.setTimeout(() => setRecentDelta(null), 1900);
+    return () => window.clearTimeout(timer);
+  }, [player.cash]);
+
+  const persona = getPlayerPersona(player);
+  const mood = deriveAvatarMood({
+    bankrupt: player.bankrupt,
+    inJail: player.inJail,
+    cash: player.cash,
+    isActive,
+    recentCashDelta: recentDelta,
+    bubble,
+  });
+  const badgeMeta = bubble ? getBubbleBadgeMeta(bubble.eventKind) : null;
+  const palette = getPlayerBannerPalette(player.color);
+
+  return (
+    <div
+      className={`fixed ${corner.containerClass} w-[46.5vw] max-w-[266px] sm:w-[266px]`}
+    >
+      <div
+        data-testid={`player-card-${player.id}`}
+        className={`pointer-events-auto relative flex ${
+          corner.isBottom ? 'flex-col-reverse' : 'flex-col'
+        } gap-1.5 transition-transform duration-150 ${
+          isActive && !player.bankrupt ? 'scale-[1.03]' : ''
+        }`}
+      >
+        {/* Bold Glossy Color-Coded Business Tour Banner */}
+        <div
+          className={`relative rounded-2xl p-1.5 sm:p-2 flex items-center gap-2 border-[2.5px] border-white ${
+            corner.isRight ? 'flex-row-reverse' : 'flex-row'
+          } ${player.bankrupt ? 'saturate-75' : ''}`}
+          style={{
+            background: `linear-gradient(180deg, ${palette.topHex} 0%, ${palette.bottomHex} 100%)`,
+            boxShadow: isActive
+              ? `0 4px 0 ${palette.lipHex}, 0 0 0 3px rgba(255,255,255,0.85), 0 14px 28px -6px rgba(15,23,42,0.38), inset 0 2px 1px rgba(255,255,255,0.55)`
+              : `0 4px 0 ${palette.lipHex}, 0 10px 22px -6px rgba(15,23,42,0.28), inset 0 2px 1px rgba(255,255,255,0.5)`,
+          }}
+        >
+          {/* Large Square Character Portrait on Outer Corner Edge + Tilted BANKRUPT Rubber Stamp */}
+          <div className="relative shrink-0">
+            <PlayerAvatar3D
+              archetype={player.tokenType}
+              mood={mood}
+              phaseSeed={slotIndex}
+              facingSign={corner.isRight ? -1 : 1}
+              isBot={player.isBot}
+              isActive={isActive}
+              showBotStamp={!player.bankrupt}
+              size="md"
+              className="!rounded-xl !border-[2.5px] !border-white shadow-md"
+              ariaLabel={`Chân dung 3D ${player.name} (${persona.personaName})`}
+            />
+
+            {player.bankrupt && (
+              <div
+                data-testid={`bankrupt-stamp-${player.id}`}
+                className="pointer-events-none absolute inset-0 flex items-center justify-center z-10"
+              >
+                <span className="-rotate-12 px-1.5 py-[2px] rounded-[4px] bg-[#E11D48]/95 border-2 border-[#FFE4E6] text-[9px] sm:text-[10px] font-display font-black uppercase tracking-wider text-white shadow-lg whitespace-nowrap">
+                  BANKRUPT
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Colored Header Strip (Uppercase White Name) + Inner White Cash Pill */}
+          <div className="flex-1 min-w-0 flex flex-col justify-center gap-1">
+            <div
+              className={`w-full flex items-center justify-between gap-1 px-0.5 ${
+                corner.isRight ? 'flex-row-reverse' : 'flex-row'
+              }`}
+            >
+              <span
+                className="font-display text-xs sm:text-[13px] font-black uppercase tracking-wide text-white truncate leading-tight"
+                style={{
+                  textShadow: '0 1.5px 2px rgba(15, 23, 42, 0.55)',
+                }}
+              >
+                {player.name}
+              </span>
+
+              {!player.bankrupt && player.inJail ? (
+                <span className="px-1.5 py-[1px] rounded-full bg-black/25 text-[9px] font-extrabold uppercase text-white shrink-0 tabular-nums">
+                  Đảo {player.jailTurns}/3
+                </span>
+              ) : !player.bankrupt && bubble?.status === 'loading' ? (
+                <span
+                  data-testid={`bot-chat-thinking-${player.id}`}
+                  className="px-1.5 py-[1px] rounded-full bg-white/30 text-[9px] font-extrabold text-white shrink-0"
+                >
+                  ...
+                </span>
+              ) : !player.bankrupt && isActive ? (
+                <span className="h-2.5 w-2.5 rounded-full bg-white shadow-[0_0_8px_#ffffff] shrink-0" />
+              ) : null}
+            </div>
+
+            <AnimatedCashPill
+              value={player.cash}
+              delta={recentDelta}
+              bankrupt={player.bankrupt}
+            />
+          </div>
+        </div>
+
+        {/* Owned Cities Color-Coded Mini Tabs */}
+        {ownedProps.length > 0 && !player.bankrupt && (
+          <div
+            className={`flex items-center flex-wrap gap-1 px-1 ${
+              corner.isRight ? 'justify-end' : 'justify-start'
+            }`}
+          >
+            {ownedProps.map((pr) => {
+              const tile = BOARD_TILES[pr.tileIndex];
+              const headerColor = tile.groupColor || player.color;
+              return (
+                <button
+                  key={pr.tileIndex}
+                  type="button"
+                  onClick={() => onSelectTile(pr.tileIndex)}
+                  title={`${tile.name}${pr.level > 0 ? ` (Cấp ${pr.level})` : ''}`}
+                  aria-label={`Xem ô ${tile.name}`}
+                  className="h-5 w-4.5 rounded-[4px] bg-white border border-white shadow-sm overflow-hidden flex flex-col items-center justify-between cursor-pointer hover:-translate-y-0.5 transition-transform"
+                >
+                  <span
+                    className="w-full h-1.5 shrink-0"
+                    style={{ backgroundColor: headerColor }}
+                  />
+                  <span className="font-mono-num text-[8px] leading-none font-extrabold text-slate-800 pb-[1px]">
+                    {pr.level === 4 ? '★' : pr.level > 0 ? pr.level : ''}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Directional Bot AI Comic Speech Card */}
+      {bubble &&
+        badgeMeta &&
+        !player.bankrupt &&
+        (bubble.status === 'ready' || bubble.status === 'error') && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid={`bot-chat-bubble-${player.id}`}
+            className={`pointer-events-auto absolute z-30 w-60 sm:w-68 animate-pop-in ${
+              corner.isRight ? 'right-0' : 'left-0'
+            } ${corner.isBottom ? 'bottom-full mb-2' : 'top-full mt-2'}`}
+          >
+            <div className="relative rounded-2xl bt-casual-modal px-3.5 py-2.5 text-slate-900">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className={`text-[11px] font-extrabold uppercase ${badgeMeta.textClass}`}>
+                  {badgeMeta.label}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onDismissBubble(player.id)}
+                  aria-label={`Đóng bình luận của ${player.name}`}
+                  className="h-5 w-5 rounded-full bg-sky-100 text-sky-700 hover:bg-sky-200 flex items-center justify-center text-xs font-bold cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {bubble.status === 'error' ? (
+                <p className="text-[11px] font-semibold text-rose-600 leading-snug">
+                  {bubble.text}
+                </p>
+              ) : (
+                <p className="text-xs font-semibold text-slate-800 leading-snug">
+                  “{bubble.text}”
+                </p>
+              )}
+            </div>
+          </div>
+        )}
     </div>
   );
 };
@@ -140,226 +422,34 @@ export const PlayerHUD: React.FC<PlayerHUDProps> = ({
   players,
   activePlayerIndex,
   properties,
-  logs,
   botBubbles,
   onDismissBubble,
   onSelectTile,
 }) => {
-  const [logExpanded, setLogExpanded] = useState(true);
-
   return (
-    <div className="fixed inset-x-0 top-0 z-20 p-3 sm:p-4 pointer-events-none">
-      <div className="mx-auto max-w-[1400px] flex flex-col gap-2.5">
-        {/* Top Strip: 2 to 4 Player Cards */}
-        <div
-          className={`grid gap-2.5 ${
-            players.length <= 2
-              ? 'grid-cols-2 max-w-2xl'
-              : players.length === 3
-                ? 'grid-cols-3 max-w-4xl'
-                : 'grid-cols-2 lg:grid-cols-4'
-          }`}
-        >
-          {players.map((player, idx) => {
-            const isActive = idx === activePlayerIndex && !player.bankrupt;
-            const ownedProps = Object.values(properties)
-              .filter((pr) => pr.ownerId === player.id)
-              .sort((a, b) => a.tileIndex - b.tileIndex);
-            const bubble = player.isBot ? botBubbles[player.id] : undefined;
-            const badgeMeta = bubble ? getBubbleBadgeMeta(bubble.eventKind) : null;
+    <div className="fixed inset-0 z-20 pointer-events-none">
+      {players.slice(0, 4).map((player, idx) => {
+        const corner = CORNER_SPECS[idx] || CORNER_SPECS[0];
+        const isActive = idx === activePlayerIndex && !player.bankrupt;
+        const ownedProps = Object.values(properties)
+          .filter((pr) => pr.ownerId === player.id)
+          .sort((a, b) => a.tileIndex - b.tileIndex);
+        const bubble = player.isBot ? botBubbles[player.id] : undefined;
 
-            return (
-              <div key={player.id} className="relative">
-                <div
-                  data-testid={`player-card-${player.id}`}
-                  className={`pointer-events-auto rounded-2xl px-3.5 py-2.5 transition-all hud-panel ${
-                    player.bankrupt
-                      ? 'opacity-45 grayscale'
-                      : isActive
-                        ? 'ring-2 ring-amber-400 shadow-lg shadow-amber-500/20 translate-y-0.5'
-                        : ''
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <PlayerTokenAvatar
-                        tokenType={player.tokenType}
-                        color={player.color}
-                      />
-                      <div className="min-w-0 flex items-baseline gap-1.5">
-                        <span className="font-display text-base font-extrabold text-white truncate">
-                          {player.name}
-                        </span>
-                        <span className="text-[11px] font-medium text-sky-200/75 shrink-0">
-                          · {player.isBot ? 'Bot AI' : 'Người'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {player.bankrupt ? (
-                      <span className="text-[11px] font-semibold text-rose-400 shrink-0">
-                        Phá sản
-                      </span>
-                    ) : bubble?.status === 'loading' ? (
-                      <span
-                        data-testid={`bot-chat-thinking-${player.id}`}
-                        className="px-1.5 py-0.5 rounded-sm bg-white/10 text-[10px] font-semibold text-sky-200 shrink-0"
-                      >
-                        💬 Đang nghĩ...
-                      </span>
-                    ) : isActive ? (
-                      <span className="px-2 py-0.5 rounded-md bg-amber-400/20 border border-amber-300/40 text-[11px] font-bold text-amber-300 shrink-0">
-                        Đang tới lượt
-                      </span>
-                    ) : null}
-                  </div>
-
-                  {/* Cash + Status Row */}
-                  <div className="mt-1.5 flex items-center justify-between gap-2">
-                    <AnimatedCash value={player.cash} />
-                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-sky-100 shrink-0">
-                      {player.inJail && (
-                        <span className="text-orange-300 font-semibold">
-                          Nhà Tù ({player.jailTurns}/3)
-                        </span>
-                      )}
-                      {player.jailFreeCards > 0 && (
-                        <span className="text-sky-300">Thẻ Ra Tù ×{player.jailFreeCards}</span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Mini Monopoly Title-Deed Owned Property Badges */}
-                  <div className="mt-1.5 flex items-center flex-wrap gap-1 min-h-[18px]">
-                    {ownedProps.length === 0 ? (
-                      <span className="text-[11px] text-sky-200/65">Chưa sở hữu bất động sản</span>
-                    ) : (
-                      ownedProps.map((pr) => {
-                        const tile = BOARD_TILES[pr.tileIndex];
-                        const dotColor = tile.groupColor || '#64748B';
-                        return (
-                          <button
-                            key={pr.tileIndex}
-                            type="button"
-                            onClick={() => onSelectTile(pr.tileIndex)}
-                            title={`${tile.name}${pr.level > 0 ? ` (Cấp ${pr.level})` : ''}`}
-                            aria-label={`Xem ô ${tile.name}`}
-                            className="h-4.5 w-3.5 rounded-[3px] bg-amber-50 border border-white/80 overflow-hidden flex flex-col items-center justify-between shadow-xs cursor-pointer hover:scale-115 transition-transform"
-                          >
-                            <span
-                              className="w-full h-1.5 shrink-0"
-                              style={{ backgroundColor: dotColor }}
-                            />
-                            <span className="text-[8px] leading-none font-extrabold text-slate-900 pb-0.5 tabular-nums">
-                              {pr.level === 4 ? 'H' : pr.level > 0 ? pr.level : ''}
-                            </span>
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-
-                {/* Witty Gemini Bot AI Speech Bubble Anchored Directly Beneath Bot Avatar */}
-                {bubble &&
-                  badgeMeta &&
-                  !player.bankrupt &&
-                  (bubble.status === 'ready' || bubble.status === 'error') && (
-                    <div
-                      role="status"
-                      aria-live="polite"
-                      data-testid={`bot-chat-bubble-${player.id}`}
-                      className="pointer-events-auto absolute left-0 right-0 top-full mt-2 z-30 animate-pop-in"
-                    >
-                      <div
-                        className="relative rounded-xl bg-white text-slate-900 px-3 py-2 shadow-xl border-2"
-                        style={{ borderColor: player.color }}
-                      >
-                        {/* Upward Speech Pointer Tail Aligned Under Bot Avatar */}
-                        <span
-                          aria-hidden="true"
-                          className="absolute -top-2 left-5 h-3.5 w-3.5 rotate-45 bg-white border-l-2 border-t-2"
-                          style={{ borderColor: player.color }}
-                        />
-
-                        <div className="relative flex items-center justify-between gap-2 mb-1">
-                          <span
-                            className={`px-1.5 py-0.5 rounded-sm border text-[10px] font-bold tracking-tight ${badgeMeta.accentClass}`}
-                          >
-                            {badgeMeta.label}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => onDismissBubble(player.id)}
-                            aria-label={`Đóng bình luận của ${player.name}`}
-                            className="h-4 w-4 rounded-xs text-slate-400 hover:text-slate-700 flex items-center justify-center text-xs font-bold cursor-pointer"
-                          >
-                            ×
-                          </button>
-                        </div>
-
-                        {bubble.status === 'error' ? (
-                          <p className="text-[11px] font-medium text-rose-700 leading-snug">
-                            {bubble.text}
-                          </p>
-                        ) : (
-                          <p className="text-xs font-semibold text-slate-800 leading-snug">
-                            “{bubble.text}”
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Compact Collapsible Match Log on Left Edge */}
-        <div className="w-72 sm:w-80 pointer-events-auto">
-          <div className="hud-panel rounded-xl overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setLogExpanded((v) => !v)}
-              aria-expanded={logExpanded}
-              className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/5 transition-colors cursor-pointer"
-            >
-              <span>Nhật ký trận đấu ({logs.length})</span>
-              <span className="text-slate-400">{logExpanded ? '▾ Thu gọn' : '▸ Mở'}</span>
-            </button>
-            {logExpanded && (
-              <div className="px-3 pb-2.5 max-h-32 overflow-y-auto slim-scroll space-y-1 border-t border-white/10 pt-2">
-                {logs.slice(0, 8).map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="text-xs leading-snug flex items-start gap-1.5 text-slate-200"
-                  >
-                    {entry.playerColor && (
-                      <span
-                        className="mt-1 h-2 w-2 rounded-xs shrink-0"
-                        style={{ backgroundColor: entry.playerColor }}
-                      />
-                    )}
-                    <span
-                      className={
-                        entry.tone === 'positive'
-                          ? 'text-emerald-300'
-                          : entry.tone === 'negative'
-                            ? 'text-rose-300'
-                            : entry.tone === 'highlight'
-                              ? 'text-amber-300 font-semibold'
-                              : 'text-slate-200'
-                      }
-                    >
-                      {entry.text}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+        return (
+          <PlayerCornerCard
+            key={player.id}
+            player={player}
+            slotIndex={idx}
+            corner={corner}
+            isActive={isActive}
+            ownedProps={ownedProps}
+            bubble={bubble}
+            onDismissBubble={onDismissBubble}
+            onSelectTile={onSelectTile}
+          />
+        );
+      })}
     </div>
   );
 };

@@ -1,12 +1,13 @@
-import React from 'react';
-import { JAIL_FINE } from '../game/rules';
-import { PlayerState, TurnPhase } from '../game/types';
+import React, { useState } from 'react';
+import { formatBusinessTourCompact, JAIL_FINE } from '../game/rules';
+import { GameLogEntry, PlayerState, TurnPhase } from '../game/types';
 
 interface ActionDockProps {
   currentPlayer: PlayerState;
+  turnCount: number;
   turnPhase: TurnPhase;
   lastDice: [number, number] | null;
-  upgradableCount: number;
+  logs: GameLogEntry[];
   ownedCount: number;
   canTrade: boolean;
   speedMultiplier: 1 | 2;
@@ -20,6 +21,7 @@ interface ActionDockProps {
   onUseJailCard: () => void;
   onOpenAssetsModal: () => void;
   onOpenTradeModal: () => void;
+  onOpenRulebook: () => void;
   onEndTurn: () => void;
   onChangeSpeed: (speed: 1 | 2) => void;
   onToggleCinematic: () => void;
@@ -27,26 +29,34 @@ interface ActionDockProps {
   onResetCamera: () => void;
   onToggleSound: () => void;
   onOpenPause: () => void;
+  onTriggerEmote: (emoteText: string) => void;
 }
+
+const QUICK_EMOTES: Array<{ emoji: string; label: string }> = [
+  { emoji: '🎲', label: 'Đổ lớn nào!' },
+  { emoji: '😎', label: 'Đất của tôi!' },
+  { emoji: '💸', label: 'Xin tiền thuê nhé!' },
+  { emoji: '😱', label: 'Thôi xong rồi!' },
+  { emoji: '🔥', label: 'Quyết chiến!' },
+  { emoji: '🤝', label: 'Giao dịch nhé!' },
+];
 
 export const ActionDock: React.FC<ActionDockProps> = ({
   currentPlayer,
+  logs,
   turnPhase,
-  lastDice,
-  upgradableCount,
   ownedCount,
   canTrade,
   speedMultiplier,
   cinematicCamera,
   nightMode,
   soundMuted,
-  dockCollapsed,
-  onToggleDock,
   onRollDice,
   onPayJailFine,
   onUseJailCard,
   onOpenAssetsModal,
   onOpenTradeModal,
+  onOpenRulebook,
   onEndTurn,
   onChangeSpeed,
   onToggleCinematic,
@@ -54,292 +64,455 @@ export const ActionDock: React.FC<ActionDockProps> = ({
   onResetCamera,
   onToggleSound,
   onOpenPause,
+  onTriggerEmote,
 }) => {
+  const [openMenu, setOpenMenu] = useState<'none' | 'emotes' | 'settings' | 'logs'>('none');
+
   const isHumanTurn = !currentPlayer.isBot && !currentPlayer.bankrupt;
-  const isDoubles = lastDice ? lastDice[0] === lastDice[1] : false;
+
+  const canHumanManageAssets =
+    isHumanTurn &&
+    (turnPhase === 'AWAIT_ROLL' ||
+      turnPhase === 'AWAIT_END_TURN' ||
+      turnPhase === 'DEBT_RESOLUTION');
+
+  const canHumanTradeNow =
+    isHumanTurn &&
+    canTrade &&
+    (turnPhase === 'AWAIT_ROLL' || turnPhase === 'AWAIT_END_TURN');
+
+  const isModalDecisionPhase =
+    turnPhase === 'BUY_DECISION' ||
+    turnPhase === 'UPGRADE_DECISION' ||
+    turnPhase === 'BUYOUT_DECISION' ||
+    turnPhase === 'WORLD_TOUR' ||
+    turnPhase === 'CARD_REVEAL' ||
+    turnPhase === 'DEBT_RESOLUTION';
+
+  const toggleMenu = (target: 'emotes' | 'settings' | 'logs') => {
+    setOpenMenu((prev) => (prev === target ? 'none' : target));
+  };
 
   return (
-    <div
-      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 w-[min(1340px,97vw)] flex flex-col items-center pointer-events-none"
-    >
-      {/* Collapse / Expand Drawer Handle */}
-      <button
-        type="button"
-        onClick={onToggleDock}
-        className="pointer-events-auto mb-1.5 px-3.5 py-1 rounded-lg hud-panel text-xs font-semibold text-slate-200 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
+    <>
+      {/* =================================================================
+          1. MIDDLE-RIGHT 3 CIRCULAR GLOSSY CYAN/BLUE FLOATING UTILITY BUTTONS
+             (Emotes, Audio/Settings, Pause — Business Tour Signature Layout)
+          ================================================================= */}
+      <div
+        data-testid="bt-right-utility-rail"
+        className="fixed right-3 sm:right-4 top-1/2 -translate-y-1/2 z-25 flex flex-col items-center gap-3 pointer-events-none"
       >
-        {dockCollapsed ? '▴ Mở thanh điều khiển [H]' : '▾ Thu gọn điều khiển [H]'}
-      </button>
+        {/* Button 1: Emotes / Quick Chat */}
+        <button
+          type="button"
+          data-testid="bt-btn-emotes"
+          tabIndex={-1}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            toggleMenu('emotes');
+          }}
+          aria-expanded={openMenu === 'emotes'}
+          aria-label="Biểu cảm và Trò chuyện nhanh"
+          title="Biểu cảm nhân vật"
+          className={`pointer-events-auto h-12 w-12 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
+            openMenu === 'emotes' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
+          }`}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            className="h-6 w-6 fill-none stroke-current stroke-[2.3]"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M8.5 14.5s1.4 2 3.5 2 3.5-2 3.5-2" strokeLinecap="round" />
+            <circle cx="9" cy="10" r="1.1" fill="currentColor" stroke="none" />
+            <circle cx="15" cy="10" r="1.1" fill="currentColor" stroke="none" />
+          </svg>
+        </button>
 
-      {!dockCollapsed && (
-        <div className="pointer-events-auto w-full hud-panel rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
-          {/* Left Zone: Turn Indicator & Latest Dice Result */}
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="flex items-center gap-2.5">
-              <span
-                className="h-4 w-4 rounded-md shrink-0 border-2 border-amber-300/80 shadow-xs"
-                style={{ backgroundColor: currentPlayer.color }}
-              />
-              <div className="min-w-0">
-                <div className="text-[11px] font-semibold text-sky-200/80">Lượt hiện tại</div>
-                <div className="font-display text-base font-extrabold text-white truncate max-w-[148px] leading-tight">
-                  {currentPlayer.name}
-                </div>
-              </div>
-            </div>
+        {/* Button 2: Audio & Quick Settings */}
+        <button
+          type="button"
+          data-testid="bt-btn-settings"
+          tabIndex={-1}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            toggleMenu('settings');
+          }}
+          aria-expanded={openMenu === 'settings'}
+          aria-label="Âm thanh và Cài đặt bàn cờ"
+          title="Âm thanh & Cài đặt"
+          className={`pointer-events-auto relative h-12 w-12 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
+            openMenu === 'settings' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
+          }`}
+        >
+          {soundMuted ? (
+            <svg
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              className="h-6 w-6 fill-none stroke-current stroke-[2.3]"
+            >
+              <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinejoin="round" />
+              <path d="M22 9l-6 6M16 9l6 6" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              className="h-6 w-6 fill-none stroke-current stroke-[2.3]"
+            >
+              <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinejoin="round" />
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07" strokeLinecap="round" />
+              <path d="M19.07 5.5a9.5 9.5 0 0 1 0 13" strokeLinecap="round" />
+            </svg>
+          )}
+          {speedMultiplier === 2 && (
+            <span className="pointer-events-none absolute -top-1 -left-1 px-1.5 py-[1px] rounded-full bg-[#F5B800] border border-white text-[9px] font-mono-num font-black text-white shadow-xs">
+              2×
+            </span>
+          )}
+        </button>
 
-            {lastDice && (
-              <div className="flex items-center gap-1.5 pl-3 border-l border-sky-200/20">
-                <span className="h-7 w-7 rounded-lg bg-gradient-to-b from-white to-amber-50 border border-amber-300 text-slate-900 font-display font-extrabold text-sm flex items-center justify-center tabular-nums shadow-sm">
-                  {lastDice[0]}
-                </span>
-                <span className="h-7 w-7 rounded-lg bg-gradient-to-b from-white to-amber-50 border border-amber-300 text-slate-900 font-display font-extrabold text-sm flex items-center justify-center tabular-nums shadow-sm">
-                  {lastDice[1]}
-                </span>
-                <div className="ml-1 text-xs text-sky-100 tabular-nums">
-                  <span className="font-display font-extrabold text-amber-300 text-sm">
-                    ={lastDice[0] + lastDice[1]}
-                  </span>
-                  {isDoubles && (
-                    <span className="ml-1 text-amber-300 font-bold">· Đôi!</span>
-                  )}
-                </div>
-              </div>
-            )}
+        {/* Button 3: Pause Match */}
+        <button
+          type="button"
+          data-testid="bt-btn-pause"
+          tabIndex={-1}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            setOpenMenu('none');
+            onOpenPause();
+          }}
+          aria-label="Tạm dừng trò chơi"
+          title="Tạm dừng [Esc]"
+          className="pointer-events-auto h-12 w-12 sm:h-13 sm:w-13 rounded-full bt-float-circle-cyan flex items-center justify-center cursor-pointer"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5.5 w-5.5 fill-current">
+            <rect x="6" y="4.5" width="4.2" height="15" rx="1.6" />
+            <rect x="13.8" y="4.5" width="4.2" height="15" rx="1.6" />
+          </svg>
+        </button>
+      </div>
+
+      {/* =================================================================
+          2. FLOATING EMOTE PICKER POPOVER (Left of Middle-Right Rail)
+          ================================================================= */}
+      {openMenu === 'emotes' && (
+        <div
+          data-testid="bt-emote-popover"
+          className="fixed right-18 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-60 bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
+        >
+          <div className="bt-header-sky px-3.5 py-2 flex items-center justify-between">
+            <span className="font-display text-xs font-black uppercase tracking-wide">
+              Biểu Cảm Nhân Vật
+            </span>
+            <button
+              type="button"
+              onClick={() => setOpenMenu('none')}
+              aria-label="Đóng biểu cảm"
+              className="h-5 w-5 rounded-full bg-white/25 hover:bg-white/40 text-white text-xs font-bold flex items-center justify-center cursor-pointer"
+            >
+              ✕
+            </button>
           </div>
-
-          {/* Center Zone: Primary MONOPOLY GO! Tactile Gameplay Actions */}
-          <div className="flex flex-wrap items-center gap-2">
-            {turnPhase === 'AUCTION' ? (
-              <div className="px-4 py-2 rounded-xl bg-amber-500/20 border border-amber-300/50 text-amber-200 text-sm font-bold whitespace-nowrap">
-                Đang diễn ra Đấu Giá Công Khai...
-              </div>
-            ) : !isHumanTurn ? (
-              <div className="px-4 py-2 rounded-xl bg-slate-900/70 border border-sky-300/20 text-amber-300 text-sm font-semibold whitespace-nowrap">
-                {currentPlayer.name} đang suy nghĩ...
-              </div>
-            ) : turnPhase === 'AWAIT_ROLL' ? (
-              <>
-                {currentPlayer.inJail ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={onRollDice}
-                      className="btn-3d-gold px-4 py-2 rounded-xl text-slate-950 font-extrabold text-sm cursor-pointer whitespace-nowrap"
-                    >
-                      Đổ Săn Đôi
-                    </button>
-                    <button
-                      type="button"
-                      disabled={currentPlayer.cash < JAIL_FINE}
-                      onClick={onPayJailFine}
-                      className="btn-3d-roll px-3.5 py-2 rounded-xl disabled:opacity-40 text-white font-extrabold text-sm cursor-pointer whitespace-nowrap"
-                    >
-                      Nộp Phạt ${JAIL_FINE}
-                    </button>
-                    {currentPlayer.jailFreeCards > 0 && (
-                      <button
-                        type="button"
-                        onClick={onUseJailCard}
-                        className="btn-3d-sky px-3.5 py-2 rounded-xl text-white font-bold text-sm cursor-pointer whitespace-nowrap"
-                      >
-                        Dùng Thẻ Ra Tù
-                      </button>
-                    )}
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={onRollDice}
-                    className="btn-3d-roll px-6 py-2.5 rounded-xl text-white font-extrabold text-base flex items-center gap-2 cursor-pointer whitespace-nowrap"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                      className="h-5 w-5 shrink-0 fill-none stroke-current stroke-[2.2]"
-                    >
-                      <rect x="3" y="3" width="12" height="12" rx="2.5" />
-                      <circle cx="6.5" cy="6.5" r="1" fill="currentColor" stroke="none" />
-                      <circle cx="11.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
-                      <path d="M15 9h3.5A2.5 2.5 0 0 1 21 11.5v7A2.5 2.5 0 0 1 18.5 21h-7A2.5 2.5 0 0 1 9 18.5V15" />
-                      <circle cx="16.5" cy="16.5" r="1" fill="currentColor" stroke="none" />
-                    </svg>
-                    <span>Đổ Xúc Xắc</span>
-                  </button>
-                )}
-              </>
-            ) : turnPhase === 'ROLLING_DICE' || turnPhase === 'MOVING_TOKEN' ? (
-              <div className="px-4 py-2 rounded-xl bg-slate-900/70 border border-sky-300/20 text-sky-100 text-sm font-semibold whitespace-nowrap">
-                {turnPhase === 'ROLLING_DICE' ? 'Đang đổ xúc xắc...' : 'Đang di chuyển quân cờ...'}
-              </div>
-            ) : turnPhase === 'AWAIT_END_TURN' ? (
+          <div className="p-2.5 grid grid-cols-1 gap-1.5">
+            {QUICK_EMOTES.map((em) => (
               <button
+                key={em.label}
                 type="button"
-                onClick={onEndTurn}
-                className="btn-3d-gold px-5 py-2.5 rounded-xl text-slate-950 font-extrabold text-base cursor-pointer whitespace-nowrap"
+                onClick={() => {
+                  onTriggerEmote(`${em.emoji} ${em.label}`);
+                  setOpenMenu('none');
+                }}
+                className="w-full px-3 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center gap-2 text-left text-xs font-bold text-slate-800 transition-colors cursor-pointer"
               >
-                {currentPlayer.doublesStreak > 0 && !currentPlayer.inJail
-                  ? 'Đổ Tiếp (Ra Đôi!)'
-                  : 'Kết Thúc Lượt'}
+                <span className="text-base leading-none">{em.emoji}</span>
+                <span>{em.label}</span>
               </button>
-            ) : null}
+            ))}
+          </div>
+        </div>
+      )}
 
-            {/* Property & House Upgrade Button */}
-            {isHumanTurn &&
-              (turnPhase === 'AWAIT_ROLL' ||
-                turnPhase === 'AWAIT_END_TURN' ||
-                turnPhase === 'DEBT_RESOLUTION') && (
-                <button
-                  type="button"
-                  onClick={onOpenAssetsModal}
-                  className="px-3.5 py-2.5 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-sky-200/25 text-white font-semibold text-sm transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  Xây Nhà / Tài Sản ({ownedCount})
-                  {upgradableCount > 0 ? ` · +${upgradableCount}` : ''}
-                </button>
-              )}
-
-            {/* Trade (Giao Dịch) Button */}
-            {isHumanTurn &&
-              canTrade &&
-              (turnPhase === 'AWAIT_ROLL' || turnPhase === 'AWAIT_END_TURN') && (
-                <button
-                  type="button"
-                  onClick={onOpenTradeModal}
-                  className="btn-3d-sky px-3.5 py-2.5 rounded-xl text-white font-bold text-sm cursor-pointer whitespace-nowrap"
-                >
-                  Giao Dịch
-                </button>
-              )}
+      {/* =================================================================
+          3. FLOATING AUDIO & SETTINGS POPOVER (Left of Middle-Right Rail)
+          ================================================================= */}
+      {openMenu === 'settings' && (
+        <div
+          data-testid="bt-settings-popover"
+          className="fixed right-18 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-68 bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
+        >
+          <div className="bt-header-sky px-4 py-2.5 flex items-center justify-between">
+            <span className="font-display text-xs font-black uppercase tracking-wide">
+              Âm Thanh & Tuỳ Chỉnh
+            </span>
+            <button
+              type="button"
+              onClick={() => setOpenMenu('none')}
+              aria-label="Đóng cài đặt"
+              className="h-5 w-5 rounded-full bg-white/25 hover:bg-white/40 text-white text-xs font-bold flex items-center justify-center cursor-pointer"
+            >
+              ✕
+            </button>
           </div>
 
-          {/* Right Zone: Speed 1x/2x, Cinematic Camera, Day/Night, Reset Camera, Mute, Pause */}
-          <div className="flex items-center gap-1.5">
-            {/* Speed Selector */}
-            <div
-              className="flex items-center p-0.5 bg-slate-800 rounded-lg border border-white/10"
-              role="group"
-              aria-label="Tốc độ trận đấu"
-            >
-              {([1, 2] as const).map((sp) => (
-                <button
-                  key={sp}
-                  type="button"
-                  onClick={() => onChangeSpeed(sp)}
-                  className={`px-2.5 py-1.5 rounded-md text-xs font-bold tabular-nums transition-colors cursor-pointer whitespace-nowrap ${
-                    speedMultiplier === sp
-                      ? 'bg-amber-400 text-slate-950'
-                      : 'text-slate-300 hover:text-white'
-                  }`}
-                >
-                  {sp}x
-                </button>
-              ))}
-            </div>
-
-            {/* Cinematic Camera Toggle Switch */}
-            <button
-              type="button"
-              aria-pressed={cinematicCamera}
-              onClick={onToggleCinematic}
-              title="Camera Điện Ảnh tự động lia theo quân cờ [C]"
-              className={`px-2.5 py-2 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
-                cinematicCamera
-                  ? 'bg-amber-400 text-slate-950 border-amber-300 font-bold'
-                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border-white/10'
-              }`}
-            >
-              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0 fill-none stroke-current stroke-2">
-                <rect x="2" y="6" width="14" height="12" rx="2" />
-                <path d="M16 10l6-3v10l-6-3v-4z" />
-              </svg>
-              <span>Điện ảnh</span>
-              <span
-                aria-hidden="true"
-                className={`h-3.5 w-6 rounded-sm p-0.5 flex items-center transition-colors ${
-                  cinematicCamera ? 'bg-slate-950/85 justify-end' : 'bg-slate-950/60 justify-start'
-                }`}
-              >
-                <span
-                  className={`h-2.5 w-2.5 rounded-xs transition-colors ${
-                    cinematicCamera ? 'bg-amber-300' : 'bg-slate-400'
-                  }`}
-                />
-              </span>
-            </button>
-
-            {/* Day / Night Lighting Cycle Toggle */}
-            <button
-              type="button"
-              aria-pressed={nightMode}
-              onClick={onToggleNightMode}
-              title="Chuyển đổi ánh sáng Ngày / Đêm [N]"
-              className={`px-2.5 py-2 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
-                nightMode
-                  ? 'bg-indigo-500 hover:bg-indigo-400 text-white border-indigo-300 font-bold'
-                  : 'bg-slate-800 hover:bg-slate-700 text-amber-300 hover:text-amber-200 border-white/10'
-              }`}
-            >
-              {nightMode ? (
-                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0 fill-current">
-                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0 fill-none stroke-current stroke-2">
-                  <circle cx="12" cy="12" r="4" />
-                  <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-                </svg>
-              )}
-              <span>{nightMode ? 'Ban đêm' : 'Ban ngày'}</span>
-            </button>
-
-            {/* Reset Isometric Camera */}
-            <button
-              type="button"
-              onClick={onResetCamera}
-              title="Đặt lại góc nhìn 3D mặc định [R]"
-              className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 text-xs font-semibold text-slate-200 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
-            >
-              Đặt lại góc nhìn
-            </button>
-
-            {/* Sound Toggle */}
+          <div className="p-3 space-y-2 text-xs">
             <button
               type="button"
               onClick={onToggleSound}
-              aria-label={soundMuted ? 'Bật âm thanh' : 'Tắt âm thanh'}
-              title={soundMuted ? 'Bật âm thanh [M]' : 'Tắt âm thanh [M]'}
-              className="h-9 w-9 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 flex items-center justify-center text-slate-200 hover:text-white transition-colors cursor-pointer"
+              className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
             >
-              {soundMuted ? (
-                <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2">
-                  <path d="M11 5L6 9H2v6h4l5 4V5z" />
-                  <path d="M23 9l-6 6M17 9l6 6" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2">
-                  <path d="M11 5L6 9H2v6h4l5 4V5z" />
-                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" />
-                </svg>
-              )}
+              <span>Âm thanh hiệu ứng</span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                  soundMuted ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
+                }`}
+              >
+                {soundMuted ? 'Đang tắt' : 'Đang bật'}
+              </span>
             </button>
 
-            {/* Pause Menu */}
             <button
               type="button"
-              onClick={onOpenPause}
-              aria-label="Tạm dừng trò chơi"
-              title="Tạm dừng / Cài đặt [Esc]"
-              className="h-9 w-9 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 flex items-center justify-center text-slate-200 hover:text-white transition-colors cursor-pointer"
+              onClick={() => onChangeSpeed(speedMultiplier === 1 ? 2 : 1)}
+              className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
             >
-              <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current">
-                <rect x="6" y="4" width="4" height="16" rx="1" />
-                <rect x="14" y="4" width="4" height="16" rx="1" />
-              </svg>
+              <span>Tốc độ lượt chơi</span>
+              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-mono-num font-black">
+                {speedMultiplier}×
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onToggleCinematic}
+              className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
+            >
+              <span>Camera bám theo quân cờ</span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                  cinematicCamera ? 'bg-sky-200 text-sky-900' : 'bg-slate-200 text-slate-600'
+                }`}
+              >
+                {cinematicCamera ? 'Bật' : 'Tắt'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onToggleNightMode}
+              className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
+            >
+              <span>Bầu trời Pastel</span>
+              <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-800 text-[10px] font-black uppercase">
+                {nightMode ? 'Hoàng hôn' : 'Ban ngày'}
+              </span>
+            </button>
+
+            <div className="grid grid-cols-2 gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  onResetCamera();
+                  setOpenMenu('none');
+                }}
+                className="bt-btn-white py-1.5 px-2 rounded-xl text-[11px] font-extrabold cursor-pointer"
+              >
+                Góc Chuẩn 3D
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenMenu('none');
+                  onOpenRulebook();
+                }}
+                className="bt-btn-white py-1.5 px-2 rounded-xl text-[11px] font-extrabold cursor-pointer"
+              >
+                Luật Chơi
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setOpenMenu('logs')}
+              className="w-full bt-btn-cyan py-1.5 px-3 rounded-xl text-xs font-extrabold cursor-pointer"
+            >
+              Nhật Ký Ván Đấu ({logs.length})
             </button>
           </div>
         </div>
       )}
-    </div>
+
+      {/* =================================================================
+          4. MATCH LOG POPOVER (Opened from Settings)
+          ================================================================= */}
+      {openMenu === 'logs' && (
+        <div className="fixed right-18 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-[min(360px,82vw)] bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto">
+          <div className="bt-header-sky px-4 py-2.5 flex items-center justify-between">
+            <span className="font-display text-xs font-black uppercase tracking-wide">
+              Nhật Ký Trận Đấu ({logs.length})
+            </span>
+            <button
+              type="button"
+              onClick={() => setOpenMenu('none')}
+              aria-label="Đóng nhật ký trận đấu"
+              className="h-5 w-5 rounded-full bg-white/25 hover:bg-white/40 text-white text-xs font-bold flex items-center justify-center cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="p-3 max-h-64 overflow-y-auto slim-scroll divide-y divide-sky-100">
+            {logs.map((entry) => (
+              <div
+                key={entry.id}
+                className="py-1.5 text-xs leading-snug flex items-start gap-2"
+              >
+                <span className="font-mono-num text-[10px] font-bold text-sky-600 shrink-0 mt-0.5">
+                  V{entry.turn}
+                </span>
+                {entry.playerColor && (
+                  <span
+                    className="mt-1 h-2.5 w-2.5 rounded-full shrink-0 border border-white shadow-2xs"
+                    style={{ backgroundColor: entry.playerColor }}
+                  />
+                )}
+                <span
+                  className={
+                    entry.tone === 'positive'
+                      ? 'text-emerald-700 font-bold'
+                      : entry.tone === 'negative'
+                        ? 'text-rose-700 font-bold'
+                        : entry.tone === 'highlight'
+                          ? 'text-amber-700 font-bold'
+                          : 'text-slate-700 font-medium'
+                  }
+                >
+                  {entry.text}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================
+          5. BORDERLESS FLOATING HUMAN TURN PILL CLUSTER (Zero Dark Toolbar!)
+          ================================================================= */}
+      {isHumanTurn &&
+        !isModalDecisionPhase &&
+        (turnPhase === 'AWAIT_ROLL' || turnPhase === 'AWAIT_END_TURN') && (
+          <div className="fixed bottom-3.5 left-1/2 -translate-x-1/2 z-25 flex items-center gap-2 pointer-events-none">
+            {turnPhase === 'AWAIT_ROLL' ? (
+              currentPlayer.inJail ? (
+                <div className="pointer-events-auto flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      onRollDice();
+                    }}
+                    className="bt-btn-pink px-4 sm:px-5 py-2.5 rounded-full font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
+                  >
+                    🎲 Đổ Săn Đôi
+                  </button>
+                  <button
+                    type="button"
+                    disabled={currentPlayer.cash < JAIL_FINE}
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      onPayJailFine();
+                    }}
+                    className="bt-btn-green px-3.5 sm:px-4 py-2.5 rounded-full disabled:opacity-45 font-extrabold text-xs sm:text-sm uppercase cursor-pointer whitespace-nowrap"
+                  >
+                    Bảo Lãnh ({formatBusinessTourCompact(JAIL_FINE)})
+                  </button>
+                  {currentPlayer.jailFreeCards > 0 && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onUseJailCard();
+                      }}
+                      className="bt-btn-cyan px-3.5 sm:px-4 py-2.5 rounded-full font-extrabold text-xs sm:text-sm uppercase cursor-pointer whitespace-nowrap"
+                    >
+                      Dùng Thẻ VIP
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="bt-roll-dice-btn"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    onRollDice();
+                  }}
+                  className="pointer-events-auto bt-btn-pink px-6 sm:px-8 py-2.5 sm:py-3 rounded-full font-black text-sm sm:text-base uppercase tracking-wide flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                    className="h-5 w-5 shrink-0 fill-none stroke-current stroke-[2.4]"
+                  >
+                    <rect x="3" y="3" width="12" height="12" rx="2.5" />
+                    <circle cx="6.5" cy="6.5" r="1.2" fill="currentColor" stroke="none" />
+                    <circle cx="11.5" cy="11.5" r="1.2" fill="currentColor" stroke="none" />
+                    <path d="M15 9h3.5A2.5 2.5 0 0 1 21 11.5v7A2.5 2.5 0 0 1 18.5 21h-7A2.5 2.5 0 0 1 9 18.5V15" />
+                    <circle cx="16.5" cy="16.5" r="1.2" fill="currentColor" stroke="none" />
+                  </svg>
+                  <span>Đổ Xúc Xắc</span>
+                </button>
+              )
+            ) : (
+              <button
+                type="button"
+                data-testid="bt-end-turn-btn"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onEndTurn();
+                }}
+                className={`pointer-events-auto ${
+                  currentPlayer.doublesStreak > 0 && !currentPlayer.inJail
+                    ? 'bt-btn-gold'
+                    : 'bt-btn-green'
+                } px-6 sm:px-8 py-2.5 sm:py-3 rounded-full font-black text-sm sm:text-base uppercase tracking-wide cursor-pointer whitespace-nowrap`}
+              >
+                {currentPlayer.doublesStreak > 0 && !currentPlayer.inJail
+                  ? '🎲 Đổ Tiếp (Đôi!)'
+                  : '✓ Kết Thúc Lượt'}
+              </button>
+            )}
+
+            {canHumanManageAssets && ownedCount > 0 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onOpenAssetsModal();
+                }}
+                aria-label="Quản lý Tài sản"
+                className="pointer-events-auto bt-btn-cyan px-3.5 py-2.5 rounded-full text-xs font-black uppercase tracking-wide cursor-pointer whitespace-nowrap"
+              >
+                Tài Sản ({ownedCount})
+              </button>
+            )}
+
+            {canHumanTradeNow && ownedCount > 0 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onOpenTradeModal();
+                }}
+                aria-label="Giao dịch bất động sản"
+                className="pointer-events-auto bt-btn-gold px-3.5 py-2.5 rounded-full text-xs font-black uppercase tracking-wide cursor-pointer whitespace-nowrap hidden sm:inline-flex"
+              >
+                Giao Dịch
+              </button>
+            )}
+          </div>
+        )}
+    </>
   );
 };

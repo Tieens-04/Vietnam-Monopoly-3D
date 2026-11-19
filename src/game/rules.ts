@@ -1,8 +1,8 @@
 import { BOARD_TILES, COLOR_GROUP_META } from './boardData';
 import {
-  AuctionState,
   BotQuipPayload,
   ColorGroup,
+  MatchWinnerResult,
   PlayerSetupConfig,
   PlayerState,
   PropertyState,
@@ -14,10 +14,86 @@ import {
 
 export const TOTAL_TILES = 28;
 export const JAIL_TILE_INDEX = 7;
+export const WORLD_TOUR_TILE_INDEX = 14;
 export const GO_TO_JAIL_TILE_INDEX = 21;
 export const START_SALARY = 200;
 export const JAIL_FINE = 50;
+export const WORLD_TOUR_FEE = 50;
 export const MAX_JAIL_TURNS = 3;
+export const TURN_COUNTDOWN_SECONDS = 45;
+export const BT_DISPLAY_MULTIPLIER = 3000;
+
+/**
+ * Formats internal game dollar amounts into Business Tour compact K/M scale
+ * (e.g., 60 -> "180K", 220 -> "660K", 350 -> "1.05M", 400 -> "1.2M", 0 -> "0K").
+ */
+export function formatBusinessTourCompact(rawDollars: number, showMinusSign = false): string {
+  const isNeg = rawDollars < 0;
+  const absScaled = Math.abs(rawDollars) * BT_DISPLAY_MULTIPLIER;
+  const prefix = isNeg && showMinusSign ? '-' : '';
+
+  if (absScaled < 1000) {
+    return '0K';
+  }
+  if (absScaled >= 1_000_000) {
+    const millions = Math.round((absScaled / 1_000_000) * 100) / 100;
+    return `${prefix}${Number(millions.toFixed(2))}M`;
+  }
+  const thousands = Math.round(absScaled / 1000);
+  return `${prefix}${thousands}K`;
+}
+/**
+ * Formats internal game dollar amounts into Business Tour spaced cash strings
+ * (e.g., 0 -> "0", 220 -> "660 000", 1500 -> "4 500 000", -150 -> "-450 000").
+ */
+export function formatBusinessTourSpaced(rawDollars: number): string {
+  const scaled = Math.round(rawDollars * BT_DISPLAY_MULTIPLIER);
+  if (scaled === 0) return '0';
+  const sign = scaled < 0 ? '-' : '';
+  const digits = String(Math.abs(scaled));
+  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return `${sign}${grouped}`;
+}
+/**
+ * Computes the Business Tour compact price/value label shown on a tile's protruding 3D outer tab.
+ */
+export function formatTilePriceLabel(
+  tile: TileDefinition,
+  buildingLevel = 0
+): string | null {
+  if (tile.kind === TileKind.PROPERTY && tile.price) {
+    const totalInvested = tile.price + Math.max(0, buildingLevel) * (tile.houseCost ?? 0);
+    return formatBusinessTourCompact(totalInvested);
+  }
+  if ((tile.kind === TileKind.TRANSPORT || tile.kind === TileKind.UTILITY) && tile.price) {
+    return formatBusinessTourCompact(tile.price);
+  }
+  if (tile.kind === TileKind.TAX && tile.taxAmount) {
+    return formatBusinessTourCompact(-tile.taxAmount, true);
+  }
+  return null;
+}
+
+/**
+ * Formats remaining turn countdown seconds as MM:SS (e.g., 25 -> "00:25").
+ */
+export function formatCountdownClock(secondsLeft: number): string {
+  const clamped = Math.max(0, Math.floor(secondsLeft));
+  const mins = Math.floor(clamped / 60);
+  const secs = clamped % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+export const BOARD_SIDES: Array<{
+  id: 'SOUTH' | 'WEST' | 'NORTH' | 'EAST';
+  label: string;
+  tileIndices: number[];
+}> = [
+  { id: 'SOUTH', label: 'Cạnh Nam (Đà Lạt → Hội An)', tileIndices: [1, 3, 5, 6] },
+  { id: 'WEST', label: 'Cạnh Tây (Huế → Vũng Tàu)', tileIndices: [8, 10, 11, 12, 13] },
+  { id: 'NORTH', label: 'Cạnh Bắc (Hải Phòng → Nội Bài)', tileIndices: [15, 16, 18, 19, 20] },
+  { id: 'EAST', label: 'Cạnh Đông (Đà Nẵng → TP.HCM)', tileIndices: [22, 23, 25, 26, 27] },
+];
 
 export interface TileSpatialTransform {
   x: number;
@@ -232,6 +308,7 @@ export function createInitialProperties(): Record<number, PropertyState> {
         tileIndex: tile.index,
         ownerId: null,
         level: 0,
+        mortgaged: false,
       };
     }
   }
@@ -256,7 +333,10 @@ export function ownsFullColorGroup(
 }
 
 /**
- * Calculates exact rent when a player lands on an owned tile.
+ * Calculates exact Business Tour rent when a player lands on an owned tile:
+ * - Full color group doubles rent across ALL building levels (0..4)!
+ * - Transports: 1 station = 150K (50), 2 stations = 360K (120).
+ * - Utility: 24K (8) * diceSum.
  */
 export function calculateRent(
   tileIndex: number,
@@ -268,16 +348,15 @@ export function calculateRent(
   if (!tile || !prop || prop.ownerId === null) return 0;
 
   if (tile.kind === TileKind.PROPERTY && tile.rents && tile.group) {
-    if (prop.level > 0) {
-      return tile.rents[Math.min(prop.level, 4)];
-    }
-    const base = tile.rents[0];
-    return ownsFullColorGroup(prop.ownerId, tile.group, properties) ? base * 2 : base;
+    const hasMonopoly = ownsFullColorGroup(prop.ownerId, tile.group, properties);
+    const tierRent = tile.rents[Math.min(prop.level, 4)];
+    return hasMonopoly ? tierRent * 2 : tierRent;
   }
 
   if (tile.kind === TileKind.TRANSPORT) {
     const ownedTransports = BOARD_TILES.filter(
-      (t) => t.kind === TileKind.TRANSPORT && properties[t.index]?.ownerId === prop.ownerId
+      (t) =>
+        t.kind === TileKind.TRANSPORT && properties[t.index]?.ownerId === prop.ownerId
     ).length;
     return ownedTransports >= 2 ? 120 : 50;
   }
@@ -328,30 +407,136 @@ export function computePathToTile(
   };
 }
 
+export interface InitialPurchaseTierOption {
+  level: 0 | 1 | 2 | 3;
+  label: string;
+  totalCost: number;
+  affordable: boolean;
+}
+
 /**
- * Checks whether a player can upgrade a property (build 1 house up to level 3, or hotel at level 4).
- * Per game brief: allows building during turn when owning at least 1 property or full color set!
+ * In Business Tour mode, landing on an unowned city lets the buyer build up to 3 houses immediately.
+ * (Hotel / Landmark level 4 requires revisiting the city on a subsequent lap!)
+ */
+export function getInitialPurchaseTiers(
+  player: PlayerState,
+  tileIndex: number
+): InitialPurchaseTierOption[] {
+  const tile = BOARD_TILES[tileIndex];
+  if (!tile || !tile.price) return [];
+
+  if (tile.kind !== TileKind.PROPERTY || !tile.houseCost) {
+    return [
+      {
+        level: 0,
+        label: 'Sở hữu Hạ tầng',
+        totalCost: tile.price,
+        affordable: player.cash >= tile.price,
+      },
+    ];
+  }
+
+  const labels: Array<{ level: 0 | 1 | 2 | 3; label: string }> = [
+    { level: 0, label: 'Đất trống' },
+    { level: 1, label: '1 Nhà xanh' },
+    { level: 2, label: '2 Nhà xanh' },
+    { level: 3, label: '3 Nhà xanh' },
+  ];
+
+  return labels.map((item) => {
+    const totalCost = tile.price! + item.level * tile.houseCost!;
+    return {
+      level: item.level,
+      label: item.label,
+      totalCost,
+      affordable: player.cash >= totalCost,
+    };
+  });
+}
+
+export interface UpgradeCheckOptions {
+  isOnTileLanding?: boolean;
+  targetLevel?: number;
+}
+
+/**
+ * Checks whether a player can upgrade a property in Business Tour:
+ * Must be actively standing on that city (`isOnTileLanding: true`); upgrades up to level 4 (Landmark/Hotel).
  */
 export function canUpgradeProperty(
   player: PlayerState,
   tileIndex: number,
-  properties: Record<number, PropertyState>
-): { allowed: boolean; cost: number; reason?: string } {
+  properties: Record<number, PropertyState>,
+  options?: UpgradeCheckOptions
+): { allowed: boolean; cost: number; targetLevel: number; reason?: string } {
   const tile = BOARD_TILES[tileIndex];
   const prop = properties[tileIndex];
   if (!tile || tile.kind !== TileKind.PROPERTY || !prop || !tile.houseCost) {
-    return { allowed: false, cost: 0, reason: 'Ô này không thể xây nhà.' };
+    return { allowed: false, cost: 0, targetLevel: 0, reason: 'Ô này không thể xây nhà.' };
   }
   if (prop.ownerId !== player.id) {
-    return { allowed: false, cost: tile.houseCost, reason: 'Bạn không sở hữu mảnh đất này.' };
+    return {
+      allowed: false,
+      cost: tile.houseCost,
+      targetLevel: prop.level + 1,
+      reason: 'Bạn không sở hữu mảnh đất này.',
+    };
   }
   if (prop.level >= 4) {
-    return { allowed: false, cost: tile.houseCost, reason: 'Đã đạt cấp Khách sạn tối đa.' };
+    return {
+      allowed: false,
+      cost: 0,
+      targetLevel: 4,
+      reason: 'Đã đạt cấp Khách sạn Biểu tượng tối đa (★).',
+    };
   }
-  if (player.cash < tile.houseCost) {
-    return { allowed: false, cost: tile.houseCost, reason: 'Không đủ tiền mặt để xây dựng.' };
+
+  const desiredTarget = options?.targetLevel ?? prop.level + 1;
+  if (desiredTarget <= prop.level || desiredTarget > 4) {
+    return {
+      allowed: false,
+      cost: 0,
+      targetLevel: desiredTarget,
+      reason: 'Cấp nâng cấp không hợp lệ.',
+    };
   }
-  return { allowed: true, cost: tile.houseCost };
+
+  const totalCost = (desiredTarget - prop.level) * tile.houseCost;
+
+  if (!options?.isOnTileLanding) {
+    return {
+      allowed: false,
+      cost: totalCost,
+      targetLevel: desiredTarget,
+      reason: 'Chỉ có thể nâng cấp công trình khi quân cờ dừng tại chính thành phố đó.',
+    };
+  }
+  if (player.cash < totalCost) {
+    return {
+      allowed: false,
+      cost: totalCost,
+      targetLevel: desiredTarget,
+      reason: `Cần ${formatBusinessTourCompact(totalCost)} tiền mặt để nâng cấp.`,
+    };
+  }
+  return { allowed: true, cost: totalCost, targetLevel: desiredTarget };
+}
+
+/**
+ * Checks whether a house can be sold back to the Bank (50% refund).
+ */
+export function canSellHouse(
+  playerId: number,
+  tileIndex: number,
+  properties: Record<number, PropertyState>
+): { allowed: boolean; refund: number; reason?: string } {
+  const tile = BOARD_TILES[tileIndex];
+  const prop = properties[tileIndex];
+  const refund = getHouseSellRefund(tileIndex);
+  if (!tile || !prop || prop.ownerId !== playerId || prop.level <= 0) {
+    return { allowed: false, refund, reason: 'Không có nhà để bán tại ô này.' };
+  }
+  return { allowed: true, refund };
 }
 
 /**
@@ -364,12 +549,52 @@ export function getHouseSellRefund(tileIndex: number): number {
 }
 
 /**
- * Refund value when selling/mortgaging an unimproved property back to Bank (50% of purchase price).
+ * Refund value when selling an unimproved property back to the Bank (50% of purchase price).
  */
 export function getPropertySellRefund(tileIndex: number): number {
   const tile = BOARD_TILES[tileIndex];
   if (!tile || !tile.price) return 0;
   return Math.floor(tile.price * 0.5);
+}
+
+/**
+ * Business Tour Buyout (Mua Lại / Thâu Tóm Đô Thị) cost = 2x total invested value (land + standing houses).
+ */
+export function calculateBuyoutPrice(tileIndex: number, level: number): number {
+  const tile = BOARD_TILES[tileIndex];
+  if (!tile || tile.kind !== TileKind.PROPERTY || !tile.price) return 0;
+  return (tile.price + level * (tile.houseCost ?? 0)) * 2;
+}
+
+export function canBuyoutProperty(
+  buyer: PlayerState,
+  tileIndex: number,
+  properties: Record<number, PropertyState>
+): { allowed: boolean; cost: number; reason?: string } {
+  const tile = BOARD_TILES[tileIndex];
+  const prop = properties[tileIndex];
+  if (!tile || tile.kind !== TileKind.PROPERTY || !prop || prop.ownerId === null) {
+    return { allowed: false, cost: 0, reason: 'Ô này không thể mua lại.' };
+  }
+  if (prop.ownerId === buyer.id) {
+    return { allowed: false, cost: 0, reason: 'Đây đã là tài sản của bạn.' };
+  }
+  if (prop.level >= 4) {
+    return {
+      allowed: false,
+      cost: 0,
+      reason: 'Khách sạn Cấp 4 là Biểu tượng bất khả xâm phạm — miễn nhiễm mua lại!',
+    };
+  }
+  const cost = calculateBuyoutPrice(tileIndex, prop.level);
+  if (buyer.cash < cost) {
+    return {
+      allowed: false,
+      cost,
+      reason: `Không đủ ${formatBusinessTourCompact(cost)} để mua lại thành phố này.`,
+    };
+  }
+  return { allowed: true, cost };
 }
 
 /**
@@ -390,7 +615,7 @@ export function calculateLiquidationPotential(
 }
 
 /**
- * Computes total net worth (cash + full purchase value of properties & buildings) for leaderboard.
+ * Computes total net worth (cash + full value of owned properties + standing buildings).
  */
 export function calculateNetWorth(
   player: PlayerState,
@@ -428,13 +653,62 @@ export function getWinner(players: PlayerState[]): PlayerState | null {
   return null;
 }
 
+/**
+ * Evaluates Business Tour Victory Conditions:
+ * 1. Last non-bankrupt player standing (`LAST_STANDING`).
+ * 2. Instant victory on `TRIPLE_MONOPOLY` (3 full color sets).
+ * 3. Instant victory on `SIDE_MONOPOLY` (all properties on 1 full board edge).
+ */
+export function evaluateMatchWinner(
+  players: PlayerState[],
+  properties: Record<number, PropertyState>
+): MatchWinnerResult | null {
+  const alive = players.filter((p) => !p.bankrupt);
+  if (alive.length === 1) {
+    return {
+      winner: alive[0],
+      condition: 'LAST_STANDING',
+      label: 'Chiến thắng Độc Tôn — Toàn bộ đối thủ đã phá sản!',
+    };
+  }
+
+  const allColorGroups = Object.values(ColorGroup);
+  for (const pl of alive) {
+    const ownedMonoCount = allColorGroups.filter((grp) =>
+      ownsFullColorGroup(pl.id, grp, properties)
+    ).length;
+    if (ownedMonoCount >= 3) {
+      return {
+        winner: pl,
+        condition: 'TRIPLE_MONOPOLY',
+        label: `Chiến thắng Độc Quyền 3 Bộ Màu (${ownedMonoCount} nhóm màu)!`,
+      };
+    }
+
+    for (const side of BOARD_SIDES) {
+      const ownsEntireSide = side.tileIndices.every(
+        (idx) => properties[idx]?.ownerId === pl.id
+      );
+      if (ownsEntireSide) {
+        return {
+          winner: pl,
+          condition: 'SIDE_MONOPOLY',
+          label: `Chiến thắng Thống Trị Bản Đồ — Sở hữu trọn ${side.label}!`,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
 /* ============================
  * SMART BOT AI DECISION RULES
  * ============================ */
 
 /**
  * Bot buys unowned property if remaining cash after purchase >= $300
- * (or if completing a color group and cash after purchase >= $120).
+ * (or if completing a color group / side monopoly and cash after purchase >= $100).
  */
 export function botShouldBuyProperty(
   bot: PlayerState,
@@ -448,13 +722,12 @@ export function botShouldBuyProperty(
   const cashAfter = bot.cash - tile.price;
   if (cashAfter >= 300) return true;
 
-  // Smart exception: if buying completes a color monopoly and leaves >= $120
   if (tile.group) {
     const groupTiles = COLOR_GROUP_META[tile.group].tileIndices;
     const ownedInGroup = groupTiles.filter(
       (idx) => idx !== tileIndex && properties[idx]?.ownerId === bot.id
     ).length;
-    if (ownedInGroup === groupTiles.length - 1 && cashAfter >= 120) {
+    if (ownedInGroup === groupTiles.length - 1 && cashAfter >= 100) {
       return true;
     }
   }
@@ -463,38 +736,162 @@ export function botShouldBuyProperty(
 }
 
 /**
- * Bot picks the best owned property to upgrade while keeping at least $320 reserve.
+ * Bot chooses how many initial houses (0..3) to build immediately upon claiming a city in Business Tour.
  */
-export function botPickUpgradeTile(
+export function botPickInitialPurchaseTier(
   bot: PlayerState,
+  tileIndex: number,
+  properties: Record<number, PropertyState>
+): 0 | 1 | 2 | 3 {
+  const tiers = getInitialPurchaseTiers(bot, tileIndex).filter((t) => t.affordable);
+  if (tiers.length <= 1) return 0;
+
+  const tile = BOARD_TILES[tileIndex];
+  const completesMono =
+    tile?.group &&
+    COLOR_GROUP_META[tile.group].tileIndices.every(
+      (idx) => idx === tileIndex || properties[idx]?.ownerId === bot.id
+    );
+  const reserveTarget = completesMono ? 220 : 340;
+
+  let chosen: 0 | 1 | 2 | 3 = 0;
+  for (const tier of tiers) {
+    if (bot.cash - tier.totalCost >= reserveTarget && tier.level <= 2) {
+      chosen = tier.level;
+    } else if (completesMono && bot.cash - tier.totalCost >= 200) {
+      chosen = tier.level;
+    }
+  }
+  return chosen;
+}
+
+/**
+ * When a Bot lands on its own city in Business Tour, picks target upgrade level (up to Hotel level 4!).
+ */
+export function botPickOnTileUpgradeTargetLevel(
+  bot: PlayerState,
+  tileIndex: number,
   properties: Record<number, PropertyState>
 ): number | null {
-  const candidates = Object.values(properties)
-    .filter((p) => p.ownerId === bot.id && p.level < 4)
-    .map((p) => ({
-      prop: p,
-      tile: BOARD_TILES[p.tileIndex],
-    }))
-    .filter(
-      ({ tile }) =>
-        tile.kind === TileKind.PROPERTY &&
-        tile.houseCost !== undefined &&
-        bot.cash - tile.houseCost >= 320
+  const prop = properties[tileIndex];
+  const tile = BOARD_TILES[tileIndex];
+  if (!prop || !tile || prop.ownerId !== bot.id || prop.level >= 4 || !tile.houseCost) {
+    return null;
+  }
+
+  // Strongly prioritize reaching Level 4 (Hotel / Landmark) for Buyout immunity!
+  for (let target = 4; target > prop.level; target--) {
+    const cost = (target - prop.level) * tile.houseCost;
+    const minReserve = target === 4 ? 180 : 280;
+    if (bot.cash - cost >= minReserve) {
+      return target;
+    }
+  }
+  return null;
+}
+
+/**
+ * Evaluates whether a Bot should execute a Business Tour Buyout after paying rent on an opponent's city.
+ */
+export function botShouldBuyoutProperty(
+  bot: PlayerState,
+  tileIndex: number,
+  players: PlayerState[],
+  properties: Record<number, PropertyState>
+): boolean {
+  const check = canBuyoutProperty(bot, tileIndex, properties);
+  if (!check.allowed) return false;
+
+  const tile = BOARD_TILES[tileIndex];
+  const prop = properties[tileIndex];
+  if (!tile || !prop || prop.ownerId === null) return false;
+
+  const cashAfter = bot.cash - check.cost;
+  const completesBotMono =
+    tile.group &&
+    COLOR_GROUP_META[tile.group].tileIndices.every(
+      (idx) => idx === tileIndex || properties[idx]?.ownerId === bot.id
     );
+  if (completesBotMono && cashAfter >= 120) return true;
 
-  if (candidates.length === 0) return null;
+  // Defensive buyout: break an opponent's existing monopoly or stop a 2-monopoly leader!
+  const ownerId = prop.ownerId;
+  const ownerBrokenMono =
+    tile.group && ownsFullColorGroup(ownerId, tile.group, properties);
+  const ownerMonoCount = Object.values(ColorGroup).filter((g) =>
+    ownsFullColorGroup(ownerId, g, properties)
+  ).length;
+  const ownerExists = players.some((p) => p.id === ownerId && !p.bankrupt);
 
-  // Prioritize full color group properties and higher-tier properties
-  candidates.sort((a, b) => {
-    const aMono =
-      a.tile.group && ownsFullColorGroup(bot.id, a.tile.group, properties) ? 1 : 0;
-    const bMono =
-      b.tile.group && ownsFullColorGroup(bot.id, b.tile.group, properties) ? 1 : 0;
-    if (bMono !== aMono) return bMono - aMono;
-    return (b.tile.price ?? 0) - (a.tile.price ?? 0);
-  });
+  if (ownerExists && (ownerBrokenMono || ownerMonoCount >= 2) && cashAfter >= 220) {
+    return true;
+  }
 
-  return candidates[0].prop.tileIndex;
+  return cashAfter >= 480;
+}
+
+/**
+ * Picks the highest-value target tile when a Bot lands on Corner 14 (Du Lịch Xuyên Việt / World Tour).
+ */
+export function botPickWorldTourTarget(
+  bot: PlayerState,
+  players: PlayerState[],
+  properties: Record<number, PropertyState>
+): number | null {
+  if (bot.cash < WORLD_TOUR_FEE + 140) return null;
+
+  // 1. Snipe an unowned tile that immediately completes a Color Monopoly or Side Monopoly!
+  for (const tile of BOARD_TILES) {
+    if (!isPurchasableTile(tile) || !tile.price) continue;
+    const prop = properties[tile.index];
+    if (prop && prop.ownerId === null && bot.cash - WORLD_TOUR_FEE - tile.price >= 120) {
+      if (tile.group) {
+        const groupTiles = COLOR_GROUP_META[tile.group].tileIndices;
+        const ownedCount = groupTiles.filter(
+          (i) => i !== tile.index && properties[i]?.ownerId === bot.id
+        ).length;
+        if (ownedCount === groupTiles.length - 1) {
+          return tile.index;
+        }
+      }
+      for (const side of BOARD_SIDES) {
+        if (side.tileIndices.includes(tile.index)) {
+          const ownedSide = side.tileIndices.filter(
+            (i) => i !== tile.index && properties[i]?.ownerId === bot.id
+          ).length;
+          if (ownedSide === side.tileIndices.length - 1) {
+            return tile.index;
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Fly to own Level 2–3 city to upgrade straight to Level 4 Protected Landmark!
+  const ownUpgradable = Object.values(properties)
+    .filter((p) => p.ownerId === bot.id && p.level >= 2 && p.level < 4)
+    .sort((a, b) => (BOARD_TILES[b.tileIndex].price ?? 0) - (BOARD_TILES[a.tileIndex].price ?? 0));
+  for (const cand of ownUpgradable) {
+    const houseCost = BOARD_TILES[cand.tileIndex].houseCost ?? 100;
+    const needed = (4 - cand.level) * houseCost;
+    if (bot.cash - WORLD_TOUR_FEE - needed >= 200) {
+      return cand.tileIndex;
+    }
+  }
+
+  // 3. Fly to best unowned city Bot can comfortably afford
+  const unowned = BOARD_TILES.filter(
+    (t) =>
+      t.kind === TileKind.PROPERTY &&
+      properties[t.index]?.ownerId === null &&
+      bot.cash - WORLD_TOUR_FEE - (t.price ?? 0) >= 320
+  ).sort((a, b) => (b.price ?? 0) - (a.price ?? 0));
+  if (unowned.length > 0) {
+    return unowned[0].index;
+  }
+
+  void players;
+  return null;
 }
 
 export function botChooseJailAction(
@@ -506,9 +903,9 @@ export function botChooseJailAction(
 }
 
 /**
- * Picks next asset for a Bot (or auto-assist) to sell at 50% when raising cash to pay debt:
- * 1. Sell houses first (lowest-tier property houses first)
- * 2. Sell unimproved properties (non-monopoly, lowest price first)
+ * Picks next asset for a Bot (or auto-assist) to liquidate when raising cash to pay debt in Business Tour:
+ * 1. Sell houses first (lowest-value city first)
+ * 2. Sell unimproved properties (lowest-value city first)
  */
 export function botPickAssetToLiquidate(
   playerId: number,
@@ -517,253 +914,27 @@ export function botPickAssetToLiquidate(
   const owned = Object.values(properties).filter((p) => p.ownerId === playerId);
   if (owned.length === 0) return null;
 
-  const withHouses = owned
-    .filter((p) => p.level > 0)
+  const sellableHouses = owned
+    .filter((p) => canSellHouse(playerId, p.tileIndex, properties).allowed)
     .sort(
       (a, b) =>
         (BOARD_TILES[a.tileIndex].price ?? 0) - (BOARD_TILES[b.tileIndex].price ?? 0)
     );
 
-  if (withHouses.length > 0) {
-    return { action: 'SELL_HOUSE', tileIndex: withHouses[0].tileIndex };
+  if (sellableHouses.length > 0) {
+    return { action: 'SELL_HOUSE', tileIndex: sellableHouses[0].tileIndex };
   }
 
-  const unimproved = owned.sort(
-    (a, b) =>
-      (BOARD_TILES[a.tileIndex].price ?? 0) - (BOARD_TILES[b.tileIndex].price ?? 0)
-  );
+  const unimproved = owned
+    .filter((p) => p.level === 0)
+    .sort(
+      (a, b) =>
+        (BOARD_TILES[a.tileIndex].price ?? 0) - (BOARD_TILES[b.tileIndex].price ?? 0)
+    );
+
+  if (unimproved.length === 0) return null;
+
   return { action: 'SELL_PROPERTY', tileIndex: unimproved[0].tileIndex };
-}
-
-/* ==========================================
- * PUBLIC AUCTION ENGINE & BOT BIDDING LOGIC
- * ========================================== */
-
-export const MIN_AUCTION_INCREMENT = 10;
-
-export function getMinimumNextBid(auction: AuctionState): number {
-  return auction.highestBidderId === null
-    ? auction.startingBid
-    : auction.currentBid + MIN_AUCTION_INCREMENT;
-}
-
-/**
- * Initializes a public auction among all solvent players who can afford the starting bid.
- * Starting bid is 50% of list price (rounded to nearest $10, min $10).
- */
-export function createAuctionState(
-  tileIndex: number,
-  players: PlayerState[],
-  startingTurnPlayerId: number
-): AuctionState {
-  const tile = BOARD_TILES[tileIndex];
-  const basePrice = tile?.price ?? 100;
-  const startingBid = Math.max(10, Math.round((basePrice * 0.5) / 10) * 10);
-
-  // Order clockwise starting from the player AFTER the one who skipped (or including them so anyone can bid!)
-  const startIdx = Math.max(
-    0,
-    players.findIndex((p) => p.id === startingTurnPlayerId)
-  );
-  const orderedSolvent: PlayerState[] = [];
-  for (let i = 1; i <= players.length; i++) {
-    const p = players[(startIdx + i) % players.length];
-    if (!p.bankrupt && p.cash >= startingBid) {
-      orderedSolvent.push(p);
-    }
-  }
-
-  if (orderedSolvent.length === 0) {
-    return {
-      tileIndex,
-      startingBid,
-      currentBid: 0,
-      highestBidderId: null,
-      activeBidderIds: [],
-      currentTurnBidderId: startingTurnPlayerId,
-      status: 'COMPLETED',
-      winnerId: null,
-      history: ['Không có người chơi nào đủ tiền mặt tham gia đấu giá.'],
-    };
-  }
-
-  return {
-    tileIndex,
-    startingBid,
-    currentBid: 0,
-    highestBidderId: null,
-    activeBidderIds: orderedSolvent.map((p) => p.id),
-    currentTurnBidderId: orderedSolvent[0].id,
-    status: 'ACTIVE',
-    winnerId: null,
-    history: [
-      `Mở đấu giá công khai ${tile.name} (Giá gốc $${basePrice}, khởi điểm $${startingBid}).`,
-    ],
-  };
-}
-
-function finalizeOrAdvanceAuction(
-  auction: AuctionState,
-  players: PlayerState[],
-  nextStartFromId: number
-): AuctionState {
-  const minNext =
-    auction.highestBidderId === null
-      ? auction.startingBid
-      : auction.currentBid + MIN_AUCTION_INCREMENT;
-
-  // Prune any active bidder (except current highest bidder) who cannot afford minNext
-  const autoPassLogs: string[] = [];
-  const filteredIds = auction.activeBidderIds.filter((id) => {
-    if (id === auction.highestBidderId) return true;
-    const pl = players.find((p) => p.id === id);
-    if (!pl || pl.bankrupt || pl.cash < minNext) {
-      if (pl) {
-        autoPassLogs.push(`${pl.name} dừng đấu giá (không đủ số dư $${minNext}).`);
-      }
-      return false;
-    }
-    return true;
-  });
-
-  const history = [...autoPassLogs, ...auction.history].slice(0, 12);
-
-  // Case 1: Nobody left at all
-  if (filteredIds.length === 0) {
-    return {
-      ...auction,
-      activeBidderIds: [],
-      status: 'COMPLETED',
-      winnerId: auction.highestBidderId,
-      history,
-    };
-  }
-
-  // Case 2: Only 1 bidder left AND they already hold the highest bid -> immediate win!
-  if (filteredIds.length === 1 && auction.highestBidderId === filteredIds[0]) {
-    return {
-      ...auction,
-      activeBidderIds: filteredIds,
-      currentTurnBidderId: filteredIds[0],
-      status: 'COMPLETED',
-      winnerId: filteredIds[0],
-      history,
-    };
-  }
-
-  // Pick next bidder in ring order
-  const idx = filteredIds.indexOf(nextStartFromId);
-  const nextBidderId = idx !== -1 ? filteredIds[idx] : filteredIds[0];
-
-  return {
-    ...auction,
-    activeBidderIds: filteredIds,
-    currentTurnBidderId: nextBidderId,
-    history,
-  };
-}
-
-export function applyAuctionBid(
-  auction: AuctionState,
-  bidderId: number,
-  bidAmount: number,
-  players: PlayerState[]
-): AuctionState {
-  if (auction.status !== 'ACTIVE' || auction.currentTurnBidderId !== bidderId) {
-    return auction;
-  }
-  const bidder = players.find((p) => p.id === bidderId);
-  const minNext = getMinimumNextBid(auction);
-  if (!bidder || bidAmount < minNext || bidder.cash < bidAmount) {
-    return auction;
-  }
-
-  const curPos = auction.activeBidderIds.indexOf(bidderId);
-  const nextCandidate =
-    auction.activeBidderIds[(curPos + 1) % auction.activeBidderIds.length];
-
-  const updated: AuctionState = {
-    ...auction,
-    currentBid: bidAmount,
-    highestBidderId: bidderId,
-    history: [`${bidder.name} trả giá $${bidAmount}!`, ...auction.history].slice(0, 12),
-  };
-
-  return finalizeOrAdvanceAuction(updated, players, nextCandidate);
-}
-
-export function applyAuctionPass(
-  auction: AuctionState,
-  bidderId: number,
-  players: PlayerState[]
-): AuctionState {
-  if (auction.status !== 'ACTIVE' || auction.currentTurnBidderId !== bidderId) {
-    return auction;
-  }
-  const bidder = players.find((p) => p.id === bidderId);
-  const curPos = auction.activeBidderIds.indexOf(bidderId);
-  const remaining = auction.activeBidderIds.filter((id) => id !== bidderId);
-
-  const nextCandidate =
-    remaining.length > 0 ? remaining[curPos % remaining.length] : bidderId;
-
-  const updated: AuctionState = {
-    ...auction,
-    activeBidderIds: remaining,
-    history: [
-      `${bidder ? bidder.name : 'Người chơi'} bỏ lượt đấu giá.`,
-      ...auction.history,
-    ].slice(0, 12),
-  };
-
-  return finalizeOrAdvanceAuction(updated, players, nextCandidate);
-}
-
-/**
- * Smart Bot AI valuation & bid decision during a live public auction.
- */
-export function botDecideAuctionTurn(
-  bot: PlayerState,
-  auction: AuctionState,
-  properties: Record<number, PropertyState>
-): { action: 'BID'; amount: number } | { action: 'PASS' } {
-  const tile = BOARD_TILES[auction.tileIndex];
-  const minNext = getMinimumNextBid(auction);
-  if (!tile || !tile.price || bot.cash < minNext) {
-    return { action: 'PASS' };
-  }
-
-  // Keep a cash safety reserve of $220 (or $150 if completing a color monopoly)
-  let valuation = tile.price * 0.95;
-  let minReserve = 220;
-
-  if (tile.group) {
-    const groupIndices = COLOR_GROUP_META[tile.group].tileIndices;
-    const botOwned = groupIndices.filter((i) => properties[i]?.ownerId === bot.id).length;
-    if (botOwned === groupIndices.length - 1) {
-      valuation = tile.price * 1.35 + 30;
-      minReserve = 140;
-    } else if (botOwned > 0) {
-      valuation = tile.price * 1.1;
-    }
-  } else if (tile.kind === TileKind.TRANSPORT) {
-    const ownedTransports = BOARD_TILES.filter(
-      (t) => t.kind === TileKind.TRANSPORT && properties[t.index]?.ownerId === bot.id
-    ).length;
-    if (ownedTransports >= 1) valuation = tile.price * 1.2;
-  }
-
-  const maxAffordable = bot.cash - minReserve;
-  const maxWillingBid = Math.min(maxAffordable, Math.floor(valuation / 10) * 10);
-
-  if (minNext > maxWillingBid) {
-    return { action: 'PASS' };
-  }
-
-  // Step bid cleanly by minNext (or +$10 extra if way below bargain price)
-  const stepJump =
-    minNext + 10 <= maxWillingBid && minNext < tile.price * 0.65 ? minNext + 10 : minNext;
-  return { action: 'BID', amount: stepJump };
 }
 
 /* ==========================================
@@ -776,9 +947,16 @@ export function canPropertyBeTraded(
   properties: Record<number, PropertyState>
 ): boolean {
   const prop = properties[tileIndex];
-  if (!prop || prop.ownerId !== ownerId) return false;
-  // Standard rule: cannot trade a property while buildings stand on it
-  return prop.level === 0;
+  const tile = BOARD_TILES[tileIndex];
+  if (!prop || !tile || prop.ownerId !== ownerId || prop.level > 0) return false;
+  // Standard Monopoly rule: cannot trade a property in a color group while buildings stand on any tile in that group
+  if (tile.group) {
+    const groupHasBuildings = COLOR_GROUP_META[tile.group].tileIndices.some(
+      (idx) => properties[idx]?.ownerId === ownerId && (properties[idx]?.level ?? 0) > 0
+    );
+    if (groupHasBuildings) return false;
+  }
+  return true;
 }
 
 export function validateTradeOffer(
@@ -805,7 +983,7 @@ export function validateTradeOffer(
   if (offer.requestedCash > toP.cash) {
     return {
       valid: false,
-      reason: `${toP.name} không có đủ $${offer.requestedCash} tiền mặt.`,
+      reason: `${toP.name} không có đủ ${formatBusinessTourCompact(offer.requestedCash)} tiền mặt.`,
     };
   }
 
@@ -920,7 +1098,7 @@ export function evaluateBotTradeOffer(
     return {
       valid: true,
       accepted: false,
-      reason: `${bot.name} từ chối vì muốn giữ tối thiểu $120 tiền mặt dự phòng.`,
+      reason: `${bot.name} từ chối vì muốn giữ tối thiểu ${formatBusinessTourCompact(120)} tiền mặt dự phòng.`,
     };
   }
 
@@ -966,7 +1144,7 @@ export function evaluateBotTradeOffer(
   return {
     valid: true,
     accepted: false,
-    reason: `${bot.name} chưa hài lòng: giá trị bạn đưa ra còn thiếu khoảng $${shortfall} so với kỳ vọng.`,
+    reason: `${bot.name} chưa hài lòng: giá trị bạn đưa ra còn thiếu khoảng ${formatBusinessTourCompact(shortfall)} so với kỳ vọng.`,
   };
 }
 
@@ -1103,15 +1281,15 @@ export function computeDayNightLightingState(rawFactor: number): DayNightLightin
 
   return {
     nightFactor: t,
-    skyHex: lerpColorHex(0xdceefb, 0x070e20, t),
-    hemiSkyHex: lerpColorHex(0xe0f2fe, 0x1e3a8a, t),
-    hemiGroundHex: lerpColorHex(0xfde68a, 0x0f172a, t),
-    hemiIntensity: 0.56 - 0.32 * t,
-    keyLightHex: lerpColorHex(0xfff7ed, 0x60a5fa, t),
-    keyLightIntensity: 1.12 - 0.8 * t,
-    rimLightIntensity: 0.45 - 0.17 * t,
-    envIntensity: 0.42 - 0.37 * t,
-    exposure: 0.96 + 0.08 * t,
+    skyHex: lerpColorHex(0xdcf0ff, 0x0f172a, t),
+    hemiSkyHex: lerpColorHex(0xeef8ff, 0x1e3a8a, t),
+    hemiGroundHex: lerpColorHex(0xffe9f2, 0x0f172a, t),
+    hemiIntensity: 0.88 - 0.56 * t,
+    keyLightHex: lerpColorHex(0xfffdf7, 0x60a5fa, t),
+    keyLightIntensity: 0.96 - 0.64 * t,
+    rimLightIntensity: 0.44 - 0.18 * t,
+    envIntensity: 0.34 - 0.28 * t,
+    exposure: 1.02 + 0.04 * t,
     windowEmissiveIntensity: glowCurve * 2.8,
     lampBulbEmissiveIntensity: glowCurve * 3.6,
     courtyardPointLightIntensity: glowCurve * 3.8,
@@ -1143,7 +1321,7 @@ export function buildBotBuyQuipPayload(
   tileIndex: number,
   paidAmount: number,
   nextProperties: Record<number, PropertyState>,
-  source: 'DIRECT' | 'AUCTION' | 'TRADE' = 'DIRECT'
+  source: 'DIRECT' | 'BUYOUT' | 'TRADE' = 'DIRECT'
 ): BotQuipPayload | null {
   if (!bot.isBot || bot.bankrupt) return null;
   const tile = BOARD_TILES[tileIndex];
@@ -1156,15 +1334,12 @@ export function buildBotBuyQuipPayload(
   let extraContext = 'Vừa chốt mua thành công một điểm đầu tư tiềm năng trên bàn cờ.';
   if (completedMonopoly) {
     extraContext = `Vừa gom trọn bộ nhóm màu (${tile.groupLabel || tile.name}) độc quyền, sẵn sàng xây chuỗi khách sạn!`;
-  } else if (source === 'AUCTION') {
-    extraContext =
-      paidAmount < listPrice
-        ? `Vừa đấu giá hời được mảnh đất giá niêm yết $${listPrice} chỉ với $${paidAmount}!`
-        : `Vừa vượt mặt các đối thủ tại phiên đấu giá công khai để giành quyền sở hữu ${tile.name}!`;
+  } else if (source === 'BUYOUT') {
+    extraContext = `Vừa chi ${formatBusinessTourCompact(paidAmount)} (2×) thâu tóm thẳng đô thị ${tile.name} từ tay đối thủ!`;
   } else if (source === 'TRADE') {
     extraContext = `Vừa hoàn tất thương vụ đàm phán trao đổi khôn ngoan để thâu tóm ${tile.name}!`;
   } else if (listPrice >= 220) {
-    extraContext = `Vừa sở hữu đất kim cương đắt giá hàng đầu Việt Nam (${tile.name}, giá $${listPrice})!`;
+    extraContext = `Vừa sở hữu đất kim cương đắt giá hàng đầu Việt Nam (${tile.name}, giá ${formatBusinessTourCompact(listPrice)})!`;
   } else if (tile.kind === TileKind.TRANSPORT || tile.kind === TileKind.UTILITY) {
     extraContext = `Vừa nắm giữ mắt xích hạ tầng chiến lược (${tile.name}) để thu phí đường dài!`;
   } else {
@@ -1212,7 +1387,7 @@ export function buildBotRentCollectedQuipPayload(
     tileName: tile.name,
     amount: rentAmount,
     botCashAfter: landlordBot.cash,
-    extraContext: `Khách quý "${payerName}" vừa ghé thăm ${levelDesc} tại ${tile.name} và nộp $${rentAmount} tiền thuê!`,
+    extraContext: `Khách quý "${payerName}" vừa ghé thăm ${levelDesc} tại ${tile.name} và nộp ${formatBusinessTourCompact(rentAmount)} tiền thuê!`,
   };
 }
 
@@ -1224,9 +1399,10 @@ export function buildBotPenaltyQuipPayload(
 ): BotQuipPayload | null {
   if (!bot.isBot || bot.bankrupt || penaltyAmount <= 0) return null;
 
+  const compactPenalty = formatBusinessTourCompact(penaltyAmount);
   const extraContext = creditorName
-    ? `Vừa phải bấm bụng trả $${penaltyAmount} tiền thuê tại ${reason} cho đối thủ "${creditorName}".`
-    : `Vừa bị trừ nóng $${penaltyAmount} do "${reason}".`;
+    ? `Vừa phải bấm bụng trả ${compactPenalty} tiền thuê tại ${reason} cho đối thủ "${creditorName}".`
+    : `Vừa bị trừ nóng ${compactPenalty} do "${reason}".`;
 
   return {
     botId: bot.id,
