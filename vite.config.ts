@@ -1,5 +1,6 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import * as esbuild from 'esbuild';
 import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
@@ -11,11 +12,11 @@ export default defineConfig(() => {
       tailwindcss(),
       // Copies src/assets into dist/ so root-relative URLs like
       // "/src/assets/images/..." (e.g. generate_image output) still resolve
-      // in production builds. Do not remove.
+      // in production builds, and bundles server.js automatically on `vite build`.
       {
         name: 'copy-unbundled-src-assets',
         apply: 'build',
-        closeBundle(error?: Error): void {
+        async closeBundle(error?: Error): Promise<void> {
           if (error) {
             return;
           }
@@ -26,6 +27,14 @@ export default defineConfig(() => {
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
           }
+          await esbuild.build({
+            entryPoints: [path.resolve(rootDir, 'src/server/appServer.ts')],
+            bundle: true,
+            platform: 'node',
+            format: 'esm',
+            packages: 'external',
+            outfile: path.resolve(rootDir, 'server.js'),
+          });
         },
       },
     ],
