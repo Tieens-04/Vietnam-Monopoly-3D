@@ -2,18 +2,47 @@ import React, { useEffect, useImperativeHandle, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { soundEngine } from '../audio/soundEngine';
 import { BOARD_TILES } from '../game/boardData';
+import {
+  detectCashFlowTransfers,
+  getVaultWorldAnchor,
+} from '../game/currencyLogic';
+import {
+  detectBrowserGpu,
+  GraphicsQualityProfile,
+  resolveGraphicsProfile,
+  shouldKeepBoardAnimating,
+} from '../game/graphicsQuality';
 import {
   computeCinematicCameraPose,
   computeDayNightLightingState,
+  computeTokenHopTiming,
   DICE_BOX_FACE_VALUES,
-  formatBusinessTourSpaced,
   formatTilePriceLabel,
-  getDiceFaceBaseEuler,
   getTileTransform,
   getTokenSlotOffset,
+  isPurchasableTile,
 } from '../game/rules';
-import { PlayerState, PropertyState, TileKind } from '../game/types';
+import {
+  CurrencyStyleId,
+  GraphicsQualityTier,
+  MatchBoardModifiers,
+  PlayerState,
+  PropertyState,
+  TileKind,
+} from '../game/types';
+import {
+  clampSpeechBubbleToViewport,
+  computeSafeBoardCameraPose,
+  getCityVisualProfile,
+} from '../game/visualTheme';
 import {
   CornerDioramaAnimRefs,
   createCornerDiorama,
@@ -27,6 +56,11 @@ import {
   ProtrudingPriceTabRefs,
 } from '../three/models';
 import {
+  sampleDiceTrajectoryAt,
+  simulateDeterministicDiceRoll,
+  SimulatedDiceTrajectory,
+} from '../three/physicsEngine';
+import {
   createDiceFaceMaterials,
   createLevelBadgeTexture,
   createOuterPriceTabTexture,
@@ -35,6 +69,8 @@ import {
   createWoodGrainBumpMap,
   resolveDeedGroupPalette,
 } from '../three/textures';
+import { createTreasurySystem } from '../three/treasurySystem';
+import { isGameFontsReadySync, whenAllGameFontsLoaded } from '../utils/fontLoader';
 
 export interface MonopolyCanvasHandle {
   animateDiceRoll: (die1: number, die2: number, speedMultiplier: number) => Promise<void>;
@@ -51,11 +87,15 @@ interface MonopolyCanvasProps {
   players: PlayerState[];
   properties: Record<number, PropertyState>;
   selectedTileIndex: number | null;
+  selectableTileIndices?: number[];
   activePlayerId: number | null;
-  taxPool: number;
+  boardModifiers: MatchBoardModifiers;
   turnTimeLeft: number;
   turnCount?: number;
   activeSpeechText?: string | null;
+  currencyStyle?: CurrencyStyleId;
+  graphicsQualityTier?: GraphicsQualityTier;
+  isBoardOccluded?: boolean;
   cinematicCamera: boolean;
   nightMode: boolean;
   onSelectTile: (tileIndex: number) => void;
@@ -65,6 +105,7 @@ interface TileVisualEntry {
   index: number;
   group: THREE.Group;
   hitMesh: THREE.Mesh;
+  topMat: THREE.MeshStandardMaterial;
   ownerStrip: THREE.Mesh | null;
   ownerMat: THREE.MeshStandardMaterial | null;
   priceTab: ProtrudingPriceTabRefs | null;
@@ -83,14 +124,8 @@ interface TileVisualEntry {
 interface ActiveDiceAnim {
   elapsed: number;
   duration: number;
-  startPos1: THREE.Vector3;
-  endPos1: THREE.Vector3;
-  targetQuat1: THREE.Quaternion;
-  spinAxis1: THREE.Vector3;
-  startPos2: THREE.Vector3;
-  endPos2: THREE.Vector3;
-  targetQuat2: THREE.Quaternion;
-  spinAxis2: THREE.Vector3;
+  trajectory: SimulatedDiceTrajectory;
+  nextCollisionIdx: number;
   resolve: () => void;
 }
 
@@ -106,58 +141,39 @@ interface ActiveHopAnim {
   resolve: () => void;
 }
 
-// Low-FOV Isometric Camera (~35.6 deg pitch, 45 deg yaw) framing the diamond-oriented board centrally
-const DEFAULT_CAM_POS = new THREE.Vector3(24.4, 24.8, 24.4);
-const DEFAULT_CAM_TARGET = new THREE.Vector3(0.0, -0.15, 0.0);
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const TILE_SURFACE_Y = 0.44;
 const GRASS_SURFACE_Y = 0.16;
 const DICE_SIZE = 0.88;
 const DICE_REST_Y = GRASS_SURFACE_Y + DICE_SIZE * 0.5;
 
-function computeResponsiveDefaultCamPos(aspect: number, out: THREE.Vector3): THREE.Vector3 {
-  const safeAspect = Math.max(0.36, aspect || 1);
-  const portraitScale =
-    safeAspect < 1 ? Math.min(1.66, 1 / Math.pow(safeAspect, 0.62)) : 1;
-  return out.set(
-    DEFAULT_CAM_POS.x * portraitScale,
-    DEFAULT_CAM_POS.y * portraitScale,
-    DEFAULT_CAM_POS.z * portraitScale
-  );
+function applySafeDefaultCameraPose(
+  width: number,
+  height: number,
+  posOut: THREE.Vector3,
+  targetOut: THREE.Vector3
+): number {
+  const pose = computeSafeBoardCameraPose(width, height);
+  posOut.set(pose.posX, pose.posY, pose.posZ);
+  targetOut.set(pose.targetX, pose.targetY, pose.targetZ);
+  return pose.distance;
 }
 
 // Pre-allocated scratch math objects (zero per-frame GC)
-const _scratchQuatSpin = new THREE.Quaternion();
-const _scratchEuler = new THREE.Euler();
 const _scratchVecTarget = new THREE.Vector3();
 const _scratchVecPos = new THREE.Vector3();
 const _scratchDefaultCamPos = new THREE.Vector3();
+const _scratchDefaultCamTarget = new THREE.Vector3();
 const _scratchUnitScale = new THREE.Vector3(1, 1, 1);
 const _scratchSpeechProj = new THREE.Vector3();
 const _daySunPos = new THREE.Vector3(15, 27, 13);
 const _nightMoonPos = new THREE.Vector3(-12, 24, 14);
 const _dayOceanColor = new THREE.Color(0xdcf0ff);
-const _nightOceanColor = new THREE.Color(0x091122);
+const _nightOceanColor = new THREE.Color(0x111c3d);
 const _dayIslandColor = new THREE.Color(0xffffff);
-const _nightIslandColor = new THREE.Color(0x1b263b);
+const _nightIslandColor = new THREE.Color(0x334155);
 const _dayLawnColor = new THREE.Color(0xffffff);
-const _nightLawnColor = new THREE.Color(0x365928);
-
-function bounceHeight(t: number): number {
-  if (t < 0.44) {
-    const u = t / 0.44;
-    return (1 - u * u) * 2.95;
-  }
-  if (t < 0.76) {
-    const u = (t - 0.44) / 0.32;
-    return Math.sin(u * Math.PI) * 1.12;
-  }
-  if (t < 0.95) {
-    const u = (t - 0.76) / 0.19;
-    return Math.sin(u * Math.PI) * 0.36;
-  }
-  return 0;
-}
+const _nightLawnColor = new THREE.Color(0x528a39);
 
 function springPopScale(progress: number): number {
   if (progress <= 0) return 0.001;
@@ -175,11 +191,15 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       players,
       properties,
       selectedTileIndex,
+      selectableTileIndices = [],
       activePlayerId,
-      taxPool,
+      boardModifiers,
       turnTimeLeft,
       turnCount = 1,
       activeSpeechText = null,
+      currencyStyle = 'mixed',
+      graphicsQualityTier = 'low',
+      isBoardOccluded = false,
       cinematicCamera,
       nightMode,
       onSelectTile,
@@ -189,6 +209,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
     const mountRef = useRef<HTMLDivElement | null>(null);
     const speechBubbleRef = useRef<HTMLDivElement | null>(null);
     const speechTextSpanRef = useRef<HTMLSpanElement | null>(null);
+    const speechTailRef = useRef<HTMLSpanElement | null>(null);
 
     const onSelectTileRef = useRef(onSelectTile);
     onSelectTileRef.current = onSelectTile;
@@ -202,11 +223,14 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
     const selectedTileRef = useRef(selectedTileIndex);
     selectedTileRef.current = selectedTileIndex;
 
+    const selectableTilesRef = useRef<Set<number>>(new Set(selectableTileIndices));
+    selectableTilesRef.current = new Set(selectableTileIndices);
+
     const activePlayerIdRef = useRef(activePlayerId);
     activePlayerIdRef.current = activePlayerId;
 
-    const taxPoolRef = useRef(taxPool);
-    taxPoolRef.current = taxPool;
+    const boardModifiersRef = useRef(boardModifiers);
+    boardModifiersRef.current = boardModifiers;
 
     const turnTimeLeftRef = useRef(turnTimeLeft);
     turnTimeLeftRef.current = turnTimeLeft;
@@ -216,6 +240,15 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
     const activeSpeechTextRef = useRef(activeSpeechText);
     activeSpeechTextRef.current = activeSpeechText;
+
+    const currencyStyleRef = useRef<CurrencyStyleId>(currencyStyle);
+    currencyStyleRef.current = currencyStyle;
+
+    const qualityTierRef = useRef<GraphicsQualityTier>(graphicsQualityTier);
+    qualityTierRef.current = graphicsQualityTier;
+
+    const isBoardOccludedRef = useRef<boolean>(isBoardOccluded);
+    isBoardOccludedRef.current = isBoardOccluded;
 
     const prevCinematicRef = useRef(cinematicCamera);
     const cinematicCameraRef = useRef(cinematicCamera);
@@ -233,6 +266,12 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
     const cameraResetActiveRef = useRef<boolean>(false);
     const manualOrbitOverrideRef = useRef<boolean>(false);
     const activeRingRef = useRef<THREE.Mesh | null>(null);
+    const wakeRenderRef = useRef<((markBackdropDirty?: boolean) => void) | null>(
+      null
+    );
+    const applyQualityTierRef = useRef<((tier: GraphicsQualityTier) => void) | null>(
+      null
+    );
 
     useEffect(() => {
       if (prevCinematicRef.current && !cinematicCamera) {
@@ -243,7 +282,38 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         manualOrbitOverrideRef.current = false;
       }
       prevCinematicRef.current = cinematicCamera;
+      wakeRenderRef.current?.(true);
     }, [cinematicCamera]);
+
+    useEffect(() => {
+      applyQualityTierRef.current?.(graphicsQualityTier);
+    }, [graphicsQualityTier]);
+
+    useEffect(() => {
+      // Always wake 1 frame when occlusion or core board state changes (e.g. entering/leaving Lobby or Pause)
+      wakeRenderRef.current?.(true);
+    }, [
+      isBoardOccluded,
+      nightMode,
+      currencyStyle,
+      players,
+      properties,
+      boardModifiers,
+    ]);
+
+    useEffect(() => {
+      if (!isBoardOccluded) {
+        wakeRenderRef.current?.();
+      }
+    }, [
+      isBoardOccluded,
+      selectedTileIndex,
+      selectableTileIndices,
+      activePlayerId,
+      turnTimeLeft,
+      turnCount,
+      activeSpeechText,
+    ]);
 
     const computeTokenRestWorldPos = (
       playerId: number,
@@ -279,53 +349,31 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       resetCamera: () => {
         cameraResetActiveRef.current = true;
         manualOrbitOverrideRef.current = false;
+        wakeRenderRef.current?.();
       },
       animateDiceRoll: (die1: number, die2: number, speedMultiplier: number) => {
         manualOrbitOverrideRef.current = false;
         return new Promise<void>((resolve) => {
+          if (activeDiceAnimRef.current) {
+            const prevResolve = activeDiceAnimRef.current.resolve;
+            activeDiceAnimRef.current = null;
+            prevResolve();
+          }
           const dice = diceMeshesRef.current;
           if (!dice) {
             resolve();
             return;
           }
 
-          const buildTargetQuat = (val: number) => {
-            const [rx, ry, rz] = getDiceFaceBaseEuler(val);
-            _scratchEuler.set(rx, ry, rz, 'XYZ');
-            const qBase = new THREE.Quaternion().setFromEuler(_scratchEuler);
-            const qYaw = new THREE.Quaternion().setFromAxisAngle(
-              WORLD_UP,
-              (Math.random() - 0.5) * Math.PI * 1.6
-            );
-            return qYaw.multiply(qBase);
-          };
-
-          const angleOffset = (Math.random() - 0.5) * 0.36;
-          // Bounce dynamically across the open lower-center grass lawn with zero overlap on center 3D text!
-          const endPos1 = new THREE.Vector3(
-            1.48 + Math.sin(angleOffset) * 0.16,
-            DICE_REST_Y,
-            2.68 + Math.cos(angleOffset) * 0.16
-          );
-          const endPos2 = new THREE.Vector3(
-            2.68 - Math.sin(angleOffset) * 0.16,
-            DICE_REST_Y,
-            1.48 - Math.cos(angleOffset) * 0.16
-          );
-
+          const trajectory = simulateDeterministicDiceRoll(die1, die2);
           activeDiceAnimRef.current = {
             elapsed: 0,
-            duration: Math.max(0.62, 1.18 / speedMultiplier),
-            startPos1: new THREE.Vector3(-3.05, DICE_REST_Y, 1.15),
-            endPos1,
-            targetQuat1: buildTargetQuat(die1),
-            spinAxis1: new THREE.Vector3(1, 0.72, 0.42).normalize(),
-            startPos2: new THREE.Vector3(1.15, DICE_REST_Y, -3.05),
-            endPos2,
-            targetQuat2: buildTargetQuat(die2),
-            spinAxis2: new THREE.Vector3(-0.82, 0.64, 1).normalize(),
+            duration: Math.max(0.62, trajectory.duration / speedMultiplier),
+            trajectory,
+            nextCollisionIdx: 0,
             resolve,
           };
+          wakeRenderRef.current?.();
         });
       },
       animateTokenPath: (
@@ -336,6 +384,11 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       ) => {
         manualOrbitOverrideRef.current = false;
         return new Promise<void>((resolve) => {
+          if (activeHopAnimRef.current) {
+            const prevResolve = activeHopAnimRef.current.resolve;
+            activeHopAnimRef.current = null;
+            prevResolve();
+          }
           const token = tokenGroupsRef.current.get(playerId);
           if (!token || tilePath.length === 0) {
             resolve();
@@ -343,17 +396,22 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           }
 
           const firstTargetTf = getTileTransform(tilePath[0]);
+          const { stepDurationSec } = computeTokenHopTiming(
+            tilePath.length,
+            speedMultiplier
+          );
           activeHopAnimRef.current = {
             playerId,
             path: tilePath,
             stepIndex: 0,
             stepElapsed: 0,
-            stepDuration: Math.max(0.16, 0.3 / speedMultiplier),
+            stepDuration: stepDurationSec,
             fromVec: token.position.clone(),
             toVec: new THREE.Vector3(firstTargetTf.x, TILE_SURFACE_Y, firstTargetTf.z),
             onStep,
             resolve,
           };
+          wakeRenderRef.current?.();
         });
       },
     }));
@@ -363,16 +421,12 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       const container = mountRef.current;
       if (!container) return;
 
-      const isSoftwareGl = (() => {
-        const probeCanvas = document.createElement('canvas');
-        const gl = probeCanvas.getContext('webgl2');
-        if (!gl) return true;
-        const ext = gl.getExtension('WEBGL_debug_renderer_info');
-        const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
-        const gpu = String(gl.getParameter(param));
-        gl.getExtension('WEBGL_lose_context')?.loseContext();
-        return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
-      })();
+      const gpuInfo = detectBrowserGpu();
+      const isSoftwareGl = gpuInfo.isSoftwareGl;
+      let currentProfile: GraphicsQualityProfile = resolveGraphicsProfile(
+        qualityTierRef.current,
+        isSoftwareGl
+      );
 
       const width = container.clientWidth || window.innerWidth;
       const height = container.clientHeight || window.innerHeight;
@@ -380,69 +434,216 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0xdcf0ff);
 
-      // Low-FOV Isometric Camera (26 deg FOV) framing the diamond board cleanly
-      const camera = new THREE.PerspectiveCamera(26, width / height, 0.5, 240);
-      computeResponsiveDefaultCamPos(width / height, camera.position);
-      camera.lookAt(DEFAULT_CAM_TARGET);
+      // Low-FOV Isometric Camera (26 deg FOV) framing the full safe diamond board cleanly
+      const camera = new THREE.PerspectiveCamera(26, width / height, 0.5, 380);
+      const initialSafeDist = applySafeDefaultCameraPose(
+        width,
+        height,
+        camera.position,
+        _scratchDefaultCamTarget
+      );
+      camera.lookAt(_scratchDefaultCamTarget);
 
       const renderer = new THREE.WebGLRenderer({
-        antialias: !isSoftwareGl,
-        powerPreference: 'high-performance',
+        antialias: currentProfile.antialias,
+        powerPreference: currentProfile.tier === 'high' ? 'high-performance' : 'default',
       });
       renderer.setSize(width, height);
-      renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+      let currentPixelRatio = isSoftwareGl
+        ? 1
+        : Math.min(window.devicePixelRatio || 1, currentProfile.maxPixelRatio);
+      renderer.setPixelRatio(currentPixelRatio);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.02;
-      renderer.shadowMap.enabled = !isSoftwareGl;
-      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.shadowMap.enabled = currentProfile.shadowsEnabled;
+      renderer.shadowMap.autoUpdate = false;
+      renderer.shadowMap.type =
+        currentProfile.tier === 'high' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
 
       container.innerHTML = '';
       container.appendChild(renderer.domElement);
+
+      // Lazy Hardware WebGL2 MSAA EffectComposer + GTAOPass + Selective UnrealBloomPass (ONLY allocated on 'high' tier!)
+      let composer: EffectComposer | null = null;
+      let gtaoPass: GTAOPass | null = null;
+      let bloomPass: UnrealBloomPass | null = null;
+      let outputPass: OutputPass | null = null;
+      let composerRT: THREE.WebGLRenderTarget | null = null;
+      let composerPixelRatio = 0;
+      let composerWidth = 0;
+      let composerHeight = 0;
+      let transparentListDirty = true;
+      const cachedTransparentMeshes: THREE.Mesh[] = [];
+
+      const rebuildTransparentMeshCache = () => {
+        cachedTransparentMeshes.length = 0;
+        scene.traverse((obj) => {
+          if (obj instanceof THREE.Mesh) {
+            const m = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+            if (m && (m.transparent || m.depthWrite === false)) {
+              cachedTransparentMeshes.push(obj);
+            }
+          }
+        });
+        transparentListDirty = false;
+      };
+
+      const disposePostProcessing = () => {
+        bloomPass?.dispose();
+        outputPass?.dispose();
+        gtaoPass?.dispose();
+        composer?.dispose();
+        composerRT?.dispose();
+        bloomPass = null;
+        outputPass = null;
+        gtaoPass = null;
+        composer = null;
+        composerRT = null;
+        composerPixelRatio = 0;
+        composerWidth = 0;
+        composerHeight = 0;
+      };
+
+      const syncComposerDimensions = (w: number, h: number, pxRatio: number) => {
+        if (!composer) return;
+        const sizeChanged = composerWidth !== w || composerHeight !== h;
+        const ratioChanged = composerPixelRatio !== pxRatio;
+        if (!sizeChanged && !ratioChanged) return;
+        composerWidth = w;
+        composerHeight = h;
+        composerPixelRatio = pxRatio;
+        if (ratioChanged && !sizeChanged) {
+          composer.setPixelRatio(pxRatio);
+        } else {
+          if (ratioChanged) {
+            composer.setPixelRatio(pxRatio);
+          }
+          composer.setSize(w, h);
+        }
+      };
+
+      const ensurePostProcessing = (
+        w: number,
+        h: number,
+        pxRatio: number,
+        nightFactorNow: number
+      ): boolean => {
+        if (isSoftwareGl || composer) return false;
+        const effW = Math.max(1, Math.floor(w * pxRatio));
+        const effH = Math.max(1, Math.floor(h * pxRatio));
+        composerRT = new THREE.WebGLRenderTarget(effW, effH, {
+          type: THREE.HalfFloatType,
+          samples: 4,
+        });
+        composer = new EffectComposer(renderer, composerRT);
+        composerPixelRatio = pxRatio;
+        composerWidth = w;
+        composerHeight = h;
+
+        const renderPass = new RenderPass(scene, camera);
+        composer.addPass(renderPass);
+
+        gtaoPass = new GTAOPass(scene, camera, effW, effH);
+        gtaoPass.output = GTAOPass.OUTPUT.Default;
+        gtaoPass.blendIntensity = 0.68;
+        gtaoPass.setSceneClipBox(
+          new THREE.Box3(new THREE.Vector3(-16, -2, -16), new THREE.Vector3(16, 8, 16))
+        );
+        gtaoPass.updateGtaoMaterial({
+          radius: 0.34,
+          distanceExponent: 1.3,
+          thickness: 0.65,
+          scale: 0.9,
+          samples: 12,
+        });
+        const origGtaoRender = gtaoPass.render.bind(gtaoPass);
+        const hiddenForPass: THREE.Mesh[] = [];
+        gtaoPass.render = (rendererArg, writeBuf, readBuf, dtArg, maskArg) => {
+          if (transparentListDirty) {
+            rebuildTransparentMeshCache();
+          }
+          for (let i = 0; i < cachedTransparentMeshes.length; i++) {
+            const mesh = cachedTransparentMeshes[i];
+            if (mesh.visible) {
+              mesh.visible = false;
+              hiddenForPass.push(mesh);
+            }
+          }
+          origGtaoRender(rendererArg, writeBuf, readBuf, dtArg, maskArg);
+          for (let i = 0; i < hiddenForPass.length; i++) {
+            hiddenForPass[i].visible = true;
+          }
+          hiddenForPass.length = 0;
+        };
+        composer.addPass(gtaoPass);
+
+        bloomPass = new UnrealBloomPass(new THREE.Vector2(effW, effH), 0.0, 0.36, 1.45);
+        bloomPass.strength = nightFactorNow * 0.36;
+        bloomPass.enabled = nightFactorNow > 0.005;
+        composer.addPass(bloomPass);
+
+        outputPass = new OutputPass();
+        composer.addPass(outputPass);
+        return true;
+      };
 
       const handleContextLost = (e: Event) => {
         e.preventDefault();
       };
       renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
 
-      const pmremGenerator = new THREE.PMREMGenerator(renderer);
-      const envRT = pmremGenerator.fromScene(new RoomEnvironment(), 0.04);
-      scene.environment = envRT.texture;
-      scene.environmentIntensity = 0.34;
-      pmremGenerator.dispose();
+      let envRT: THREE.WebGLRenderTarget | null = null;
+      const ensureEnvironmentMap = (): THREE.Texture => {
+        if (!envRT) {
+          const pmremGenerator = new THREE.PMREMGenerator(renderer);
+          envRT = pmremGenerator.fromScene(new RoomEnvironment(), 0.04);
+          pmremGenerator.dispose();
+        }
+        return envRT.texture;
+      };
+      if (currentProfile.useEnvironmentMap) {
+        scene.environment = ensureEnvironmentMap();
+        scene.environmentIntensity = 0.34;
+      } else {
+        scene.environment = null;
+      }
 
       // Bright, low-contrast global illumination (HemisphereLight + soft DirectionalLight)
       const hemiLight = new THREE.HemisphereLight(0xeef8ff, 0xffe9f2, 0.88);
       hemiLight.position.set(0, 32, 0);
       scene.add(hemiLight);
 
-      const sunLight = new THREE.DirectionalLight(0xfffdf7, 0.96);
+      const sunLight = new THREE.DirectionalLight(0xfffdf7, 0.98);
       sunLight.position.set(15, 27, 13);
-      sunLight.castShadow = !isSoftwareGl;
-      sunLight.shadow.mapSize.width = 1024;
-      sunLight.shadow.mapSize.height = 1024;
-      const shadowD = 14.0;
+      sunLight.castShadow = currentProfile.shadowsEnabled;
+      const initialShadowRes =
+        currentProfile.shadowMapSize > 0 ? currentProfile.shadowMapSize : 1024;
+      sunLight.shadow.mapSize.width = initialShadowRes;
+      sunLight.shadow.mapSize.height = initialShadowRes;
+      const shadowD = 14.5;
       sunLight.shadow.camera.left = -shadowD;
       sunLight.shadow.camera.right = shadowD;
       sunLight.shadow.camera.top = shadowD;
       sunLight.shadow.camera.bottom = -shadowD;
       sunLight.shadow.camera.near = 4;
       sunLight.shadow.camera.far = 56;
-      sunLight.shadow.bias = -0.0005;
-      sunLight.shadow.normalBias = 0.02;
+      sunLight.shadow.bias = -0.0004;
+      sunLight.shadow.normalBias = 0.018;
       scene.add(sunLight);
 
       const rimLight = new THREE.DirectionalLight(0xdcf0ff, 0.44);
       rimLight.position.set(-15, 14, -15);
       scene.add(rimLight);
 
-      // OrbitControls locked gently around clean isometric range
+      // OrbitControls locked gently around clean isometric range (dynamic maxDistance for portrait screens)
+      let controlsChangedThisFrame = false;
       const controls = new OrbitControls(camera, renderer.domElement);
-      controls.target.copy(DEFAULT_CAM_TARGET);
+      controls.target.copy(_scratchDefaultCamTarget);
       controls.enableDamping = !isSoftwareGl;
       controls.dampingFactor = 0.07;
       controls.minDistance = 14.0;
-      controls.maxDistance = 68;
+      controls.maxDistance = Math.max(96, initialSafeDist * 1.35);
       controls.minPolarAngle = 0.38;
       controls.maxPolarAngle = Math.PI / 2.3;
       controls.mouseButtons = {
@@ -456,10 +657,20 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       });
       controls.update();
 
+      if (currentProfile.usePostProcessing) {
+        ensurePostProcessing(
+          width,
+          height,
+          currentPixelRatio,
+          nightModeRef.current ? 1 : 0
+        );
+      }
+
       const maxAniso = renderer.capabilities.getMaxAnisotropy();
       const woodBump = createWoodGrainBumpMap();
       const tilePaperBump = createStonePaperBumpMap();
       const nightPalette = createNightLightingPalette(maxAniso);
+      nightPalette.skyDomeUniforms.uLinearOutput.value = composer ? 1 : 0;
 
       // Pastel Sky Gradient + Sakura Branches + Left/Top Cash & '?' Card Stack + Bottom-Right Gold/Silver/Bronze Coins
       const { vista: vistaGroup, animatedCars } = createSurroundingVista(
@@ -504,13 +715,26 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
       const tileEntries: TileVisualEntry[] = [];
       const cornerAnims: CornerDioramaAnimRefs[] = [];
-      const clickableMeshes: THREE.Mesh[] = [];
+      const clickableRoots: THREE.Object3D[] = [];
+      const sharedBoxGeoCache = new Map<string, THREE.BoxGeometry>();
+      const getSharedBoxGeo = (w: number, h: number, d: number): THREE.BoxGeometry => {
+        const key = `${w.toFixed(3)}x${h.toFixed(3)}x${d.toFixed(3)}`;
+        let geo = sharedBoxGeoCache.get(key);
+        if (!geo) {
+          geo = new THREE.BoxGeometry(w, h, d);
+          geo.userData.sharedStatic = true;
+          sharedBoxGeoCache.set(key, geo);
+        }
+        return geo;
+      };
 
       for (const tile of BOARD_TILES) {
         const tf = getTileTransform(tile.index);
         const tileGroup = new THREE.Group();
         tileGroup.position.set(tf.x, 0, tf.z);
         tileGroup.rotation.y = tf.rotationY;
+        tileGroup.userData.tileIndex = tile.index;
+        clickableRoots.push(tileGroup);
 
         const flip180 = tf.side === 'top' || tf.side === 'left';
         const topTex = createTileTopTexture(tile, maxAniso, flip180);
@@ -525,7 +749,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
         // Lower chamfered block base
         const lowerPlinth = new THREE.Mesh(
-          new THREE.BoxGeometry(tf.width - 0.09, 0.28, tf.depth - 0.09),
+          getSharedBoxGeo(tf.width - 0.09, 0.28, tf.depth - 0.09),
           lowerBlockMat
         );
         lowerPlinth.position.y = -0.24;
@@ -535,7 +759,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
         // Extruded #F4F5F7 off-white 3D stone/plastic block up to TILE_SURFACE_Y = 0.44
         const mainBlockHeight = 0.56;
-        const tileGeo = new THREE.BoxGeometry(
+        const tileGeo = getSharedBoxGeo(
           tf.width - 0.05,
           mainBlockHeight,
           tf.depth - 0.05
@@ -554,13 +778,13 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         tileMesh.castShadow = true;
         tileMesh.userData.tileIndex = tile.index;
         tileGroup.add(tileMesh);
-        clickableMeshes.push(tileMesh);
 
-        // 4 Corner 3D Dioramas (0: Start Arch, 7: Lost Island, 14: World Championships Stadium, 21: World Tour Airport)
+        // 4 Corner 3D Dioramas (0: Start Arch, 8: Lost Island, 16: National Cup Stadium, 24: World Tour Airport)
         if (tf.isCorner) {
           const { group: dioramaGroup, anim: dioramaAnim } = createCornerDiorama(
             tile.index,
-            TILE_SURFACE_Y
+            TILE_SURFACE_Y,
+            nightPalette
           );
           // Cancel tileGroup's rotationY so corner dioramas orient consistently toward the isometric diamond camera
           dioramaGroup.rotation.y = -tf.rotationY;
@@ -571,16 +795,14 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         const accentHex =
           tile.kind === TileKind.PROPERTY
             ? resolveDeedGroupPalette(tile.group, tile.groupColor).topHex
-            : tile.kind === TileKind.UTILITY
-              ? '#F59E0B'
-              : tile.kind === TileKind.TAX
-                ? '#E11D48'
-                : '#0EA5E9';
+            : tile.kind === TileKind.TAX
+              ? '#E11D48'
+              : '#0EA5E9';
 
-        // Protruding 3D Outer Price Tab (180K, 660K, 1.2M) extending outward from the tile edge
+        // Protruding 3D Outer Price/Rent Tab extending outward from the tile edge
         let priceTab: ProtrudingPriceTabRefs | null = null;
         let lastTabSignature = '';
-        const initialPriceLabel = formatTilePriceLabel(tile, 0);
+        const initialPriceLabel = formatTilePriceLabel(tile);
         if (initialPriceLabel !== null) {
           priceTab = createProtrudingPriceTab(
             initialPriceLabel,
@@ -590,17 +812,13 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           );
           priceTab.hitMesh.userData.tileIndex = tile.index;
           tileGroup.add(priceTab.group);
-          clickableMeshes.push(priceTab.hitMesh);
-          lastTabSignature = `${initialPriceLabel}|null|false`;
+          lastTabSignature = `${initialPriceLabel}|null|false|null|false|false`;
         }
 
         // Outer rim ownership accent strip
         let ownerStrip: THREE.Mesh | null = null;
         let ownerMat: THREE.MeshStandardMaterial | null = null;
-        const isOwnable =
-          tile.kind === TileKind.PROPERTY ||
-          tile.kind === TileKind.TRANSPORT ||
-          tile.kind === TileKind.UTILITY;
+        const isOwnable = isPurchasableTile(tile);
 
         if (isOwnable) {
           ownerMat = new THREE.MeshStandardMaterial({
@@ -609,7 +827,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             metalness: 0.1,
           });
           ownerStrip = new THREE.Mesh(
-            new THREE.BoxGeometry(tf.width - 0.12, 0.08, 0.14),
+            getSharedBoxGeo(tf.width - 0.12, 0.08, 0.14),
             ownerMat
           );
           ownerStrip.position.set(0, TILE_SURFACE_Y + 0.024, tf.depth / 2 - 0.1);
@@ -617,17 +835,22 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           tileGroup.add(ownerStrip);
         }
 
-        // Full-Color Ownership 3D Miniature Buildings + Floating 3D Shield + Square Level Badge on PROPERTY tiles
+        // Full-Color Regional Ownership 3D Miniature Buildings on PROPERTY & RESORT tiles
         let buildingSuite: OwnershipBuildingSuiteRefs | null = null;
-        if (tile.kind === TileKind.PROPERTY) {
+        if (isOwnable) {
+          const visualProfile = getCityVisualProfile(tile.index);
           buildingSuite = createOwnershipBuildingSuite(
             tf.width,
             tf.depth,
             TILE_SURFACE_Y,
             nightPalette,
-            maxAniso
+            maxAniso,
+            visualProfile.architectureStyle
           );
-          // Orient level badge perpendicular to the isometric camera
+          buildingSuite.setQualityOptions({
+            shadowsEnabled: currentProfile.shadowsEnabled,
+            clearcoatEnabled: currentProfile.usePhysicalClearcoat,
+          });
           buildingSuite.levelBadgeMesh.rotation.y = -tf.rotationY + Math.PI / 4;
           buildingSuite.shieldGroup.rotation.y = -tf.rotationY + Math.PI / 4;
           tileGroup.add(buildingSuite.root);
@@ -638,6 +861,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           index: tile.index,
           group: tileGroup,
           hitMesh: tileMesh,
+          topMat,
           ownerStrip,
           ownerMat,
           priceTab,
@@ -655,6 +879,24 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       }
       tileEntriesRef.current = tileEntries;
 
+      if (!isGameFontsReadySync()) {
+        void whenAllGameFontsLoaded().then(() => {
+          if (disposed) return;
+          for (const entry of tileEntries) {
+            const tileDef = BOARD_TILES[entry.index];
+            const prevMap = entry.topMat.map;
+            const nextMap = createTileTopTexture(tileDef, maxAniso, entry.flip180);
+            entry.topMat.map = nextMap;
+            entry.topMat.needsUpdate = true;
+            prevMap?.dispose();
+            entry.lastTabSignature = '';
+            entry.lastBadgeSignature = '';
+          }
+          courtyardAnim.refreshTextTextures();
+          wakeRenderRef.current?.();
+        });
+      }
+
       // Active player ground halo ring
       const activeRingGeo = new THREE.RingGeometry(0.4, 0.54, 24);
       activeRingGeo.rotateX(-Math.PI / 2);
@@ -670,8 +912,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       scene.add(activeRing);
       activeRingRef.current = activeRing;
 
-      // 2 Oversized Glossy Hot-Pink 3D Dice with White Pips bouncing on the sunken grass courtyard
-      const diceGeo = new THREE.BoxGeometry(DICE_SIZE, DICE_SIZE, DICE_SIZE);
+      // 2 Oversized Glossy Hot-Pink Rounded Clearcoat 3D Dice with Recessed Pips
+      const diceGeo = new RoundedBoxGeometry(DICE_SIZE, DICE_SIZE, DICE_SIZE, 5, 0.135);
       const diceMats1 = createDiceFaceMaterials(DICE_BOX_FACE_VALUES, maxAniso);
       const diceMats2 = createDiceFaceMaterials(DICE_BOX_FACE_VALUES, maxAniso);
       const dieMesh1 = new THREE.Mesh(diceGeo, diceMats1);
@@ -684,9 +926,105 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       scene.add(dieMesh2);
       diceMeshesRef.current = [dieMesh1, dieMesh2];
 
-      if (!isSoftwareGl) {
+      // Zero-GC Pooled 3D Celebratory Sparkle/Star Particle Burst System!
+      const PARTICLE_POOL_SIZE = 44;
+      const particleGeo = new THREE.OctahedronGeometry(0.095, 0);
+      interface SparkParticle {
+        mesh: THREE.Mesh;
+        mat: THREE.MeshBasicMaterial;
+        vx: number;
+        vy: number;
+        vz: number;
+        life: number;
+        maxLife: number;
+        active: boolean;
+      }
+      const sparkPool: SparkParticle[] = [];
+      let sparkCursor = 0;
+      for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0xfde047,
+          transparent: true,
+          opacity: 0,
+          toneMapped: false,
+        });
+        const mesh = new THREE.Mesh(particleGeo, mat);
+        mesh.visible = false;
+        scene.add(mesh);
+        sparkPool.push({
+          mesh,
+          mat,
+          vx: 0,
+          vy: 0,
+          vz: 0,
+          life: 0,
+          maxLife: 0.75,
+          active: false,
+        });
+      }
+
+      const spawnParticleBurst = (
+        wx: number,
+        wy: number,
+        wz: number,
+        primaryHex: string,
+        count = 14
+      ) => {
+        for (let c = 0; c < count; c++) {
+          const sp = sparkPool[sparkCursor];
+          sparkCursor = (sparkCursor + 1) % PARTICLE_POOL_SIZE;
+          const angle = (c / count) * Math.PI * 2 + (c % 3) * 0.21;
+          const speed = 1.6 + (c % 4) * 0.65;
+          sp.mesh.position.set(wx, wy, wz);
+          sp.vx = Math.cos(angle) * speed;
+          sp.vy = 2.8 + (c % 3) * 0.95;
+          sp.vz = Math.sin(angle) * speed;
+          sp.life = 0;
+          sp.maxLife = 0.68 + (c % 3) * 0.14;
+          sp.active = true;
+          sp.mat.color.set(c % 2 === 0 ? primaryHex : '#FDE047');
+          sp.mat.opacity = 1;
+          sp.mesh.scale.setScalar(1);
+          sp.mesh.visible = true;
+        }
+      };
+
+      // GPU InstancedMesh 3D Treasury Vaults (4 Player Trays + Central Bank + GLSL Flutter/Glint)
+      const treasury = createTreasurySystem(maxAniso, isSoftwareGl);
+      treasury.setQualityProfile(currentProfile);
+      treasury.syncVaults(playersRef.current, currencyStyleRef.current, 0);
+      scene.add(treasury.group);
+
+      let prevCashPlayersSnapshot: PlayerState[] = playersRef.current.map((p) => ({
+        ...p,
+      }));
+      let prevCashPropsSnapshot: Record<number, PropertyState> = {
+        ...propertiesRef.current,
+      };
+
+      if (!isSoftwareGl && currentProfile.tier === 'high') {
         renderer.compile(scene, camera);
       }
+
+      let disposed = false;
+      let scheduledMode: 'none' | 'raf' | 'timeout' = 'none';
+      let frameId = 0;
+      let lastTimeMs = performance.now();
+      let elapsedSec = 0;
+      let shadowMapDirty = true;
+      let occludedBackdropDirty = true;
+      let renderedFrames = 0;
+      renderer.domElement.dataset.qualityTier = currentProfile.tier;
+      renderer.domElement.dataset.renderedFrames = '0';
+
+      const cancelScheduledTick = () => {
+        if (scheduledMode === 'raf') {
+          cancelAnimationFrame(frameId);
+        } else if (scheduledMode === 'timeout') {
+          clearTimeout(frameId);
+        }
+        scheduledMode = 'none';
+      };
 
       // Raycasting interaction (click vs drag)
       const raycaster = new THREE.Raycaster();
@@ -707,42 +1045,78 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         downY = e.clientY;
       };
 
+      const resolveHitTileIndex = (obj: THREE.Object3D | null): number | null => {
+        let cur: THREE.Object3D | null = obj;
+        while (cur) {
+          if (typeof cur.userData?.tileIndex === 'number') {
+            return cur.userData.tileIndex as number;
+          }
+          cur = cur.parent;
+        }
+        return null;
+      };
+
+      const raycastBoardTile = (clientX: number, clientY: number): number | null => {
+        updateNDC(clientX, clientY);
+        raycaster.setFromCamera(pointerNDC, camera);
+        const targets: THREE.Object3D[] = [...clickableRoots];
+        for (const tok of tokenGroupsRef.current.values()) {
+          if (tok.visible) targets.push(tok);
+        }
+        const hits = raycaster.intersectObjects(targets, true);
+        for (const hit of hits) {
+          const tIdx = resolveHitTileIndex(hit.object);
+          if (tIdx !== null) return tIdx;
+        }
+        return null;
+      };
+
       const onPointerUp = (e: PointerEvent) => {
         const dist = Math.hypot(e.clientX - downX, e.clientY - downY);
         if (dist > 6 || e.button !== 0) return;
 
-        updateNDC(e.clientX, e.clientY);
-        raycaster.setFromCamera(pointerNDC, camera);
-        const hits = raycaster.intersectObjects(clickableMeshes, false);
-        if (hits.length > 0) {
-          const tIdx = hits[0].object.userData.tileIndex;
-          if (typeof tIdx === 'number') {
-            onSelectTileRef.current(tIdx);
-          }
+        const tIdx = raycastBoardTile(e.clientX, e.clientY);
+        if (tIdx !== null) {
+          onSelectTileRef.current(tIdx);
         }
       };
 
+      let tick = () => {};
+      let requestRender: (markBackdropDirty?: boolean) => void = () => {};
+
       const onPointerMove = (e: PointerEvent) => {
+        if (isBoardOccludedRef.current || e.buttons !== 0) return;
         const now = performance.now();
         if (now - lastMoveCheck < 50) return;
         lastMoveCheck = now;
 
-        updateNDC(e.clientX, e.clientY);
-        raycaster.setFromCamera(pointerNDC, camera);
-        const hits = raycaster.intersectObjects(clickableMeshes, false);
-        if (hits.length > 0) {
-          const tIdx = hits[0].object.userData.tileIndex;
-          hoveredTileIdx = typeof tIdx === 'number' ? tIdx : null;
-          renderer.domElement.style.cursor = 'pointer';
+        const nextHovered = raycastBoardTile(e.clientX, e.clientY);
+        if (nextHovered !== hoveredTileIdx) {
+          hoveredTileIdx = nextHovered;
+          renderer.domElement.style.cursor = nextHovered !== null ? 'pointer' : 'grab';
+          requestRender();
         } else {
+          renderer.domElement.style.cursor = nextHovered !== null ? 'pointer' : 'grab';
+        }
+      };
+
+      const onPointerLeave = () => {
+        if (hoveredTileIdx !== null) {
           hoveredTileIdx = null;
           renderer.domElement.style.cursor = 'grab';
+          requestRender();
         }
       };
 
       renderer.domElement.addEventListener('pointerdown', onPointerDown);
       renderer.domElement.addEventListener('pointerup', onPointerUp);
       renderer.domElement.addEventListener('pointermove', onPointerMove);
+      renderer.domElement.addEventListener('pointerleave', onPointerLeave);
+
+      controls.addEventListener('change', () => {
+        controlsChangedThisFrame = true;
+        requestRender();
+      });
 
       const handleResize = () => {
         if (!container) return;
@@ -751,21 +1125,43 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         const nextAspect = w / h;
         camera.aspect = nextAspect;
         camera.updateProjectionMatrix();
+        currentPixelRatio = isSoftwareGl
+          ? 1
+          : Math.min(window.devicePixelRatio || 1, currentProfile.maxPixelRatio);
+        renderer.setPixelRatio(currentPixelRatio);
         renderer.setSize(w, h);
+        syncComposerDimensions(w, h, currentPixelRatio);
+        const safeDist = applySafeDefaultCameraPose(
+          w,
+          h,
+          _scratchDefaultCamPos,
+          _scratchDefaultCamTarget
+        );
+        controls.maxDistance = Math.max(96, safeDist * 1.35);
         if (!cinematicCameraRef.current && !manualOrbitOverrideRef.current) {
-          computeResponsiveDefaultCamPos(nextAspect, camera.position);
-          controls.target.copy(DEFAULT_CAM_TARGET);
+          camera.position.copy(_scratchDefaultCamPos);
+          controls.target.copy(_scratchDefaultCamTarget);
           controls.update();
         }
+        shadowMapDirty = true;
+        requestRender(true);
       };
       const resizeObserver = new ResizeObserver(handleResize);
       resizeObserver.observe(container);
       window.addEventListener('resize', handleResize);
 
-      let frameId = 0;
-      let disposed = false;
-      let lastTimeMs = performance.now();
-      let elapsedSec = 0;
+      const handleVisibilityChange = () => {
+        if (typeof document !== 'undefined' && document.hidden) {
+          cancelScheduledTick();
+          if (activeDiceAnimRef.current || activeHopAnimRef.current) {
+            scheduledMode = 'timeout';
+            frameId = window.setTimeout(tick, 80);
+          }
+        } else {
+          requestRender(true);
+        }
+      };
+      document.addEventListener('visibilitychange', handleVisibilityChange);
 
       const afterDraw = (cb: () => void) => {
         const gl = renderer.getContext() as WebGL2RenderingContext;
@@ -775,12 +1171,15 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           if (disposed) return;
           const state = sync ? gl.getSyncParameter(sync, gl.SYNC_STATUS) : gl.SIGNALED;
           if (state === gl.UNSIGNALED) {
+            scheduledMode = 'timeout';
             frameId = window.setTimeout(poll, 5);
           } else {
             if (sync) gl.deleteSync(sync);
+            scheduledMode = 'timeout';
             frameId = window.setTimeout(cb, 80);
           }
         };
+        scheduledMode = 'timeout';
         frameId = window.setTimeout(poll, 5);
       };
 
@@ -788,10 +1187,82 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       let appliedNightSnapshot = -1;
       let lastRenderedSpeech = '';
 
-      const syncSceneFromState = (simDt: number, animDt: number, elapsed: number) => {
+      const applyQualityTier = (nextTier: GraphicsQualityTier) => {
+        if (disposed) return;
+        const nextProfile = resolveGraphicsProfile(nextTier, isSoftwareGl);
+        currentProfile = nextProfile;
+        renderer.domElement.dataset.qualityTier = nextProfile.tier;
+
+        const w = container.clientWidth || window.innerWidth;
+        const h = container.clientHeight || window.innerHeight;
+        currentPixelRatio = isSoftwareGl
+          ? 1
+          : Math.min(window.devicePixelRatio || 1, nextProfile.maxPixelRatio);
+        renderer.setPixelRatio(currentPixelRatio);
+        renderer.setSize(w, h);
+
+        scene.environment = nextProfile.useEnvironmentMap ? ensureEnvironmentMap() : null;
+        appliedNightSnapshot = -1;
+
+        renderer.shadowMap.enabled = nextProfile.shadowsEnabled;
+        renderer.shadowMap.type =
+          nextProfile.tier === 'high' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+        sunLight.castShadow = nextProfile.shadowsEnabled;
+
+        if (!nextProfile.shadowsEnabled) {
+          sunLight.shadow.map?.dispose();
+          sunLight.shadow.map = null;
+        } else if (
+          nextProfile.shadowMapSize > 0 &&
+          sunLight.shadow.mapSize.width !== nextProfile.shadowMapSize
+        ) {
+          sunLight.shadow.map?.dispose();
+          sunLight.shadow.map = null;
+          sunLight.shadow.mapSize.set(
+            nextProfile.shadowMapSize,
+            nextProfile.shadowMapSize
+          );
+        }
+        shadowMapDirty = true;
+
+        for (const entry of tileEntriesRef.current) {
+          entry.buildingSuite?.setQualityOptions({
+            shadowsEnabled: nextProfile.shadowsEnabled,
+            clearcoatEnabled: nextProfile.usePhysicalClearcoat,
+          });
+        }
+        treasury.setQualityProfile(nextProfile);
+
+        if (nextProfile.usePostProcessing) {
+          const createdNow = ensurePostProcessing(
+            w,
+            h,
+            currentPixelRatio,
+            currentNightFactor
+          );
+          if (!createdNow) {
+            syncComposerDimensions(w, h, currentPixelRatio);
+          }
+        } else {
+          disposePostProcessing();
+        }
+        nightPalette.skyDomeUniforms.uLinearOutput.value = composer ? 1 : 0;
+
+        requestRender(true);
+      };
+      applyQualityTierRef.current = applyQualityTier;
+
+      const syncSceneFromState = (
+        simDt: number,
+        animDt: number,
+        elapsed: number
+      ): boolean => {
         const currentPlayers = playersRef.current;
         const currentProps = propertiesRef.current;
         const selectedIdx = selectedTileRef.current;
+        const animateAmbient = currentProfile.animateAmbientProps;
+        let hasActiveMotion = false;
+        let sceneShadowCastersMoved = false;
 
         // 0. Smooth Day / Night lighting & Pastel Sky Dome transition
         const targetNight = nightModeRef.current ? 1 : 0;
@@ -803,24 +1274,32 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         );
         if (Math.abs(targetNight - currentNightFactor) < 0.002) {
           currentNightFactor = targetNight;
+        } else {
+          hasActiveMotion = true;
         }
 
         const lightState = computeDayNightLightingState(currentNightFactor);
         if (Math.abs(appliedNightSnapshot - currentNightFactor) > 0.0005) {
           appliedNightSnapshot = currentNightFactor;
+          sceneShadowCastersMoved = true;
           (scene.background as THREE.Color).setHex(lightState.skyHex);
           nightPalette.skyDomeUniforms.uNightFactor.value = currentNightFactor;
 
+          const noEnvHemiBoost = currentProfile.useEnvironmentMap ? 1.0 : 1.12;
+          const noEnvKeyBoost = currentProfile.useEnvironmentMap ? 1.0 : 1.05;
+
           hemiLight.color.setHex(lightState.hemiSkyHex);
           hemiLight.groundColor.setHex(lightState.hemiGroundHex);
-          hemiLight.intensity = lightState.hemiIntensity;
+          hemiLight.intensity = lightState.hemiIntensity * noEnvHemiBoost;
 
           sunLight.color.setHex(lightState.keyLightHex);
-          sunLight.intensity = lightState.keyLightIntensity;
+          sunLight.intensity = lightState.keyLightIntensity * noEnvKeyBoost;
           sunLight.position.lerpVectors(_daySunPos, _nightMoonPos, currentNightFactor);
 
           rimLight.intensity = lightState.rimLightIntensity;
-          scene.environmentIntensity = lightState.envIntensity;
+          scene.environmentIntensity = currentProfile.useEnvironmentMap
+            ? lightState.envIntensity
+            : 0;
           renderer.toneMappingExposure = lightState.exposure;
 
           nightPalette.oceanMat.color
@@ -841,23 +1320,38 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             pl.visible = lampsActive;
             pl.intensity = lightState.courtyardPointLightIntensity;
           }
+          if (bloomPass) {
+            bloomPass.strength = currentNightFactor * 0.36;
+            bloomPass.enabled = currentNightFactor > 0.005;
+          }
         }
 
         if (currentNightFactor > 0.005) {
-          const gentleShimmer = 0.94 + Math.sin(elapsed * 2.7) * 0.06;
+          const gentleShimmer = animateAmbient
+            ? 0.94 + Math.sin(elapsed * 2.7) * 0.06
+            : 0.97;
           nightPalette.houseWindowMat.emissiveIntensity =
             lightState.windowEmissiveIntensity * gentleShimmer;
           nightPalette.hotelWindowMat.emissiveIntensity =
-            lightState.windowEmissiveIntensity * 1.12;
+            lightState.windowEmissiveIntensity * 1.15;
           nightPalette.hotelBeaconMat.emissiveIntensity =
-            lightState.windowEmissiveIntensity * (0.92 + Math.sin(elapsed * 4.2) * 0.16);
+            lightState.windowEmissiveIntensity *
+            (animateAmbient ? 0.95 + Math.sin(elapsed * 4.2) * 0.18 : 1.0);
           nightPalette.streetLampBulbMat.emissiveIntensity =
             lightState.lampBulbEmissiveIntensity;
+          nightPalette.lanternSilkMat.emissiveIntensity =
+            lightState.windowEmissiveIntensity *
+            (animateAmbient ? 0.85 + Math.sin(elapsed * 3.1) * 0.1 : 0.92);
+          nightPalette.fountainWaterMat.emissiveIntensity = currentNightFactor * 1.1;
+          nightPalette.tokenHeadlightMat.emissiveIntensity = currentNightFactor * 2.4;
         } else {
           nightPalette.houseWindowMat.emissiveIntensity = 0;
           nightPalette.hotelWindowMat.emissiveIntensity = 0;
           nightPalette.hotelBeaconMat.emissiveIntensity = 0;
           nightPalette.streetLampBulbMat.emissiveIntensity = 0;
+          nightPalette.lanternSilkMat.emissiveIntensity = 0;
+          nightPalette.fountainWaterMat.emissiveIntensity = 0;
+          nightPalette.tokenHeadlightMat.emissiveIntensity = 0;
         }
 
         // 1. Sync Stylized 3D Character Pawns
@@ -866,30 +1360,75 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           if (!validIds.has(id)) {
             scene.remove(mesh);
             tokenGroupsRef.current.delete(id);
+            transparentListDirty = true;
+            sceneShadowCastersMoved = true;
           }
         }
 
         for (const p of currentPlayers) {
           let token = tokenGroupsRef.current.get(p.id);
+          if (
+            token &&
+            (token.userData.tokenType !== p.tokenType || token.userData.color !== p.color)
+          ) {
+            scene.remove(token);
+            token.traverse((obj) => {
+              if (obj instanceof THREE.Mesh) {
+                if (obj.geometry && !obj.geometry.userData?.sharedStatic) {
+                  obj.geometry.dispose();
+                }
+                const disposeTokMat = (m: THREE.Material) => {
+                  if (m.userData?.sharedStatic) return;
+                  m.dispose();
+                };
+                if (Array.isArray(obj.material)) {
+                  obj.material.forEach(disposeTokMat);
+                } else if (obj.material) {
+                  disposeTokMat(obj.material);
+                }
+              }
+            });
+            tokenGroupsRef.current.delete(p.id);
+            token = undefined;
+            transparentListDirty = true;
+            sceneShadowCastersMoved = true;
+          }
           if (!token) {
             token = createPlayerTokenMesh(p.tokenType, p.color, nightPalette);
+            token.userData.tokenType = p.tokenType;
+            token.userData.color = p.color;
             const startPos = computeTokenRestWorldPos(p.id, p.position, currentPlayers);
             token.position.copy(startPos);
             scene.add(token);
             tokenGroupsRef.current.set(p.id, token);
+            transparentListDirty = true;
+            sceneShadowCastersMoved = true;
           }
-          token.visible = !p.bankrupt;
+          if (token.visible !== !p.bankrupt) {
+            token.visible = !p.bankrupt;
+            sceneShadowCastersMoved = true;
+          }
 
           const hop = activeHopAnimRef.current;
           if (!hop || hop.playerId !== p.id) {
             const targetPos = computeTokenRestWorldPos(p.id, p.position, currentPlayers);
+            token.userData.tileIndex = p.position;
             const alpha = 1 - Math.exp(-12 * simDt);
-            token.position.lerp(targetPos, alpha);
+            if (token.position.distanceToSquared(targetPos) > 0.00002) {
+              token.position.lerp(targetPos, alpha);
+              hasActiveMotion = true;
+              sceneShadowCastersMoved = true;
+            } else {
+              token.position.copy(targetPos);
+            }
 
-            // Orient 3D character pawn toward the isometric camera with a subtle lively idle sway
-            const targetRotY =
-              Math.PI / 4 + Math.sin(elapsed * 1.8 + p.id * 1.3) * 0.14;
-            token.rotation.y = THREE.MathUtils.lerp(token.rotation.y, targetRotY, alpha);
+            // Orient 3D character pawn toward the isometric camera (idle sway only when ambient props enabled)
+            const targetRotY = animateAmbient
+              ? Math.PI / 4 + Math.sin(elapsed * 1.8 + p.id * 1.3) * 0.14
+              : Math.PI / 4;
+            token.rotation.y = animateAmbient
+              ? THREE.MathUtils.lerp(token.rotation.y, targetRotY, alpha)
+              : targetRotY;
             token.scale.lerp(_scratchUnitScale, alpha);
           }
         }
@@ -903,7 +1442,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             activeRingRef.current.visible = true;
             activeRingRef.current.position.x = tok.position.x;
             activeRingRef.current.position.z = tok.position.z;
-            const pulse = 1 + Math.sin(elapsed * 4.5) * 0.08;
+            const pulse = animateAmbient ? 1 + Math.sin(elapsed * 4.5) * 0.08 : 1;
             activeRingRef.current.scale.set(pulse, pulse, 1);
             (activeRingRef.current.material as THREE.MeshBasicMaterial).color.set(
               activeP.color
@@ -913,26 +1452,38 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           activeRingRef.current.visible = false;
         }
 
-        // 1b. Sync Sunken Grass Center 3D Spaced Tax Text ("660 000" / "0") & Turn/Timer Console
-        courtyardAnim.updateTaxDisplay(formatBusinessTourSpaced(taxPoolRef.current));
+        // 1b. Sync Sunken Grass Center 3D Championship Status & Turn/Timer Console
+        const currentMods = boardModifiersRef.current;
+        if (currentMods.championshipTileIndex !== null) {
+          const hostTile = BOARD_TILES[currentMods.championshipTileIndex];
+          const hostLabel = hostTile?.shortName || hostTile?.name || '';
+          courtyardAnim.updateTaxDisplay(
+            `×${currentMods.championshipMultiplier} · ${hostLabel}`,
+            'CÚP QUỐC GIA'
+          );
+        } else {
+          courtyardAnim.updateTaxDisplay('VIỆT NAM 3D', 'CỜ TỶ PHÚ');
+        }
         courtyardAnim.updateCountdown(
           turnTimeLeftRef.current,
           turnCountRef.current,
           activeP?.color || '#29B6F6'
         );
 
-        // 1c. Animate 4 Corner 3D Dioramas (Lost Island mascot, World Cup trophy, World Tour jet & radar)
-        for (const cAnim of cornerAnims) {
-          if (cAnim.spinTarget) {
-            cAnim.spinTarget.rotation.y = elapsed * 1.35;
-          }
-          if (cAnim.bobTarget) {
-            cAnim.bobTarget.position.y =
-              cAnim.baseBobY + Math.sin(elapsed * 2.8 + cAnim.tileIndex) * 0.075;
+        // 1c. Animate 4 Corner 3D Dioramas (only when ambient animations enabled)
+        if (animateAmbient) {
+          for (const cAnim of cornerAnims) {
+            if (cAnim.spinTarget) {
+              cAnim.spinTarget.rotation.y = elapsed * 1.35;
+            }
+            if (cAnim.bobTarget) {
+              cAnim.bobTarget.position.y =
+                cAnim.baseBobY + Math.sin(elapsed * 2.8 + cAnim.tileIndex) * 0.075;
+            }
           }
         }
 
-        // 2. Sync Full-Color Ownership 3D Buildings, Shield Badges, Level Badges & Outer Price Tabs
+        // 2. Sync Full-Color Ownership 3D Buildings, Shield Badges, Level Badges & Outer Live Rent Tabs
         for (const entry of tileEntriesRef.current) {
           const propState = currentProps[entry.index];
           const tileDef = BOARD_TILES[entry.index];
@@ -947,8 +1498,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           if (entry.ownerStrip && entry.ownerMat && propState) {
             if (propState.ownerId !== null && owner) {
               entry.ownerStrip.visible = true;
-              const stripHex = propState.mortgaged ? '#64748b' : owner.color;
-              entry.ownerMat.color.set(stripHex);
+              entry.ownerMat.color.set(owner.color);
             } else {
               entry.ownerStrip.visible = false;
             }
@@ -957,13 +1507,20 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           const isOwned = Boolean(owner && propState && propState.ownerId !== null);
           const targetLevel = isOwned && propState ? propState.level : -1;
 
-          // Sync Protruding 3D Outer Price Tab
+          const isOutage = Boolean(currentMods.outageTileIndices?.includes(entry.index));
+          const isShielded = Boolean(currentMods.shieldedTileIndices?.includes(entry.index));
+
+          // Sync Protruding 3D Outer Price / Live Rent Tab
           if (entry.priceTab && tileDef) {
             const liveLabel =
-              formatTilePriceLabel(tileDef, Math.max(0, targetLevel)) || '';
+              formatTilePriceLabel(tileDef, propState, currentProps, currentMods) || '';
             const ownerHex = owner ? owner.color : null;
-            const isMortgaged = Boolean(propState?.mortgaged);
-            const sig = `${liveLabel}|${ownerHex}|${isMortgaged}`;
+            const isFestival = currentMods.festivalTileIndices.includes(entry.index);
+            const cupMultiplier =
+              currentMods.championshipTileIndex === entry.index
+                ? Math.max(2, currentMods.championshipMultiplier)
+                : null;
+            const sig = `${liveLabel}|${ownerHex}|${isFestival}|${cupMultiplier}|${isOutage}|${isShielded}`;
             if (sig !== entry.lastTabSignature) {
               entry.lastTabSignature = sig;
               const prevMap = entry.priceTab.topMat.map;
@@ -971,7 +1528,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
                 liveLabel,
                 entry.accentHex,
                 ownerHex,
-                isMortgaged,
+                { isFestival, cupMultiplier, isOutage, isShielded },
                 entry.flip180,
                 maxAniso
               );
@@ -979,21 +1536,28 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
               entry.priceTab.topMat.needsUpdate = true;
               prevMap?.dispose();
 
-              const collarColor = isMortgaged
-                ? '#64748B'
-                : ownerHex
-                  ? ownerHex
-                  : liveLabel.startsWith('-')
-                    ? '#FB7185'
-                    : '#D5DCE6';
+              const collarColor = isOutage
+                ? '#475569'
+                : cupMultiplier
+                  ? '#FACC15'
+                  : isShielded
+                    ? '#38BDF8'
+                    : ownerHex
+                      ? ownerHex
+                      : liveLabel.startsWith('-')
+                        ? '#FB7185'
+                        : '#D5DCE6';
               entry.priceTab.collarMat.color.set(collarColor);
             }
           }
 
-          // Sync Full-Color Ownership 3D Building Suite on PROPERTY tiles
-          if (entry.buildingSuite) {
+          // Sync Full-Color Ownership 3D Building Suite on PROPERTY & RESORT tiles
+          if (entry.buildingSuite && tileDef) {
             const suite = entry.buildingSuite;
             if (!isOwned || !owner) {
+              if (entry.displayedLevel !== -1) {
+                sceneShadowCastersMoved = true;
+              }
               suite.padMesh.visible = false;
               suite.starterPavilion.visible = false;
               suite.hotel.visible = false;
@@ -1003,32 +1567,43 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
               entry.displayedLevel = -1;
             } else {
               suite.padMesh.visible = true;
-              const isMortgaged = Boolean(propState?.mortgaged);
-              const ownerSig = `${owner.color}|${isMortgaged}`;
+              const ownerSig = owner.color;
               if (ownerSig !== entry.lastOwnerSignature) {
                 entry.lastOwnerSignature = ownerSig;
-                suite.setOwnerTint(owner.color, isMortgaged);
+                suite.setOwnerTint(owner.color);
               }
 
-              if (targetLevel !== entry.displayedLevel) {
-                if (targetLevel === 0) {
+              const effectiveLevel = tileDef.kind === TileKind.RESORT ? 0 : targetLevel;
+
+              if (effectiveLevel !== entry.displayedLevel) {
+                sceneShadowCastersMoved = true;
+                if (effectiveLevel === 0) {
                   entry.popTimers[4] = 0.01;
-                } else if (targetLevel === 4) {
+                } else if (effectiveLevel === 4) {
                   entry.popTimers[3] = 0.01;
-                } else if (targetLevel > 0) {
+                } else if (effectiveLevel > 0) {
                   for (
                     let h = Math.max(0, entry.displayedLevel);
-                    h < Math.min(targetLevel, 3);
+                    h < Math.min(effectiveLevel, 3);
                     h++
                   ) {
                     entry.popTimers[h] = 0.01;
                   }
                 }
-                entry.displayedLevel = targetLevel;
+                if (effectiveLevel > entry.displayedLevel) {
+                  spawnParticleBurst(
+                    entry.group.position.x,
+                    TILE_SURFACE_Y + (effectiveLevel >= 4 ? 0.9 : 0.45),
+                    entry.group.position.z,
+                    owner.color,
+                    effectiveLevel >= 4 ? 20 : 12
+                  );
+                }
+                entry.displayedLevel = effectiveLevel;
               }
 
-              // Level 0 owned starter pavilion
-              const showStarter = targetLevel === 0 && !isMortgaged;
+              // Level 0 owned starter pavilion (Land-only PROPERTY or owned RESORT)
+              const showStarter = effectiveLevel === 0;
               suite.starterPavilion.visible = showStarter;
               if (showStarter) {
                 if (entry.popTimers[4] > 0 && entry.popTimers[4] < 1) {
@@ -1036,6 +1611,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
                   suite.starterPavilion.scale.setScalar(
                     Math.max(0.01, springPopScale(entry.popTimers[4]))
                   );
+                  hasActiveMotion = true;
+                  sceneShadowCastersMoved = true;
                 } else {
                   suite.starterPavilion.scale.setScalar(1);
                 }
@@ -1043,8 +1620,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
               // Level 1..3 houses
               for (let h = 0; h < suite.houses.length; h++) {
-                const showHouse =
-                  !isMortgaged && targetLevel >= h + 1 && targetLevel < 4;
+                const showHouse = effectiveLevel >= h + 1 && effectiveLevel < 4;
                 const hGroup = suite.houses[h];
                 hGroup.visible = showHouse;
                 if (showHouse) {
@@ -1053,36 +1629,45 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
                     hGroup.scale.setScalar(
                       Math.max(0.01, springPopScale(entry.popTimers[h]))
                     );
+                    hasActiveMotion = true;
+                    sceneShadowCastersMoved = true;
                   } else {
                     hGroup.scale.setScalar(1);
                   }
                 }
               }
 
-              // Level 4 Luxury Hotel + Floating 3D Gold/Red Protection Shield!
-              const showHotel = !isMortgaged && targetLevel >= 4;
+              // Level 4 Luxury Hotel + Floating 3D Protection Shield (shown for Hotels ★ AND Shielded cities!)
+              const showHotel = effectiveLevel >= 4;
+              const showShield = showHotel || isShielded;
               suite.hotel.visible = showHotel;
-              suite.shieldGroup.visible = showHotel;
+              suite.shieldGroup.visible = showShield;
               if (showHotel) {
                 if (entry.popTimers[3] > 0 && entry.popTimers[3] < 1) {
                   entry.popTimers[3] = Math.min(1, entry.popTimers[3] + animDt * 3.0);
                   suite.hotel.scale.setScalar(
                     Math.max(0.01, springPopScale(entry.popTimers[3]))
                   );
+                  hasActiveMotion = true;
+                  sceneShadowCastersMoved = true;
                 } else {
                   suite.hotel.scale.setScalar(1);
                 }
-                suite.shieldGroup.position.y =
-                  TILE_SURFACE_Y +
-                  1.52 +
-                  Math.sin(elapsed * 3.1 + entry.index) * 0.08;
-                suite.shieldGroup.rotation.y += animDt * 1.4;
+              }
+              if (showShield) {
+                const shieldBaseY = showHotel ? TILE_SURFACE_Y + 1.52 : TILE_SURFACE_Y + 1.12;
+                if (animateAmbient) {
+                  suite.shieldGroup.position.y =
+                    shieldBaseY + Math.sin(elapsed * 3.1 + entry.index) * 0.08;
+                  suite.shieldGroup.rotation.y += animDt * 1.4;
+                } else {
+                  suite.shieldGroup.position.y = shieldBaseY;
+                }
               }
 
-              // Clean Square Level Badge ("1", "2", "3", "★") shown when upgraded (level >= 1) or hovered/selected!
-              const displayBadgeLevel = Math.max(1, targetLevel);
-              const showBadge =
-                !isMortgaged && (targetLevel >= 1 || isHov || isSel);
+              // Clean Square Level Badge ("1", "2", "3", "★") for upgraded PROPERTY tiles
+              const displayBadgeLevel = Math.max(1, effectiveLevel);
+              const showBadge = tileDef.kind === TileKind.PROPERTY && effectiveLevel >= 1;
               suite.levelBadgeMesh.visible = showBadge;
               if (showBadge) {
                 const badgeSig = `${displayBadgeLevel}|${owner.color}`;
@@ -1098,51 +1683,70 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
                   suite.levelBadgeMat.needsUpdate = true;
                   prevBadgeTex?.dispose();
                 }
-                suite.levelBadgeMesh.position.y =
-                  TILE_SURFACE_Y +
-                  (targetLevel >= 4 ? 1.15 : 0.86) +
-                  Math.sin(elapsed * 2.6 + entry.index) * 0.04;
+                const baseBadgeY =
+                  TILE_SURFACE_Y + (effectiveLevel >= 4 ? 1.15 : 0.86);
+                suite.levelBadgeMesh.position.y = animateAmbient
+                  ? baseBadgeY + Math.sin(elapsed * 2.6 + entry.index) * 0.04
+                  : baseBadgeY;
               }
             }
           }
 
-          // Hover / Selected elevation
-          entry.targetLift = isSel ? 0.14 : isHov ? 0.06 : 0;
-          entry.group.position.y = THREE.MathUtils.lerp(
-            entry.group.position.y,
-            entry.targetLift,
-            1 - Math.exp(-14 * simDt)
-          );
+          // Selectable highlight pulse & Hover / Selected elevation
+          const isSelectable = selectableTilesRef.current.has(entry.index);
+          if (isSelectable) {
+            entry.topMat.emissive.setHex(0xf59e0b);
+            entry.topMat.emissiveIntensity = animateAmbient
+              ? 0.18 + Math.sin(elapsed * 5 + entry.index) * 0.08
+              : 0.24;
+          } else if (entry.topMat.emissiveIntensity !== 0) {
+            entry.topMat.emissiveIntensity = 0;
+          }
+
+          entry.targetLift = isSel ? 0.14 : isSelectable ? 0.09 : isHov ? 0.06 : 0;
+          if (Math.abs(entry.group.position.y - entry.targetLift) > 0.0015) {
+            entry.group.position.y = THREE.MathUtils.lerp(
+              entry.group.position.y,
+              entry.targetLift,
+              1 - Math.exp(-14 * simDt)
+            );
+            hasActiveMotion = true;
+            sceneShadowCastersMoved = true;
+          } else if (entry.group.position.y !== entry.targetLift) {
+            entry.group.position.y = entry.targetLift;
+            sceneShadowCastersMoved = true;
+          }
         }
 
-        // 3. Advance Oversized Hot-Pink 3D Dice physical bounce & exact face landing
+        // 3. Advance cannon-es Rigid-Body 3D Dice trajectory & synchronized collision SFX
         const diceAnim = activeDiceAnimRef.current;
         const diceMeshes = diceMeshesRef.current;
         if (diceAnim && diceMeshes) {
+          hasActiveMotion = true;
+          sceneShadowCastersMoved = true;
           diceAnim.elapsed += animDt;
           const t = Math.min(1, diceAnim.elapsed / diceAnim.duration);
-          const easeXZ = 1 - Math.pow(1 - t, 2.4);
-          const yOffset = bounceHeight(t);
 
+          while (
+            diceAnim.nextCollisionIdx < diceAnim.trajectory.collisionTimes.length &&
+            t >= diceAnim.trajectory.collisionTimes[diceAnim.nextCollisionIdx]
+          ) {
+            const impactIntensity = Math.max(
+              0.22,
+              1.0 - diceAnim.nextCollisionIdx * 0.2
+            );
+            soundEngine.playPhysicsDiceHit(impactIntensity);
+            diceAnim.nextCollisionIdx++;
+          }
+
+          const pose = sampleDiceTrajectoryAt(diceAnim.trajectory, t);
           const [d1, d2] = diceMeshes;
-          d1.position.lerpVectors(diceAnim.startPos1, diceAnim.endPos1, easeXZ);
-          d1.position.y = DICE_REST_Y + yOffset;
-
-          d2.position.lerpVectors(diceAnim.startPos2, diceAnim.endPos2, easeXZ);
-          d2.position.y = DICE_REST_Y + bounceHeight(Math.min(1, t * 1.04));
-
-          const remainingSpin = Math.pow(1 - t, 2.1) * Math.PI * 6;
-          _scratchQuatSpin.setFromAxisAngle(diceAnim.spinAxis1, remainingSpin);
-          d1.quaternion.copy(diceAnim.targetQuat1).multiply(_scratchQuatSpin);
-
-          _scratchQuatSpin.setFromAxisAngle(diceAnim.spinAxis2, remainingSpin * 1.15);
-          d2.quaternion.copy(diceAnim.targetQuat2).multiply(_scratchQuatSpin);
+          d1.position.copy(pose.pos1);
+          d1.quaternion.copy(pose.quat1);
+          d2.position.copy(pose.pos2);
+          d2.quaternion.copy(pose.quat2);
 
           if (t >= 1) {
-            d1.quaternion.copy(diceAnim.targetQuat1);
-            d2.quaternion.copy(diceAnim.targetQuat2);
-            d1.position.copy(diceAnim.endPos1);
-            d2.position.copy(diceAnim.endPos2);
             const done = diceAnim.resolve;
             activeDiceAnimRef.current = null;
             done();
@@ -1152,6 +1756,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         // 4. Advance parabolic step-by-step 3D Pawn Hop animation
         const hopAnim = activeHopAnimRef.current;
         if (hopAnim) {
+          hasActiveMotion = true;
+          sceneShadowCastersMoved = true;
           const token = tokenGroupsRef.current.get(hopAnim.playerId);
           if (!token) {
             const done = hopAnim.resolve;
@@ -1201,24 +1807,138 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           }
         }
 
-        // 5. Gentle floating bob for outer 3D Cash Stacks, Gold/Silver/Bronze Coins, '?' Cards & Sakura
-        for (const prop of animatedCars) {
-          prop.group.position.y =
-            prop.baseY + Math.sin(elapsed * 1.35 + prop.phase) * 0.055;
+        // 5. Gentle floating bob for '?' Cards & Vietnamese Blossoms (when ambient motion enabled)
+        if (animateAmbient) {
+          for (const prop of animatedCars) {
+            prop.group.position.y =
+              prop.baseY + Math.sin(elapsed * 1.35 + prop.phase) * 0.055;
+          }
+        }
+
+        // 5a. Live Per-Player 3D Treasury Vaults & Physical Incoming/Outgoing Cash-Flow Arcs!
+        let cashStateChanged =
+          prevCashPlayersSnapshot.length !== currentPlayers.length;
+        if (!cashStateChanged) {
+          for (let i = 0; i < currentPlayers.length; i++) {
+            if (
+              prevCashPlayersSnapshot[i].cash !== currentPlayers[i].cash ||
+              prevCashPlayersSnapshot[i].bankrupt !== currentPlayers[i].bankrupt
+            ) {
+              cashStateChanged = true;
+              break;
+            }
+          }
+        }
+        if (cashStateChanged) {
+          const transfers = detectCashFlowTransfers(
+            prevCashPlayersSnapshot,
+            currentPlayers,
+            prevCashPropsSnapshot,
+            currentProps
+          );
+          if (transfers.length > 0) {
+            treasury.enqueueTransfers(
+              transfers,
+              currentPlayers,
+              currencyStyleRef.current
+            );
+            const primary = transfers[0];
+            const isGain =
+              primary.kind === 'BANK_TO_PLAYER' ||
+              primary.kind === 'PLAYER_TO_PLAYER';
+            soundEngine.playCurrencyTransfer(currencyStyleRef.current, isGain);
+
+            for (const ev of transfers) {
+              if (ev.toPlayerId !== null) {
+                const dstSlot = currentPlayers.findIndex(
+                  (p) => p.id === ev.toPlayerId
+                );
+                if (dstSlot >= 0) {
+                  const va = getVaultWorldAnchor(dstSlot);
+                  spawnParticleBurst(
+                    va.x,
+                    va.y + 0.42,
+                    va.z,
+                    currentPlayers[dstSlot].color,
+                    10
+                  );
+                }
+              }
+            }
+          }
+          prevCashPlayersSnapshot = currentPlayers.map((p) => ({ ...p }));
+          prevCashPropsSnapshot = { ...currentProps };
+        } else {
+          // Keep property snapshot synced across zero-cash mutations (e.g. EARTHQUAKE)
+          for (const key of Object.keys(currentProps)) {
+            const idx = Number(key);
+            const prevP = prevCashPropsSnapshot[idx];
+            const currP = currentProps[idx];
+            if (!prevP || prevP.ownerId !== currP.ownerId || prevP.level !== currP.level) {
+              prevCashPropsSnapshot = { ...currentProps };
+              break;
+            }
+          }
+        }
+
+        const activeSlotIdx = Math.max(
+          0,
+          currentPlayers.findIndex((p) => p.id === activePlayerIdRef.current)
+        );
+        treasury.syncVaults(
+          currentPlayers,
+          currencyStyleRef.current,
+          activeSlotIdx
+        );
+        const treasuryWasActive = cashStateChanged || treasury.hasActiveAnimations();
+        treasury.update(animDt, elapsed);
+        if (treasuryWasActive || treasury.hasActiveAnimations()) {
+          hasActiveMotion = true;
+          sceneShadowCastersMoved = true;
+        }
+
+        // 5b. Advance pooled 3D celebratory sparkle particles
+        for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+          const sp = sparkPool[i];
+          if (!sp.active) continue;
+          hasActiveMotion = true;
+          sp.life += animDt;
+          if (sp.life >= sp.maxLife) {
+            sp.active = false;
+            sp.mesh.visible = false;
+            continue;
+          }
+          const prog = sp.life / sp.maxLife;
+          sp.vy -= 7.4 * animDt;
+          sp.mesh.position.x += sp.vx * animDt;
+          sp.mesh.position.y += sp.vy * animDt;
+          sp.mesh.position.z += sp.vz * animDt;
+          sp.mesh.rotation.x += 5.2 * animDt;
+          sp.mesh.rotation.y += 6.4 * animDt;
+          sp.mesh.scale.setScalar(Math.max(0.05, 1.15 * (1 - prog * 0.85)));
+          sp.mat.opacity = 1 - prog * prog;
         }
 
         // 6. Camera Reset & Cinematic Camera Auto-Panning (scaled cleanly for 26-deg low-FOV)
         if (cameraResetActiveRef.current) {
-          computeResponsiveDefaultCamPos(camera.aspect, _scratchDefaultCamPos);
+          hasActiveMotion = true;
+          const cw = container.clientWidth || window.innerWidth;
+          const ch = container.clientHeight || window.innerHeight;
+          applySafeDefaultCameraPose(
+            cw,
+            ch,
+            _scratchDefaultCamPos,
+            _scratchDefaultCamTarget
+          );
           const camAlpha = 1 - Math.exp(-7 * animDt);
           camera.position.lerp(_scratchDefaultCamPos, camAlpha);
-          controls.target.lerp(DEFAULT_CAM_TARGET, camAlpha);
+          controls.target.lerp(_scratchDefaultCamTarget, camAlpha);
           if (
             camera.position.distanceTo(_scratchDefaultCamPos) < 0.04 &&
-            controls.target.distanceTo(DEFAULT_CAM_TARGET) < 0.04
+            controls.target.distanceTo(_scratchDefaultCamTarget) < 0.04
           ) {
             camera.position.copy(_scratchDefaultCamPos);
-            controls.target.copy(DEFAULT_CAM_TARGET);
+            controls.target.copy(_scratchDefaultCamTarget);
             cameraResetActiveRef.current = false;
           }
         } else if (cinematicCameraRef.current && !manualOrbitOverrideRef.current) {
@@ -1268,7 +1988,17 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             const cineAlpha = 1 - Math.exp(-pose.dampLambda * animDt);
             controls.target.lerp(_scratchVecTarget, cineAlpha);
             camera.position.lerp(_scratchVecPos, cineAlpha);
+            if (
+              camera.position.distanceToSquared(_scratchVecPos) > 0.0004 ||
+              controls.target.distanceToSquared(_scratchVecTarget) > 0.0004
+            ) {
+              hasActiveMotion = true;
+            }
           }
+        }
+
+        if (sceneShadowCastersMoved) {
+          shadowMapDirty = true;
         }
 
         // 7. Zero-GC World-to-Screen 2D Comic Speech Bubble floating above Active 3D Character Pawn
@@ -1296,9 +2026,23 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
                 lastRenderedSpeech = speechMsg;
                 textSpanEl.textContent = speechMsg;
               }
+              const estW = bubbleEl.offsetWidth || Math.max(120, speechMsg.length * 8.5 + 32);
+              const estH = bubbleEl.offsetHeight || 38;
+              const clamped = clampSpeechBubbleToViewport(
+                sx,
+                sy,
+                estW,
+                estH,
+                cw,
+                ch,
+                14
+              );
               bubbleEl.style.borderColor = activeP.color;
               bubbleEl.style.opacity = '1';
-              bubbleEl.style.transform = `translate3d(${sx.toFixed(1)}px, ${sy.toFixed(1)}px, 0) translate(-50%, -100%)`;
+              bubbleEl.style.transform = `translate3d(${clamped.x.toFixed(1)}px, ${clamped.y.toFixed(1)}px, 0) translate(-50%, -100%)`;
+              if (speechTailRef.current) {
+                speechTailRef.current.style.transform = `translateX(calc(-50% + ${clamped.tailOffsetPx.toFixed(1)}px)) rotate(45deg)`;
+              }
             } else {
               bubbleEl.style.opacity = '0';
             }
@@ -1306,10 +2050,14 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             bubbleEl.style.opacity = '0';
           }
         }
+
+        return hasActiveMotion;
       };
 
-      const tick = () => {
+      tick = () => {
         if (disposed) return;
+        scheduledMode = 'none';
+
         const nowMs = performance.now();
         const rawDt = Math.max(0.001, (nowMs - lastTimeMs) / 1000);
         lastTimeMs = nowMs;
@@ -1318,49 +2066,194 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         const animDt = Math.min(rawDt, isSoftwareGl ? 0.35 : 0.06);
         elapsedSec += simDt;
 
-        syncSceneFromState(simDt, animDt, elapsedSec);
+        controlsChangedThisFrame = false;
+        const sceneMoving = syncSceneFromState(simDt, animDt, elapsedSec);
         controls.update();
-        renderer.render(scene, camera);
+        const hasActiveMotion = sceneMoving || controlsChangedThisFrame;
 
+        const docHidden = typeof document !== 'undefined' && document.hidden;
+        const occludedNow = isBoardOccludedRef.current;
+        if (!occludedNow) {
+          occludedBackdropDirty = true;
+        }
+        const shouldDrawWebGl = !docHidden && (!occludedNow || occludedBackdropDirty);
+        if (shouldDrawWebGl) {
+          if (currentProfile.shadowsEnabled && shadowMapDirty) {
+            renderer.shadowMap.needsUpdate = true;
+            shadowMapDirty = false;
+          }
+          if (composer) {
+            composer.render();
+          } else {
+            renderer.render(scene, camera);
+          }
+          if (occludedNow) {
+            occludedBackdropDirty = false;
+          }
+          renderedFrames += 1;
+          renderer.domElement.dataset.renderedFrames = String(renderedFrames);
+        }
+
+        const hasPendingGameplayPromises = Boolean(
+          activeDiceAnimRef.current || activeHopAnimRef.current
+        );
+        const scheduleDecision = shouldKeepBoardAnimating({
+          isDocumentHidden: docHidden,
+          isBoardOccluded: occludedNow,
+          hasActiveMotion,
+          hasPendingGameplayPromises,
+          idleBoardFps: currentProfile.idleBoardFps,
+        });
+
+        if (scheduleDecision.mode === 'stop') {
+          return;
+        }
+        if (
+          scheduleDecision.mode === 'interval' ||
+          scheduleDecision.mode === 'background_sim'
+        ) {
+          scheduledMode = 'timeout';
+          frameId = window.setTimeout(tick, scheduleDecision.intervalMs);
+          return;
+        }
         if (isSoftwareGl) {
           afterDraw(tick);
+          return;
+        }
+        scheduledMode = 'raf';
+        frameId = requestAnimationFrame(tick);
+      };
+
+      requestRender = (markBackdropDirty = false) => {
+        if (disposed) return;
+        if (markBackdropDirty) {
+          occludedBackdropDirty = true;
+        }
+        const docHiddenNow = typeof document !== 'undefined' && document.hidden;
+        if (docHiddenNow) {
+          if (activeDiceAnimRef.current || activeHopAnimRef.current) {
+            if (scheduledMode === 'raf') {
+              cancelScheduledTick();
+            }
+            if (scheduledMode === 'none') {
+              lastTimeMs = performance.now() - 16;
+              scheduledMode = 'timeout';
+              frameId = window.setTimeout(tick, 80);
+            }
+          }
+          return;
+        }
+        if (scheduledMode === 'raf') return;
+        if (scheduledMode === 'timeout') {
+          clearTimeout(frameId);
+          scheduledMode = 'none';
+        }
+        if (scheduledMode === 'none') {
+          lastTimeMs = performance.now() - 16;
+        }
+        if (isSoftwareGl) {
+          scheduledMode = 'timeout';
+          frameId = window.setTimeout(tick, 16);
         } else {
+          scheduledMode = 'raf';
           frameId = requestAnimationFrame(tick);
         }
+      };
+      wakeRenderRef.current = requestRender;
+
+      const winHook = window as unknown as {
+        __btGetTileScreenPoint?: (
+          tileIndex: number,
+          mode?: 'tile' | 'buildingTop'
+        ) => { x: number; y: number } | null;
+      };
+      winHook.__btGetTileScreenPoint = (tileIndex: number, mode = 'tile') => {
+        const entry = tileEntriesRef.current[tileIndex];
+        if (!entry) return null;
+        scene.updateMatrixWorld(true);
+        camera.updateMatrixWorld(true);
+        const worldPos = new THREE.Vector3();
+        if (mode === 'buildingTop' && entry.buildingSuite?.hotel.visible) {
+          entry.buildingSuite.hotel.getWorldPosition(worldPos);
+          worldPos.y += 0.48;
+        } else if (mode === 'buildingTop' && entry.buildingSuite?.root.visible) {
+          entry.buildingSuite.root.getWorldPosition(worldPos);
+          worldPos.y += 0.36;
+        } else {
+          entry.group.getWorldPosition(worldPos);
+          worldPos.y += 0.14;
+        }
+        worldPos.project(camera);
+        const rect = renderer.domElement.getBoundingClientRect();
+        return {
+          x: rect.left + ((worldPos.x + 1) * 0.5) * rect.width,
+          y: rect.top + ((-worldPos.y + 1) * 0.5) * rect.height,
+        };
       };
 
       tick();
 
       return () => {
         disposed = true;
-        cancelAnimationFrame(frameId);
-        clearTimeout(frameId);
+        delete winHook.__btGetTileScreenPoint;
+        wakeRenderRef.current = null;
+        applyQualityTierRef.current = null;
+        cancelScheduledTick();
+        if (activeDiceAnimRef.current) {
+          const pendingDiceResolve = activeDiceAnimRef.current.resolve;
+          activeDiceAnimRef.current = null;
+          pendingDiceResolve();
+        }
+        if (activeHopAnimRef.current) {
+          const pendingHopResolve = activeHopAnimRef.current.resolve;
+          activeHopAnimRef.current = null;
+          pendingHopResolve();
+        }
         resizeObserver.disconnect();
         window.removeEventListener('resize', handleResize);
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
         renderer.domElement.removeEventListener('pointerdown', onPointerDown);
         renderer.domElement.removeEventListener('pointerup', onPointerUp);
         renderer.domElement.removeEventListener('pointermove', onPointerMove);
+        renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
         renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
         controls.dispose();
         courtyardAnim.disposeDynamicTextures();
+        treasury.dispose();
+        disposePostProcessing();
+        sunLight.shadow.map?.dispose();
+        sunLight.shadow.map = null;
 
         scene.traverse((obj) => {
-          if (obj instanceof THREE.Mesh) {
-            obj.geometry?.dispose();
+          if (obj instanceof THREE.Mesh || obj instanceof THREE.Points) {
+            if (obj.geometry && !obj.geometry.userData?.sharedStatic) {
+              obj.geometry.dispose();
+            }
+            const disposeObjMat = (m: THREE.Material) => {
+              if (m.userData?.sharedStatic) return;
+              const stdMat = m as THREE.MeshStandardMaterial;
+              if (stdMat.map && !stdMat.map.userData?.sharedStatic) {
+                stdMat.map.dispose();
+              }
+              if (stdMat.bumpMap && !stdMat.bumpMap.userData?.sharedStatic) {
+                stdMat.bumpMap.dispose();
+              }
+              m.dispose();
+            };
             if (Array.isArray(obj.material)) {
-              obj.material.forEach((m) => {
-                m.map?.dispose();
-                m.dispose();
-              });
+              obj.material.forEach(disposeObjMat);
             } else if (obj.material) {
-              obj.material.map?.dispose();
-              obj.material.dispose();
+              disposeObjMat(obj.material);
             }
           }
         });
+        for (const geo of sharedBoxGeoCache.values()) {
+          geo.dispose();
+        }
+        sharedBoxGeoCache.clear();
         woodBump.dispose();
         tilePaperBump.dispose();
-        envRT.dispose();
+        envRT?.dispose();
         renderer.dispose();
         tokenGroupsRef.current.clear();
         tileEntriesRef.current = [];
@@ -1379,14 +2272,18 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         {/* Floating 2D Comic Speech Bubble anchored above Active 3D Character Pawn */}
         <div
           ref={speechBubbleRef}
-          className="pointer-events-none absolute left-0 top-0 z-10 rounded-2xl border-[3px] bg-white px-3.5 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.22)] transition-opacity duration-150"
+          className="pointer-events-none absolute left-0 top-0 z-10 rounded-2xl border-[3px] bg-white px-3.5 py-1.5 shadow-[0_8px_20px_rgba(15,23,42,0.24)] transition-opacity duration-150"
           style={{ opacity: 0, willChange: 'transform, opacity' }}
         >
           <span
             ref={speechTextSpanRef}
             className="block whitespace-nowrap text-xs font-extrabold tracking-normal text-slate-800 sm:text-[13px]"
           />
-          <span className="absolute -bottom-2 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 border-b-[3px] border-r-[3px] border-inherit bg-white" />
+          <span
+            ref={speechTailRef}
+            style={{ transform: 'translateX(-50%) rotate(45deg)' }}
+            className="absolute -bottom-[7px] left-1/2 h-3 w-3 border-b-[3px] border-r-[3px] border-inherit bg-white"
+          />
         </div>
       </div>
     );

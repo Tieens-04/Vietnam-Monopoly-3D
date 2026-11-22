@@ -7,6 +7,11 @@ import {
   CHARACTER_PERSONAS,
   computeAvatarPoseTargets,
 } from '../game/avatarLogic';
+import {
+  detectBrowserGpu,
+  resolveGraphicsProfile,
+} from '../game/graphicsQuality';
+import { GraphicsQualityTier } from '../game/types';
 
 export interface PlayerAvatar3DProps {
   archetype: AvatarArchetypeId;
@@ -35,15 +40,20 @@ interface CharacterRigRefs {
   mouthArc: THREE.Mesh;
   propPivot: THREE.Group | null;
   jailBarsGroup: THREE.Group;
+  hemiLight: THREE.HemisphereLight;
   keyLight: THREE.DirectionalLight;
   rimLight: THREE.DirectionalLight;
+  setQualityFeatures: (
+    envTex: THREE.Texture | null,
+    useClearcoat: boolean
+  ) => void;
   disposables: Array<{ dispose: () => void }>;
 }
 
 interface AvatarSubscriber {
+  archetype: AvatarArchetypeId;
   canvas2d: HTMLCanvasElement;
   ctx2d: CanvasRenderingContext2D;
-  rig: CharacterRigRefs;
   getState: () => {
     mood: AvatarMood;
     phaseSeed: number;
@@ -66,49 +76,101 @@ interface AvatarSubscriber {
   };
 }
 
+function applyPoseStateToRig(
+  rig: CharacterRigRefs,
+  pose: AvatarSubscriber['currentPose'],
+  blinkAmount: number,
+  mood: AvatarMood,
+  isActive: boolean
+): void {
+  rig.torsoGroup.position.y = -0.62 + pose.torsoBobY;
+  rig.torsoGroup.rotation.y = pose.torsoYaw;
+  rig.torsoGroup.rotation.z = pose.shoulderTiltZ;
+
+  rig.headGroup.rotation.set(pose.headPitch, pose.headYaw, pose.headRoll);
+
+  // Eyelid blink sweep: rotates smoothly from open upper crease (-0.58 rad) down to closed (+0.14 rad)
+  const lidScaleY = 0.14 + blinkAmount * 0.86;
+  const lidRotX = -0.58 + blinkAmount * 0.72;
+  rig.leftEyelid.scale.y = lidScaleY;
+  rig.rightEyelid.scale.y = lidScaleY;
+  rig.leftEyelid.rotation.x = lidRotX;
+  rig.rightEyelid.rotation.x = lidRotX;
+
+  // Expressive articulated eyebrows
+  rig.leftBrow.position.y = 0.145 + pose.browLiftY;
+  rig.rightBrow.position.y = 0.145 + pose.browLiftY;
+  rig.leftBrow.rotation.z = pose.browAngle;
+  rig.rightBrow.rotation.z = -pose.browAngle;
+
+  // Confident smile vs stressed/jailed frown
+  const smileMag = Math.max(0.35, Math.abs(pose.smileScale));
+  rig.mouthArc.scale.set(1, smileMag * (pose.smileScale >= 0 ? 1 : -0.75), 1);
+  rig.mouthArc.position.y = pose.smileScale >= 0 ? -0.115 : -0.145;
+
+  if (rig.propPivot) {
+    rig.propPivot.rotation.z = pose.propGestureAngle;
+  }
+
+  rig.jailBarsGroup.visible = mood === 'jailed';
+
+  // Dynamic active-turn golden rim boost
+  rig.keyLight.intensity = mood === 'bankrupt' ? 0.72 : isActive ? 1.65 : 1.32;
+  rig.rimLight.intensity = isActive || mood === 'celebrating' ? 1.35 : 0.78;
+}
+
 /**
  * Shared Single-Context Offscreen WebGL Avatar Engine.
- * Renders all mounted `<PlayerAvatar3D>` busts through ONE tiny WebGLRenderer (zero context-limit issues!)
- * and paces frames with `afterDraw()` fenceSync when running on software WebGL (SwiftShader).
+ * - Caches at most 4 shared `CharacterRigRefs` (`car`, `yacht`, `jet`, `crown`) for the entire app lifetime.
+ * - On `low` tier (onboard GPU default): renders 1 crisp 3D snapshot per unique state into a 2D bitmap cache
+ *   and sleeps at 0 FPS (zero continuous WebGL->2D drawImage stalls!).
+ * - On `medium` / `high`: paces animations cleanly at 15 FPS / 30 FPS and sleeps when the tab is hidden.
  */
 class SharedAvatarRenderEngine {
   private renderer: THREE.WebGLRenderer | null = null;
   private envTexture: THREE.Texture | null = null;
   private isSoftwareGl = false;
   private webglFailed = false;
-  private renderPixelSize = 192;
+  private qualityTier: GraphicsQualityTier = 'low';
+  private tierInitialized = false;
+  private renderPixelSize = 160;
+  private rigCache = new Map<AvatarArchetypeId, CharacterRigRefs>();
+  private snapshotCache = new Map<string, HTMLCanvasElement>();
   private subscribers = new Set<AvatarSubscriber>();
   private running = false;
   private timerOrRafId = 0;
   private useTimeoutId = false;
+  private visibilityBound = false;
   private lastTimeMs = 0;
   private elapsedSec = 0;
 
+  private ensureTierLoaded(): void {
+    if (this.tierInitialized) return;
+    this.tierInitialized = true;
+    const gpu = detectBrowserGpu();
+    this.isSoftwareGl = gpu.isSoftwareGl;
+    this.qualityTier = gpu.tier;
+  }
+
+  public getQualityTier(): GraphicsQualityTier {
+    this.ensureTierLoaded();
+    return this.qualityTier;
+  }
+
   private ensureInitialized(): boolean {
     if (this.webglFailed) return false;
+    this.ensureTierLoaded();
     if (this.renderer) return true;
     if (typeof document === 'undefined') return false;
 
     try {
-      const probe = document.createElement('canvas');
-      const gl = probe.getContext('webgl2') || probe.getContext('webgl');
-      if (!gl) {
-        this.webglFailed = true;
-        return false;
-      }
-      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-      const gpuName = String(
-        gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER)
-      );
-      gl.getExtension('WEBGL_lose_context')?.loseContext();
-
-      this.isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpuName);
-      this.renderPixelSize = this.isSoftwareGl ? 144 : 192;
+      const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
+      this.renderPixelSize = profile.avatarPixelSize;
 
       const renderer = new THREE.WebGLRenderer({
         antialias: !this.isSoftwareGl,
         alpha: true,
-        powerPreference: 'high-performance',
+        powerPreference: 'default',
       });
       renderer.setPixelRatio(1);
       renderer.setSize(this.renderPixelSize, this.renderPixelSize, false);
@@ -121,12 +183,9 @@ class SharedAvatarRenderEngine {
         e.preventDefault();
       });
 
-      const pmrem = new THREE.PMREMGenerator(renderer);
-      const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
-      this.envTexture = envRT.texture;
-      pmrem.dispose();
-
       this.renderer = renderer;
+      this.bindVisibilityListener();
+      this.syncRendererAndRigsToProfile();
       return true;
     } catch {
       this.webglFailed = true;
@@ -134,9 +193,119 @@ class SharedAvatarRenderEngine {
     }
   }
 
-  public getEnvTexture(): THREE.Texture | null {
-    this.ensureInitialized();
+  private bindVisibilityListener(): void {
+    if (this.visibilityBound || typeof document === 'undefined') return;
+    this.visibilityBound = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this.stopLoop();
+      } else if (this.subscribers.size > 0) {
+        this.syncSchedule();
+      }
+    });
+  }
+
+  private ensureEnvTexture(): THREE.Texture | null {
+    if (this.envTexture) return this.envTexture;
+    if (!this.renderer) return null;
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
+    this.envTexture = envRT.texture;
+    pmrem.dispose();
     return this.envTexture;
+  }
+
+  private syncRendererAndRigsToProfile(): void {
+    const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
+    if (this.renderer && this.renderPixelSize !== profile.avatarPixelSize) {
+      this.renderPixelSize = profile.avatarPixelSize;
+      this.renderer.setSize(this.renderPixelSize, this.renderPixelSize, false);
+    }
+    const envTex = profile.useEnvironmentMap ? this.ensureEnvTexture() : null;
+    for (const rig of this.rigCache.values()) {
+      rig.setQualityFeatures(envTex, profile.usePhysicalClearcoat);
+    }
+  }
+
+  private getOrCreateRig(archetype: AvatarArchetypeId): CharacterRigRefs {
+    const existing = this.rigCache.get(archetype);
+    if (existing) return existing;
+
+    const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
+    const envTex = profile.useEnvironmentMap ? this.ensureEnvTexture() : null;
+    const rig = buildStylizedCharacterRig(archetype, envTex);
+    rig.setQualityFeatures(envTex, profile.usePhysicalClearcoat);
+    this.rigCache.set(archetype, rig);
+    return rig;
+  }
+
+  public setQualityTier(nextTier: GraphicsQualityTier): void {
+    this.ensureTierLoaded();
+    if (this.qualityTier === nextTier && this.renderer) return;
+    this.qualityTier = nextTier;
+
+    if (!this.renderer) {
+      if (this.subscribers.size > 0) {
+        this.ensureInitialized();
+      } else {
+        return;
+      }
+    }
+
+    this.syncRendererAndRigsToProfile();
+    this.syncSchedule();
+  }
+
+  private renderStaticSnapshotToSubscriber(sub: AvatarSubscriber): void {
+    const renderer = this.renderer;
+    if (!renderer) {
+      drawFallback2DPortrait(sub);
+      return;
+    }
+
+    const st = sub.getState();
+    const snapKey = `${sub.archetype}|${st.mood}|${st.isActive ? 1 : 0}|${st.facingSign}|${this.qualityTier}|${this.renderPixelSize}`;
+    let snapCanvas = this.snapshotCache.get(snapKey);
+
+    if (!snapCanvas) {
+      const rig = this.getOrCreateRig(sub.archetype);
+      const target = computeAvatarPoseTargets({
+        mood: st.mood,
+        elapsedSec: 0.35,
+        phaseSeed: 0,
+        facingSign: st.facingSign,
+        pointerX: 0,
+        pointerY: 0,
+      });
+      applyPoseStateToRig(rig, target, 0, st.mood, st.isActive);
+
+      renderer.clear();
+      renderer.render(rig.scene, rig.camera);
+
+      snapCanvas = document.createElement('canvas');
+      snapCanvas.width = this.renderPixelSize;
+      snapCanvas.height = this.renderPixelSize;
+      const sctx = snapCanvas.getContext('2d');
+      if (sctx) {
+        sctx.drawImage(
+          renderer.domElement,
+          0,
+          0,
+          this.renderPixelSize,
+          this.renderPixelSize
+        );
+      }
+      if (this.snapshotCache.size >= 64) {
+        const oldestKey = this.snapshotCache.keys().next().value;
+        if (oldestKey) this.snapshotCache.delete(oldestKey);
+      }
+      this.snapshotCache.set(snapKey, snapCanvas);
+    }
+
+    const w = sub.canvas2d.width;
+    const h = sub.canvas2d.height;
+    sub.ctx2d.clearRect(0, 0, w, h);
+    sub.ctx2d.drawImage(snapCanvas, 0, 0, w, h);
   }
 
   public subscribe(sub: AvatarSubscriber): () => void {
@@ -145,8 +314,13 @@ class SharedAvatarRenderEngine {
 
     if (!ok) {
       drawFallback2DPortrait(sub);
-    } else if (!this.running) {
-      this.startLoop();
+    } else {
+      const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
+      if (profile.avatarFps <= 0) {
+        this.renderStaticSnapshotToSubscriber(sub);
+      } else {
+        this.syncSchedule();
+      }
     }
 
     return () => {
@@ -155,6 +329,41 @@ class SharedAvatarRenderEngine {
         this.stopLoop();
       }
     };
+  }
+
+  public refreshSubscriber(sub: AvatarSubscriber): void {
+    if (!this.subscribers.has(sub)) return;
+    if (this.webglFailed || !this.renderer) {
+      drawFallback2DPortrait(sub);
+      return;
+    }
+    const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
+    if (profile.avatarFps <= 0) {
+      this.renderStaticSnapshotToSubscriber(sub);
+    }
+  }
+
+  private syncSchedule(): void {
+    const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
+    if (
+      this.subscribers.size === 0 ||
+      (typeof document !== 'undefined' && document.hidden)
+    ) {
+      this.stopLoop();
+      return;
+    }
+
+    if (profile.avatarFps <= 0) {
+      this.stopLoop();
+      for (const sub of this.subscribers) {
+        this.renderStaticSnapshotToSubscriber(sub);
+      }
+      return;
+    }
+
+    if (!this.running) {
+      this.startLoop();
+    }
   }
 
   private startLoop(): void {
@@ -199,12 +408,22 @@ class SharedAvatarRenderEngine {
 
   private tick = (): void => {
     if (!this.running || this.subscribers.size === 0) return;
+    if (typeof document !== 'undefined' && document.hidden) {
+      this.stopLoop();
+      return;
+    }
+
+    const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
+    if (profile.avatarFps <= 0) {
+      this.syncSchedule();
+      return;
+    }
 
     const now = performance.now();
     const rawDt = Math.max(0.001, (now - this.lastTimeMs) / 1000);
     this.lastTimeMs = now;
-    const dt = Math.min(rawDt, 0.12);
-    this.elapsedSec += Math.min(rawDt, 0.08);
+    const dt = Math.min(rawDt, 0.14);
+    this.elapsedSec += Math.min(rawDt, 0.1);
 
     const renderer = this.renderer;
     if (!renderer) return;
@@ -242,41 +461,8 @@ class SharedAvatarRenderEngine {
         dampAlpha
       );
 
-      const { rig } = sub;
-      rig.torsoGroup.position.y = -0.62 + cur.torsoBobY;
-      rig.torsoGroup.rotation.y = cur.torsoYaw;
-      rig.torsoGroup.rotation.z = cur.shoulderTiltZ;
-
-      rig.headGroup.rotation.set(cur.headPitch, cur.headYaw, cur.headRoll);
-
-      // Eyelid blink sweep: rotates smoothly from open upper crease (-0.58 rad) down to closed (+0.14 rad)
-      const lidScaleY = 0.14 + target.blinkAmount * 0.86;
-      const lidRotX = -0.58 + target.blinkAmount * 0.72;
-      rig.leftEyelid.scale.y = lidScaleY;
-      rig.rightEyelid.scale.y = lidScaleY;
-      rig.leftEyelid.rotation.x = lidRotX;
-      rig.rightEyelid.rotation.x = lidRotX;
-
-      // Expressive articulated eyebrows
-      rig.leftBrow.position.y = 0.145 + cur.browLiftY;
-      rig.rightBrow.position.y = 0.145 + cur.browLiftY;
-      rig.leftBrow.rotation.z = cur.browAngle;
-      rig.rightBrow.rotation.z = -cur.browAngle;
-
-      // Confident smile vs stressed/jailed frown
-      const smileMag = Math.max(0.35, Math.abs(cur.smileScale));
-      rig.mouthArc.scale.set(1, smileMag * (cur.smileScale >= 0 ? 1 : -0.75), 1);
-      rig.mouthArc.position.y = cur.smileScale >= 0 ? -0.115 : -0.145;
-
-      if (rig.propPivot) {
-        rig.propPivot.rotation.z = cur.propGestureAngle;
-      }
-
-      rig.jailBarsGroup.visible = st.mood === 'jailed';
-
-      // Dynamic active-turn golden rim boost
-      rig.keyLight.intensity = st.mood === 'bankrupt' ? 0.72 : st.isActive ? 1.65 : 1.32;
-      rig.rimLight.intensity = st.isActive || st.mood === 'celebrating' ? 1.35 : 0.78;
+      const rig = this.getOrCreateRig(sub.archetype);
+      applyPoseStateToRig(rig, cur, target.blinkAmount, st.mood, st.isActive);
 
       renderer.clear();
       renderer.render(rig.scene, rig.camera);
@@ -290,13 +476,18 @@ class SharedAvatarRenderEngine {
     if (this.isSoftwareGl) {
       this.afterDraw(this.tick);
     } else {
-      this.useTimeoutId = false;
-      this.timerOrRafId = window.requestAnimationFrame(this.tick);
+      const delayMs = Math.max(16, Math.round(1000 / profile.avatarFps));
+      this.useTimeoutId = true;
+      this.timerOrRafId = window.setTimeout(this.tick, delayMs);
     }
   };
 }
 
 const sharedAvatarEngine = new SharedAvatarRenderEngine();
+
+export function setAvatarGraphicsTier(tier: GraphicsQualityTier): void {
+  sharedAvatarEngine.setQualityTier(tier);
+}
 
 function drawFallback2DPortrait(sub: AvatarSubscriber): void {
   const { ctx2d, canvas2d } = sub;
@@ -341,74 +532,97 @@ function buildStylizedCharacterRig(
   camera.position.set(0, 0.075, 2.38);
   camera.lookAt(0, -0.01, 0);
 
-  // Studio 3-point warm/cool portrait lighting
-  const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0xfde68a, 0.92);
+  // Studio 3-point warm/cool portrait lighting + Pixar-style physical sheen & hair clearcoat
+  const hemiLight = new THREE.HemisphereLight(0xf0f9ff, 0xfde68a, 1.02);
   scene.add(hemiLight);
 
-  const keyLight = new THREE.DirectionalLight(0xfffbeb, 1.38);
-  keyLight.position.set(1.8, 2.4, 2.6);
+  const keyLight = new THREE.DirectionalLight(0xfffdf5, 1.28);
+  keyLight.position.set(1.9, 2.3, 2.7);
   scene.add(keyLight);
 
-  const fillLight = new THREE.DirectionalLight(0xbae6fd, 0.55);
-  fillLight.position.set(-2.0, 0.8, 1.8);
+  const fillLight = new THREE.DirectionalLight(0xe0f2fe, 0.62);
+  fillLight.position.set(-2.1, 0.9, 1.9);
   scene.add(fillLight);
 
-  const rimLight = new THREE.DirectionalLight(0xfde047, 0.95);
-  rimLight.position.set(-1.2, 2.2, -2.0);
+  const rimLight = new THREE.DirectionalLight(0xfde047, 1.12);
+  rimLight.position.set(-1.3, 2.3, -2.0);
   scene.add(rimLight);
 
-  // Shared PBR Materials with deliberate roughness/metalness contrast
+  // Physical Materials with velvety skin sheen, tailored fabric sheen & hair clearcoat
   const skinMat = trackMat(
-    new THREE.MeshStandardMaterial({
+    new THREE.MeshPhysicalMaterial({
       color: persona.skinHex,
-      roughness: 0.54,
-      metalness: 0.02,
-      emissive: 0x4a1d12,
-      emissiveIntensity: 0.06,
+      roughness: 0.64,
+      metalness: 0.01,
+      sheen: 0.42,
+      sheenRoughness: 0.72,
+      sheenColor: new THREE.Color(0xff9ebb),
+      emissive: 0x5c2418,
+      emissiveIntensity: 0.045,
     })
   );
   const suitMat = trackMat(
-    new THREE.MeshStandardMaterial({
+    new THREE.MeshPhysicalMaterial({
       color: persona.suitHex,
-      roughness: 0.76,
+      roughness: 0.62,
       metalness: 0.06,
+      sheen: 0.48,
+      sheenRoughness: 0.55,
+      sheenColor: new THREE.Color(0xffffff),
     })
   );
   const lapelMat = trackMat(
-    new THREE.MeshStandardMaterial({
+    new THREE.MeshPhysicalMaterial({
       color: persona.lapelHex,
-      roughness: 0.5,
-      metalness: 0.12,
+      roughness: 0.42,
+      metalness: 0.14,
+      clearcoat: 0.25,
     })
   );
   const shirtMat = trackMat(
     new THREE.MeshStandardMaterial({
-      color: 0xf8fafc,
-      roughness: 0.42,
+      color: 0xffffff,
+      roughness: 0.38,
       metalness: 0.02,
     })
   );
   const accentMat = trackMat(
-    new THREE.MeshStandardMaterial({
+    new THREE.MeshPhysicalMaterial({
       color: persona.accentHex,
-      roughness: 0.28,
-      metalness: 0.42,
+      roughness: 0.24,
+      metalness: 0.48,
+      clearcoat: 0.45,
     })
   );
   const goldMat = trackMat(
     new THREE.MeshStandardMaterial({
       color: 0xfbbf24,
+      emissive: 0xb45309,
+      emissiveIntensity: 0.22,
+      roughness: 0.16,
+      metalness: 0.82,
+    })
+  );
+  const pearlMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      color: 0xfffbeb,
+      emissive: 0xfef3c7,
+      emissiveIntensity: 0.2,
       roughness: 0.18,
-      metalness: 0.88,
+      metalness: 0.12,
     })
   );
   const hairMat = trackMat(
-    new THREE.MeshStandardMaterial({
+    new THREE.MeshPhysicalMaterial({
       color: persona.hairHex,
-      roughness: 0.46,
-      metalness: 0.08,
+      roughness: 0.42,
+      metalness: 0.06,
+      clearcoat: 0.42,
+      clearcoatRoughness: 0.28,
     })
   );
+
+  const isFemale = persona.isFemale;
 
   // 1. TORSO & TAILORED EXECUTIVE BLAZER
   const torsoGroup = new THREE.Group();
@@ -416,79 +630,156 @@ function buildStylizedCharacterRig(
   scene.add(torsoGroup);
 
   const chestMesh = new THREE.Mesh(
-    trackGeo(new THREE.CylinderGeometry(0.36, 0.44, 0.56, 20)),
+    trackGeo(new THREE.CylinderGeometry(isFemale ? 0.33 : 0.36, isFemale ? 0.41 : 0.44, 0.56, 20)),
     suitMat
   );
-  chestMesh.scale.set(1.22, 1, 0.72);
+  chestMesh.scale.set(isFemale ? 1.12 : 1.22, 1, 0.72);
   chestMesh.position.y = 0.04;
   torsoGroup.add(chestMesh);
 
-  // Rounded tailored shoulders
-  const shoulderGeo = trackGeo(new THREE.SphereGeometry(0.21, 16, 12));
-  for (const sx of [-0.36, 0.36]) {
+  // Rounded tailored shoulders (sleeker feminine silhouette for Lan Anh & Ngọc Diệp)
+  const shoulderGeo = trackGeo(new THREE.SphereGeometry(isFemale ? 0.19 : 0.21, 16, 12));
+  const shoulderSpan = isFemale ? 0.325 : 0.36;
+  for (const sx of [-shoulderSpan, shoulderSpan]) {
     const sh = new THREE.Mesh(shoulderGeo, suitMat);
-    sh.position.set(sx, 0.18, 0);
-    sh.scale.set(1.05, 0.85, 0.82);
+    sh.position.set(sx, isFemale ? 0.17 : 0.18, 0);
+    sh.scale.set(isFemale ? 0.98 : 1.05, 0.85, 0.82);
     torsoGroup.add(sh);
   }
 
-  // Crisp White Dress Shirt V-Insert & Winged Collar
-  const shirtV = new THREE.Mesh(
-    trackGeo(new THREE.ConeGeometry(0.2, 0.36, 4)),
-    shirtMat
-  );
-  shirtV.rotation.z = Math.PI;
-  shirtV.rotation.y = Math.PI / 4;
-  shirtV.scale.set(0.95, 1, 0.35);
-  shirtV.position.set(0, 0.18, 0.245);
-  torsoGroup.add(shirtV);
+  if (isFemale) {
+    // Elegant Feminine Collarless Shawl Blazer + Silk Camisole + Pearl Strand Necklace & Royal Brooch
+    const silkBlouseV = new THREE.Mesh(
+      trackGeo(new THREE.ConeGeometry(0.195, 0.34, 4)),
+      shirtMat
+    );
+    silkBlouseV.rotation.z = Math.PI;
+    silkBlouseV.rotation.y = Math.PI / 4;
+    silkBlouseV.scale.set(0.92, 1, 0.34);
+    silkBlouseV.position.set(0, 0.155, 0.242);
+    torsoGroup.add(silkBlouseV);
 
-  const collarGeo = trackGeo(new THREE.BoxGeometry(0.14, 0.08, 0.06));
-  for (const side of [-1, 1]) {
-    const col = new THREE.Mesh(collarGeo, shirtMat);
-    col.position.set(side * 0.085, 0.31, 0.23);
-    col.rotation.z = side * -0.35;
-    col.rotation.y = side * 0.25;
-    torsoGroup.add(col);
+    // Open V-neck skin décolleté above camisole so there is never a male shirt collar/tie
+    const necklineSkinV = new THREE.Mesh(
+      trackGeo(new THREE.ConeGeometry(0.135, 0.22, 4)),
+      skinMat
+    );
+    necklineSkinV.rotation.z = Math.PI;
+    necklineSkinV.rotation.y = Math.PI / 4;
+    necklineSkinV.scale.set(0.9, 1, 0.36);
+    necklineSkinV.position.set(0, 0.245, 0.248);
+    torsoGroup.add(necklineSkinV);
+
+    const shawlLapelGeo = trackGeo(new THREE.CapsuleGeometry(0.046, 0.28, 8, 12));
+    for (const side of [-1, 1]) {
+      const lap = new THREE.Mesh(shawlLapelGeo, lapelMat);
+      lap.position.set(side * 0.148, 0.145, 0.248);
+      lap.rotation.z = side * 0.36;
+      lap.rotation.y = side * 0.16;
+      torsoGroup.add(lap);
+    }
+
+    // 7-Pearl Necklace curving gracefully around the base of the neck
+    const pearlGeo = trackGeo(new THREE.SphereGeometry(0.021, 10, 10));
+    const pearlCount = 7;
+    for (let i = 0; i < pearlCount; i++) {
+      const u = (i / (pearlCount - 1)) * 2 - 1; // [-1..+1]
+      const pearl = new THREE.Mesh(pearlGeo, pearlMat);
+      pearl.position.set(
+        u * 0.115,
+        0.282 + u * u * 0.042,
+        0.264 - u * u * 0.032
+      );
+      torsoGroup.add(pearl);
+    }
+
+    // Golden Royal Jewel Brooch at center camisole neckline
+    const broochSetting = new THREE.Mesh(
+      trackGeo(new THREE.OctahedronGeometry(0.038, 0)),
+      goldMat
+    );
+    broochSetting.scale.set(1.1, 1.1, 0.55);
+    broochSetting.position.set(0, 0.205, 0.268);
+    torsoGroup.add(broochSetting);
+
+    const broochGem = new THREE.Mesh(
+      trackGeo(new THREE.OctahedronGeometry(0.024, 0)),
+      trackMat(
+        new THREE.MeshStandardMaterial({
+          color: archetype === 'crown' ? 0x10b981 : 0x0ea5e9,
+          emissive: archetype === 'crown' ? 0x059669 : 0x0284c7,
+          emissiveIntensity: 0.4,
+          roughness: 0.14,
+          metalness: 0.35,
+        })
+      )
+    );
+    broochGem.position.set(0, 0.205, 0.282);
+    torsoGroup.add(broochGem);
+  } else {
+    // Crisp White Dress Shirt V-Insert & Winged Collar + Silk Tie (Male Executives)
+    const shirtV = new THREE.Mesh(
+      trackGeo(new THREE.ConeGeometry(0.2, 0.36, 4)),
+      shirtMat
+    );
+    shirtV.rotation.z = Math.PI;
+    shirtV.rotation.y = Math.PI / 4;
+    shirtV.scale.set(0.95, 1, 0.35);
+    shirtV.position.set(0, 0.18, 0.245);
+    torsoGroup.add(shirtV);
+
+    const collarGeo = trackGeo(new THREE.BoxGeometry(0.14, 0.08, 0.06));
+    for (const side of [-1, 1]) {
+      const col = new THREE.Mesh(collarGeo, shirtMat);
+      col.position.set(side * 0.085, 0.31, 0.23);
+      col.rotation.z = side * -0.35;
+      col.rotation.y = side * 0.25;
+      torsoGroup.add(col);
+    }
+
+    const lapelGeo = trackGeo(new THREE.BoxGeometry(0.11, 0.34, 0.06));
+    for (const side of [-1, 1]) {
+      const lap = new THREE.Mesh(lapelGeo, lapelMat);
+      lap.position.set(side * 0.155, 0.14, 0.248);
+      lap.rotation.z = side * 0.34;
+      lap.rotation.y = side * 0.16;
+      torsoGroup.add(lap);
+    }
+
+    const tieKnot = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.048, 12, 10)),
+      accentMat
+    );
+    tieKnot.position.set(0, 0.26, 0.268);
+    torsoGroup.add(tieKnot);
+
+    const tieBlade = new THREE.Mesh(
+      trackGeo(new THREE.ConeGeometry(0.055, 0.24, 4)),
+      accentMat
+    );
+    tieBlade.rotation.y = Math.PI / 4;
+    tieBlade.scale.set(1, 1, 0.35);
+    tieBlade.position.set(0, 0.13, 0.272);
+    torsoGroup.add(tieBlade);
+
+    const lapelPin = new THREE.Mesh(
+      trackGeo(new THREE.OctahedronGeometry(0.032, 0)),
+      goldMat
+    );
+    lapelPin.position.set(-0.2, 0.2, 0.28);
+    torsoGroup.add(lapelPin);
   }
-
-  // Notched Blazer Lapels
-  const lapelGeo = trackGeo(new THREE.BoxGeometry(0.11, 0.34, 0.06));
-  for (const side of [-1, 1]) {
-    const lap = new THREE.Mesh(lapelGeo, lapelMat);
-    lap.position.set(side * 0.155, 0.14, 0.248);
-    lap.rotation.z = side * 0.34;
-    lap.rotation.y = side * 0.16;
-    torsoGroup.add(lap);
-  }
-
-  // Silk Tie / Ascot + Gold Lapel Pin
-  const tieKnot = new THREE.Mesh(
-    trackGeo(new THREE.SphereGeometry(0.048, 12, 10)),
-    accentMat
-  );
-  tieKnot.position.set(0, 0.26, 0.268);
-  torsoGroup.add(tieKnot);
-
-  const tieBlade = new THREE.Mesh(
-    trackGeo(new THREE.ConeGeometry(0.055, 0.24, 4)),
-    accentMat
-  );
-  tieBlade.rotation.y = Math.PI / 4;
-  tieBlade.scale.set(1, 1, 0.35);
-  tieBlade.position.set(0, 0.13, 0.272);
-  torsoGroup.add(tieBlade);
-
-  const lapelPin = new THREE.Mesh(
-    trackGeo(new THREE.OctahedronGeometry(0.032, 0)),
-    goldMat
-  );
-  lapelPin.position.set(-0.2, 0.2, 0.28);
-  torsoGroup.add(lapelPin);
 
   // Sculpted Neck
   const neck = new THREE.Mesh(
-    trackGeo(new THREE.CylinderGeometry(0.105, 0.12, 0.2, 14)),
+    trackGeo(
+      new THREE.CylinderGeometry(
+        isFemale ? 0.088 : 0.105,
+        isFemale ? 0.102 : 0.12,
+        0.2,
+        14
+      )
+    ),
     skinMat
   );
   neck.position.set(0, 0.38, 0.02);
@@ -503,16 +794,16 @@ function buildStylizedCharacterRig(
     trackGeo(new THREE.SphereGeometry(0.305, 24, 20)),
     skinMat
   );
-  cranium.scale.set(0.95, 1.06, 0.92);
+  cranium.scale.set(isFemale ? 0.92 : 0.95, 1.05, 0.92);
   headGroup.add(cranium);
 
-  // Subtle sculpted jawline/chin volume
+  // Subtle sculpted jawline/chin volume (delicate tapered oval chin for female personas)
   const chin = new THREE.Mesh(
     trackGeo(new THREE.SphereGeometry(0.18, 16, 12)),
     skinMat
   );
   chin.position.set(0, -0.14, 0.065);
-  chin.scale.set(1.02, 0.86, 0.88);
+  chin.scale.set(isFemale ? 0.86 : 1.02, isFemale ? 0.82 : 0.86, 0.86);
   headGroup.add(chin);
 
   // Ears
@@ -536,15 +827,15 @@ function buildStylizedCharacterRig(
   // Warm Cheek Blush Accents (painterly Business Tour warmth)
   const cheekMat = trackMat(
     new THREE.MeshBasicMaterial({
-      color: 0xfb7185,
+      color: isFemale ? 0xf43f5e : 0xfb7185,
       transparent: true,
-      opacity: 0.2,
+      opacity: isFemale ? 0.28 : 0.2,
     })
   );
-  const cheekGeo = trackGeo(new THREE.CircleGeometry(0.052, 12));
+  const cheekGeo = trackGeo(new THREE.CircleGeometry(0.054, 12));
   for (const side of [-1, 1]) {
     const cheek = new THREE.Mesh(cheekGeo, cheekMat);
-    cheek.position.set(side * 0.155, -0.055, 0.258);
+    cheek.position.set(side * 0.155, -0.052, 0.258);
     cheek.rotation.y = side * 0.38;
     headGroup.add(cheek);
   }
@@ -576,8 +867,9 @@ function buildStylizedCharacterRig(
   const catchGeo = trackGeo(new THREE.CircleGeometry(0.011, 10));
   const subCatchGeo = trackGeo(new THREE.CircleGeometry(0.0055, 8));
   const lashGeo = trackGeo(
-    new THREE.TorusGeometry(0.058, 0.0085, 6, 14, Math.PI * 0.86)
+    new THREE.TorusGeometry(0.058, isFemale ? 0.0105 : 0.0085, 6, 14, Math.PI * 0.88)
   );
+  const wingLashGeo = trackGeo(new THREE.ConeGeometry(0.013, 0.038, 5));
   const eyelidGeo = trackGeo(
     new THREE.SphereGeometry(0.065, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.56)
   );
@@ -608,9 +900,16 @@ function buildStylizedCharacterRig(
     eyeSocket.add(subSpark);
 
     const lashArc = new THREE.Mesh(lashGeo, lashMat);
-    lashArc.position.set(0, 0.004, 0.036);
-    lashArc.rotation.z = (Math.PI - Math.PI * 0.86) / 2;
+    lashArc.position.set(0, 0.005, 0.036);
+    lashArc.rotation.z = (Math.PI - Math.PI * 0.88) / 2;
     eyeSocket.add(lashArc);
+
+    if (isFemale) {
+      const wingLash = new THREE.Mesh(wingLashGeo, lashMat);
+      wingLash.position.set(side * 0.058, 0.026, 0.034);
+      wingLash.rotation.z = side * -0.78;
+      eyeSocket.add(wingLash);
+    }
 
     const eyelid = new THREE.Mesh(eyelidGeo, skinMat);
     eyelid.scale.set(1.04, 0.14, 0.72);
@@ -624,33 +923,45 @@ function buildStylizedCharacterRig(
   const leftEyelid = buildEye(-1);
   const rightEyelid = buildEye(1);
 
-  // Articulated 3D Eyebrows
-  const browGeo = trackGeo(new THREE.CapsuleGeometry(0.018, 0.082, 6, 8));
+  // Articulated 3D Eyebrows (delicate arched brow for female personas)
+  const browGeo = trackGeo(
+    new THREE.CapsuleGeometry(isFemale ? 0.013 : 0.018, isFemale ? 0.078 : 0.082, 6, 8)
+  );
   browGeo.rotateZ(Math.PI / 2);
 
   const leftBrow = new THREE.Mesh(browGeo, hairMat);
-  leftBrow.position.set(-0.115, 0.145, 0.268);
+  leftBrow.position.set(-0.115, isFemale ? 0.148 : 0.145, 0.268);
   leftBrow.rotation.set(0, -0.14, 0);
   headGroup.add(leftBrow);
 
   const rightBrow = new THREE.Mesh(browGeo, hairMat);
-  rightBrow.position.set(0.115, 0.145, 0.268);
+  rightBrow.position.set(0.115, isFemale ? 0.148 : 0.145, 0.268);
   rightBrow.rotation.set(0, 0.14, 0);
   headGroup.add(rightBrow);
 
-  // Expressive Confident Smile Arc
+  // Expressive Confident Smile Arc (rose lipstick fullness for female personas)
   const mouthMat = trackMat(
     new THREE.MeshStandardMaterial({
-      color: archetype === 'yacht' || archetype === 'crown' ? 0xe11d48 : 0x9f1239,
-      roughness: 0.35,
+      color: isFemale ? 0xe11d48 : 0x9f1239,
+      emissive: isFemale ? 0x9f1239 : 0x000000,
+      emissiveIntensity: isFemale ? 0.18 : 0,
+      roughness: 0.3,
     })
   );
   const mouthArc = new THREE.Mesh(
-    trackGeo(new THREE.TorusGeometry(0.068, 0.015, 8, 16, Math.PI * 0.78)),
+    trackGeo(
+      new THREE.TorusGeometry(
+        isFemale ? 0.062 : 0.068,
+        isFemale ? 0.0175 : 0.015,
+        8,
+        16,
+        Math.PI * 0.76
+      )
+    ),
     mouthMat
   );
   mouthArc.position.set(0, -0.115, 0.258);
-  mouthArc.rotation.z = Math.PI + (Math.PI - Math.PI * 0.78) / 2;
+  mouthArc.rotation.z = Math.PI + (Math.PI - Math.PI * 0.76) / 2;
   headGroup.add(mouthArc);
 
   // 3. ARCHETYPE-SPECIFIC HAIRSTYLES, EYEWEAR & BUSINESS TOUR SIGNATURE PROPS
@@ -701,37 +1012,56 @@ function buildStylizedCharacterRig(
     earpiece.rotation.x = 0.55;
     headGroup.add(earpiece);
   } else if (archetype === 'yacht') {
-    // Chủ Tịch Lan Anh: Chic Asymmetric Bob + Sleek Gold-Blue Glasses + Smartphone Deal Gesture
+    // Chủ Tịch Lan Anh: Chic Asymmetric Shoulder-Grazing Bob + Pearl Studs + Gold-Blue Glasses + Smartphone Gesture
     const bobDome = new THREE.Mesh(
       trackGeo(
-        new THREE.SphereGeometry(0.326, 22, 18, 0, Math.PI * 2, 0, Math.PI * 0.54)
+        new THREE.SphereGeometry(0.332, 22, 18, 0, Math.PI * 2, 0, Math.PI * 0.56)
       ),
       hairMat
     );
-    bobDome.position.set(0, 0.065, -0.04);
-    bobDome.rotation.x = -0.5;
+    bobDome.position.set(0, 0.065, -0.035);
+    bobDome.rotation.x = -0.46;
     headGroup.add(bobDome);
 
-    // Framing side bob locks tucked neatly beside the cheeks
-    const lockGeo = trackGeo(new THREE.CapsuleGeometry(0.076, 0.25, 8, 12));
+    const bobBack = new THREE.Mesh(
+      trackGeo(new THREE.CylinderGeometry(0.28, 0.31, 0.34, 16)),
+      hairMat
+    );
+    bobBack.position.set(0, -0.055, -0.075);
+    bobBack.scale.set(1.04, 1, 0.76);
+    headGroup.add(bobBack);
+
+    // Fuller chin-to-collarbone inward-curved bob locks framing both sides of the face
+    const lockGeo = trackGeo(new THREE.CapsuleGeometry(0.082, 0.29, 8, 12));
+    const tipCurlGeo = trackGeo(new THREE.SphereGeometry(0.075, 10, 10));
+    const studGeo = trackGeo(new THREE.SphereGeometry(0.026, 10, 10));
     for (const side of [-1, 1]) {
       const lock = new THREE.Mesh(lockGeo, hairMat);
-      lock.position.set(side * 0.278, -0.02, -0.01);
-      lock.rotation.z = side * 0.1;
-      lock.rotation.x = 0.08;
+      lock.position.set(side * 0.268, -0.065, 0.042);
+      lock.rotation.z = side * 0.14;
+      lock.rotation.x = 0.12;
       headGroup.add(lock);
+
+      const tipCurl = new THREE.Mesh(tipCurlGeo, hairMat);
+      tipCurl.position.set(side * 0.23, -0.225, 0.085);
+      tipCurl.scale.set(1.05, 0.75, 0.9);
+      headGroup.add(tipCurl);
+
+      const pearlStud = new THREE.Mesh(studGeo, pearlMat);
+      pearlStud.position.set(side * 0.282, -0.055, 0.075);
+      headGroup.add(pearlStud);
     }
 
-    // High swept side bangs leaving eyebrows and eyes completely clear
+    // Swept side bangs leaving eyebrows and eyes clear
     const bangs = new THREE.Mesh(
-      trackGeo(new THREE.CapsuleGeometry(0.062, 0.22, 8, 12)),
+      trackGeo(new THREE.CapsuleGeometry(0.064, 0.23, 8, 12)),
       hairMat
     );
     bangs.rotation.z = Math.PI / 2 - 0.22;
-    bangs.position.set(-0.045, 0.278, 0.155);
+    bangs.position.set(-0.045, 0.275, 0.16);
     headGroup.add(bangs);
 
-    // Sleek Champagne-Gold Executive Glasses Frames (unobstructed open lenses!)
+    // Sleek Champagne-Blue Executive Glasses Frames
     const frameMat = trackMat(
       new THREE.MeshStandardMaterial({
         color: 0x38bdf8,
@@ -754,7 +1084,7 @@ function buildStylizedCharacterRig(
     bridge.position.set(0, 0.055, 0.306);
     headGroup.add(bridge);
 
-    // Articulated Executive Smartphone Gesture (matches Business Tour's iconic lobby character!)
+    // Articulated Executive Smartphone Gesture
     propPivot = new THREE.Group();
     propPivot.position.set(0.33, 0.2, 0.2);
     const phoneBody = new THREE.Mesh(
@@ -832,85 +1162,159 @@ function buildStylizedCharacterRig(
     browBar.position.set(0, 0.105, 0.304);
     headGroup.add(browBar);
   } else {
-    // Phu Nhân Ngọc Diệp: Voluminous Royal Chignon + Golden Emerald Tiara Crown + Drop Earrings
+    // Phu Nhân Ngọc Diệp: Cascading Shoulder-Length Royal Chestnut Waves + Bright 24K Gold & Emerald Crown + Pearl Drop Earrings
+    const crownGoldMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xfde047,
+        emissive: 0xd97706,
+        emissiveIntensity: 0.32,
+        roughness: 0.14,
+        metalness: 0.78,
+      })
+    );
+
     const hairDome = new THREE.Mesh(
       trackGeo(
-        new THREE.SphereGeometry(0.324, 22, 18, 0, Math.PI * 2, 0, Math.PI * 0.53)
+        new THREE.SphereGeometry(0.332, 22, 18, 0, Math.PI * 2, 0, Math.PI * 0.56)
       ),
       hairMat
     );
-    hairDome.position.set(0, 0.065, -0.04);
-    hairDome.rotation.x = -0.5;
+    hairDome.position.set(0, 0.068, -0.035);
+    hairDome.rotation.x = -0.46;
     headGroup.add(hairDome);
 
-    const royalBun = new THREE.Mesh(
-      trackGeo(new THREE.SphereGeometry(0.16, 16, 14)),
+    // Voluminous back silhouette so neck/ears are framed by lush royal hair
+    const backCascade = new THREE.Mesh(
+      trackGeo(new THREE.CylinderGeometry(0.285, 0.34, 0.44, 16)),
       hairMat
     );
-    royalBun.position.set(0, 0.31, -0.08);
-    royalBun.scale.set(1.15, 0.86, 0.95);
-    headGroup.add(royalBun);
+    backCascade.position.set(0, -0.095, -0.075);
+    backCascade.scale.set(1.08, 1, 0.78);
+    headGroup.add(backCascade);
 
-    const waveGeo = trackGeo(new THREE.CapsuleGeometry(0.064, 0.19, 8, 12));
+    const royalCrownBun = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.175, 16, 14)),
+      hairMat
+    );
+    royalCrownBun.position.set(0, 0.305, -0.035);
+    royalCrownBun.scale.set(1.22, 0.88, 0.96);
+    headGroup.add(royalCrownBun);
+
+    // Soft side-swept curtain bangs framing the forehead cleanly beneath the tiara
+    const leftSweepBang = new THREE.Mesh(
+      trackGeo(new THREE.CapsuleGeometry(0.056, 0.19, 8, 12)),
+      hairMat
+    );
+    leftSweepBang.position.set(-0.115, 0.255, 0.16);
+    leftSweepBang.rotation.z = Math.PI / 2 + 0.34;
+    leftSweepBang.rotation.y = -0.18;
+    headGroup.add(leftSweepBang);
+
+    const rightSweepBang = new THREE.Mesh(
+      trackGeo(new THREE.CapsuleGeometry(0.054, 0.18, 8, 12)),
+      hairMat
+    );
+    rightSweepBang.position.set(0.115, 0.255, 0.16);
+    rightSweepBang.rotation.z = Math.PI / 2 - 0.34;
+    rightSweepBang.rotation.y = 0.18;
+    headGroup.add(rightSweepBang);
+
+    // Front-visible cascading wavy curls draping down both cheeks onto the front shoulders!
+    const upperWaveGeo = trackGeo(new THREE.CapsuleGeometry(0.078, 0.22, 8, 12));
+    const lowerCurlGeo = trackGeo(new THREE.CapsuleGeometry(0.082, 0.2, 8, 12));
+    const shoulderTipGeo = trackGeo(new THREE.SphereGeometry(0.082, 10, 10));
+    const pearlStudGeo = trackGeo(new THREE.SphereGeometry(0.026, 10, 10));
+    const goldDropGeo = trackGeo(new THREE.OctahedronGeometry(0.03, 0));
+
     for (const side of [-1, 1]) {
-      const wave = new THREE.Mesh(waveGeo, hairMat);
-      wave.position.set(side * 0.268, 0.045, 0.02);
-      wave.rotation.z = side * -0.18;
-      headGroup.add(wave);
+      const upperWave = new THREE.Mesh(upperWaveGeo, hairMat);
+      upperWave.position.set(side * 0.278, -0.015, 0.045);
+      upperWave.rotation.z = side * -0.1;
+      upperWave.rotation.x = 0.12;
+      headGroup.add(upperWave);
 
-      // Gold Drop Earrings
-      const earring = new THREE.Mesh(
-        trackGeo(new THREE.SphereGeometry(0.032, 10, 10)),
-        goldMat
-      );
-      earring.position.set(side * 0.292, -0.085, 0.02);
-      headGroup.add(earring);
+      const lowerCurl = new THREE.Mesh(lowerCurlGeo, hairMat);
+      lowerCurl.position.set(side * 0.268, -0.185, 0.095);
+      lowerCurl.rotation.z = side * 0.16;
+      lowerCurl.rotation.x = 0.18;
+      headGroup.add(lowerCurl);
+
+      const shoulderCurl = new THREE.Mesh(shoulderTipGeo, hairMat);
+      shoulderCurl.position.set(side * 0.238, -0.285, 0.135);
+      shoulderCurl.scale.set(1.12, 0.85, 0.95);
+      headGroup.add(shoulderCurl);
+
+      // Luminous Pearl & Gold Drop Earrings
+      const stud = new THREE.Mesh(pearlStudGeo, pearlMat);
+      stud.position.set(side * 0.288, -0.055, 0.085);
+      headGroup.add(stud);
+
+      const drop = new THREE.Mesh(goldDropGeo, crownGoldMat);
+      drop.scale.set(0.85, 1.35, 0.85);
+      drop.position.set(side * 0.288, -0.105, 0.088);
+      headGroup.add(drop);
     }
 
-    // Gleaming 3D Golden Royal Tiara Crown with Emerald Center Jewel
+    // Prominent 24K Golden Royal Crown Tiara with 5 Spires, Pearl Tips & Glowing Emerald Centerpiece
     const tiaraGroup = new THREE.Group();
-    tiaraGroup.position.set(0, 0.268, 0.095);
-    tiaraGroup.rotation.x = -0.16;
+    tiaraGroup.position.set(0, 0.285, 0.088);
+    tiaraGroup.rotation.x = -0.05;
+
+    const tiaraBaseRim = new THREE.Mesh(
+      trackGeo(new THREE.CylinderGeometry(0.205, 0.195, 0.052, 24, 1, false, -Math.PI * 0.55, Math.PI * 1.1)),
+      crownGoldMat
+    );
+    tiaraBaseRim.position.y = 0.02;
+    tiaraGroup.add(tiaraBaseRim);
 
     const tiaraBand = new THREE.Mesh(
-      trackGeo(new THREE.TorusGeometry(0.19, 0.022, 8, 20, Math.PI)),
-      goldMat
+      trackGeo(new THREE.TorusGeometry(0.2, 0.026, 8, 24, Math.PI * 1.05)),
+      crownGoldMat
     );
     tiaraBand.rotation.x = Math.PI / 2;
-    tiaraBand.rotation.z = -Math.PI / 2;
+    tiaraBand.rotation.z = -Math.PI * 0.525;
     tiaraGroup.add(tiaraBand);
 
-    const peakSpecs: Array<[number, number, number]> = [
-      [0, 0.11, 0.19],
-      [-0.11, 0.075, 0.155],
-      [0.11, 0.075, 0.155],
+    const spireSpecs: Array<{ x: number; h: number; z: number; r: number }> = [
+      { x: 0, h: 0.155, z: 0.198, r: 0.054 },
+      { x: -0.095, h: 0.115, z: 0.175, r: 0.042 },
+      { x: 0.095, h: 0.115, z: 0.175, r: 0.042 },
+      { x: -0.168, h: 0.082, z: 0.112, r: 0.034 },
+      { x: 0.168, h: 0.082, z: 0.112, r: 0.034 },
     ];
-    const peakGeo = trackGeo(new THREE.ConeGeometry(0.038, 0.11, 4));
-    for (const [px, py, pz] of peakSpecs) {
-      const pk = new THREE.Mesh(peakGeo, goldMat);
-      pk.position.set(px, py * 0.55, pz);
+    const pearlTipGeo = trackGeo(new THREE.SphereGeometry(0.018, 8, 8));
+    for (const sp of spireSpecs) {
+      const pk = new THREE.Mesh(
+        trackGeo(new THREE.ConeGeometry(sp.r, sp.h, 4)),
+        crownGoldMat
+      );
+      pk.position.set(sp.x, 0.035 + sp.h * 0.5, sp.z);
       pk.rotation.y = Math.PI / 4;
       tiaraGroup.add(pk);
+
+      const tipPearl = new THREE.Mesh(pearlTipGeo, pearlMat);
+      tipPearl.position.set(sp.x, 0.035 + sp.h + 0.008, sp.z);
+      tiaraGroup.add(tipPearl);
     }
 
     const emeraldGem = new THREE.Mesh(
-      trackGeo(new THREE.OctahedronGeometry(0.036, 0)),
+      trackGeo(new THREE.OctahedronGeometry(0.044, 0)),
       trackMat(
         new THREE.MeshStandardMaterial({
           color: 0x10b981,
           emissive: 0x059669,
-          emissiveIntensity: 0.35,
-          roughness: 0.12,
-          metalness: 0.4,
+          emissiveIntensity: 0.45,
+          roughness: 0.1,
+          metalness: 0.35,
         })
       )
     );
-    emeraldGem.position.set(0, 0.045, 0.205);
+    emeraldGem.position.set(0, 0.068, 0.218);
     tiaraGroup.add(emeraldGem);
     headGroup.add(tiaraGroup);
   }
 
-  // 4. TOGGLEABLE 3D MINI JAIL BARS FOREGROUND (Appears when player is locked in Nhà Tù!)
+  // 4. TOGGLEABLE 3D MINI JAIL BARS FOREGROUND (Appears when player is stranded on Đảo Hoang!)
   const jailBarsGroup = new THREE.Group();
   jailBarsGroup.position.set(0, 0.02, 0.82);
   jailBarsGroup.visible = false;
@@ -929,6 +1333,35 @@ function buildStylizedCharacterRig(
   }
   scene.add(jailBarsGroup);
 
+  const setQualityFeatures = (
+    nextEnvTex: THREE.Texture | null,
+    useClearcoat: boolean
+  ) => {
+    scene.environment = nextEnvTex;
+    scene.environmentIntensity = nextEnvTex ? 0.5 : 0;
+    hemiLight.intensity = nextEnvTex ? 1.02 : 1.18;
+
+    const applyPhys = (
+      mat: THREE.MeshPhysicalMaterial,
+      sheenVal: number,
+      coatVal: number
+    ) => {
+      const nextSheen = useClearcoat ? sheenVal : 0;
+      const nextCoat = useClearcoat ? coatVal : 0;
+      if ((mat.sheen > 0) !== (nextSheen > 0) || (mat.clearcoat > 0) !== (nextCoat > 0)) {
+        mat.needsUpdate = true;
+      }
+      mat.sheen = nextSheen;
+      mat.clearcoat = nextCoat;
+    };
+
+    applyPhys(skinMat, 0.42, 0);
+    applyPhys(suitMat, 0.48, 0);
+    applyPhys(lapelMat, 0, 0.25);
+    applyPhys(accentMat, 0, 0.45);
+    applyPhys(hairMat, 0, 0.42);
+  };
+
   return {
     scene,
     camera,
@@ -941,8 +1374,10 @@ function buildStylizedCharacterRig(
     mouthArc,
     propPivot,
     jailBarsGroup,
+    hemiLight,
     keyLight,
     rimLight,
+    setQualityFeatures,
     disposables,
   };
 }
@@ -996,6 +1431,7 @@ export const PlayerAvatar3D: React.FC<PlayerAvatar3DProps> = ({
   ariaLabel,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const subscriberRef = useRef<AvatarSubscriber | null>(null);
   const pointerRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const stateRef = useRef({
@@ -1015,13 +1451,10 @@ export const PlayerAvatar3D: React.FC<PlayerAvatar3DProps> = ({
     const ctx2d = canvas.getContext('2d');
     if (!ctx2d) return;
 
-    const envTex = sharedAvatarEngine.getEnvTexture();
-    const rig = buildStylizedCharacterRig(archetype, envTex);
-
     const subscriber: AvatarSubscriber = {
+      archetype,
       canvas2d: canvas,
       ctx2d,
-      rig,
       getState: () => ({
         ...stateRef.current,
         pointerX: pointerRef.current.x,
@@ -1040,18 +1473,24 @@ export const PlayerAvatar3D: React.FC<PlayerAvatar3DProps> = ({
         propGestureAngle: 0,
       },
     };
+    subscriberRef.current = subscriber;
 
     const unsubscribe = sharedAvatarEngine.subscribe(subscriber);
 
     return () => {
+      subscriberRef.current = null;
       unsubscribe();
-      for (const d of rig.disposables) {
-        d.dispose();
-      }
     };
   }, [archetype, facingSign]);
 
+  useEffect(() => {
+    if (subscriberRef.current) {
+      sharedAvatarEngine.refreshSubscriber(subscriberRef.current);
+    }
+  }, [mood, isActive]);
+
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (sharedAvatarEngine.getQualityTier() === 'low') return;
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;

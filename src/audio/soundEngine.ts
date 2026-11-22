@@ -1,3 +1,5 @@
+import { CurrencyStyleId } from '../game/types';
+
 /**
  * Procedural Web Audio API Sound Synthesizer for 3D Monopoly.
  * Zero external audio files required.
@@ -334,6 +336,119 @@ class SoundEngine {
     g.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.12);
+  }
+
+  /** Crisp rigid-body impact sound synchronized to cannon-es dice collision timestamps */
+  public playPhysicsDiceHit(intensity = 0.8): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const clamped = Math.max(0.15, Math.min(1, intensity));
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    const f0 = 240 + clamped * 190 + Math.random() * 35;
+    osc.frequency.setValueAtTime(f0, now);
+    osc.frequency.exponentialRampToValueAtTime(88, now + 0.048);
+
+    gain.gain.setValueAtTime(0.16 * clamped, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.052);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.056);
+  }
+
+  /** Material-specific 3D currency transfer SFX ('cash' Polymer rustle, 'coins' clink, 'bullion' gold chime, 'mixed') */
+  public playCurrencyTransfer(style: CurrencyStyleId, isGain: boolean): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+
+    const triggerPaperRustle = (count: number, startOffset = 0) => {
+      const sampleCount = Math.floor(ctx.sampleRate * 0.055);
+      const noiseBuf = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
+      const ch = noiseBuf.getChannelData(0);
+      for (let i = 0; i < sampleCount; i++) {
+        ch[i] = (Math.random() * 2 - 1) * Math.sin((i / sampleCount) * Math.PI);
+      }
+
+      for (let k = 0; k < count; k++) {
+        const t = now + startOffset + k * 0.052;
+        const src = ctx.createBufferSource();
+        src.buffer = noiseBuf;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(2200 + k * 280, t);
+        filter.Q.setValueAtTime(2.4, t);
+
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.12, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.052);
+
+        src.connect(filter);
+        filter.connect(g);
+        g.connect(ctx.destination);
+        src.start(t);
+      }
+    };
+
+    const triggerCoinClinks = (count: number, startOffset = 0) => {
+      const freqs = isGain
+        ? [2349, 2793, 3136, 3951]
+        : [2637, 2349, 2093, 1975];
+      for (let k = 0; k < count; k++) {
+        const t = now + startOffset + k * 0.055;
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = 'sine';
+        const f = freqs[k % freqs.length] * (0.98 + (k % 2) * 0.03);
+        osc.frequency.setValueAtTime(f, t);
+        g.gain.setValueAtTime(0.085, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.13);
+      }
+    };
+
+    if (style === 'cash') {
+      triggerPaperRustle(4, 0);
+      return;
+    }
+
+    if (style === 'coins') {
+      triggerCoinClinks(4, 0);
+      return;
+    }
+
+    if (style === 'bullion') {
+      // Heavy resonant 999.9 gold bullion ring + ceramic casino chip clack
+      const harmonics = isGain ? [1174.66, 1760.0, 2637.02] : [987.77, 1479.98, 2217.46];
+      harmonics.forEach((f, idx) => {
+        const t = now + idx * 0.045;
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = idx === 0 ? 'triangle' : 'sine';
+        osc.frequency.setValueAtTime(f, t);
+        g.gain.setValueAtTime(idx === 0 ? 0.12 : 0.07, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.3);
+      });
+      return;
+    }
+
+    // 'mixed': crisp Polymer rustle followed by metallic coin clinks on tray landing
+    triggerPaperRustle(2, 0);
+    triggerCoinClinks(2, 0.1);
   }
 }
 
