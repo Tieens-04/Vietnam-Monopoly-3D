@@ -138,6 +138,7 @@ class SharedAvatarRenderEngine {
   private snapshotCache = new Map<string, HTMLCanvasElement>();
   private subscribers = new Set<AvatarSubscriber>();
   private running = false;
+  private orbitSuspended = false;
   private timerOrRafId = 0;
   private useTimeoutId = false;
   private visibilityBound = false;
@@ -316,7 +317,7 @@ class SharedAvatarRenderEngine {
       drawFallback2DPortrait(sub);
     } else {
       const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
-      if (profile.avatarFps <= 0) {
+      if (profile.avatarFps <= 0 || this.orbitSuspended) {
         this.renderStaticSnapshotToSubscriber(sub);
       } else {
         this.syncSchedule();
@@ -338,8 +339,18 @@ class SharedAvatarRenderEngine {
       return;
     }
     const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
-    if (profile.avatarFps <= 0) {
+    if (profile.avatarFps <= 0 || this.orbitSuspended) {
       this.renderStaticSnapshotToSubscriber(sub);
+    }
+  }
+
+  public setOrbitSuspended(suspended: boolean): void {
+    if (this.orbitSuspended === suspended) return;
+    this.orbitSuspended = suspended;
+    if (suspended) {
+      this.stopLoop();
+    } else {
+      this.syncSchedule();
     }
   }
 
@@ -347,6 +358,7 @@ class SharedAvatarRenderEngine {
     const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
     if (
       this.subscribers.size === 0 ||
+      this.orbitSuspended ||
       (typeof document !== 'undefined' && document.hidden)
     ) {
       this.stopLoop();
@@ -487,6 +499,10 @@ const sharedAvatarEngine = new SharedAvatarRenderEngine();
 
 export function setAvatarGraphicsTier(tier: GraphicsQualityTier): void {
   sharedAvatarEngine.setQualityTier(tier);
+}
+
+export function setAvatarOrbitSuspended(suspended: boolean): void {
+  sharedAvatarEngine.setOrbitSuspended(suspended);
 }
 
 function drawFallback2DPortrait(sub: AvatarSubscriber): void {

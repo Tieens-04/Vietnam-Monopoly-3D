@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CHARACTER_PERSONAS } from '../game/avatarLogic';
 import { formatCountdownClock } from '../game/rules';
 import { RegionalArchitectureStyle } from '../game/visualTheme';
@@ -9,6 +10,7 @@ import {
   createCardDeckTopTexture,
   createCountdownClockBoardTexture,
   createOuterPriceTabTexture,
+  drawCountdownClockBoardToCanvas,
 } from './textures';
 
 export interface NightLightingPalette {
@@ -249,6 +251,161 @@ function markSharedMat<T extends THREE.Material>(mat: T): T {
   return mat;
 }
 
+/**
+ * Builds a BoxGeometry whose 5 side/bottom faces (+X, -X, -Y, +Z, -Z) are batched into
+ * Group 0 (`materialIndex = 0`) and whose +Y top face is in Group 1 (`materialIndex = 1`).
+ * Cuts WebGL draw calls per textured tile/tab/card from 6 down to 2 with identical visuals!
+ */
+export function createTopCappedBoxGeometry(
+  width: number,
+  height: number,
+  depth: number
+): THREE.BufferGeometry {
+  const box = new THREE.BoxGeometry(width, height, depth);
+  const srcIndex = box.getIndex();
+  if (!srcIndex || box.groups.length !== 6) return box;
+
+  const srcArr = srcIndex.array;
+  const reordered = new Uint16Array(srcArr.length);
+  let writeCursor = 0;
+
+  for (let g = 0; g < box.groups.length; g++) {
+    if (g === 2) continue;
+    const grp = box.groups[g];
+    for (let k = 0; k < grp.count; k++) {
+      reordered[writeCursor++] = srcArr[grp.start + k];
+    }
+  }
+  const sideCount = writeCursor;
+
+  const topGrp = box.groups[2];
+  for (let k = 0; k < topGrp.count; k++) {
+    reordered[writeCursor++] = srcArr[topGrp.start + k];
+  }
+  const topCount = topGrp.count;
+
+  box.setIndex(new THREE.BufferAttribute(reordered, 1));
+  box.clearGroups();
+  box.addGroup(0, sideCount, 0);
+  box.addGroup(sideCount, topCount, 1);
+  return box;
+}
+
+/**
+ * Merges static `THREE.Mesh` descendants inside `root` that share the exact same `Material`
+ * instance (skipping excluded subtrees, multi-material meshes, and `depthWrite: false` decals).
+ * Preserves local-to-root vertex positions, normals, UVs, and shadow flags while drastically
+ * reducing per-frame WebGL draw calls during camera rotation.
+ */
+export function mergeGroupMeshesByMaterial(
+  root: THREE.Group,
+  excludeSubtrees?: Set<THREE.Object3D>
+): void {
+  const savedPos = root.position.clone();
+  const savedQuat = root.quaternion.clone();
+  const savedScale = root.scale.clone();
+
+  root.position.set(0, 0, 0);
+  root.quaternion.identity();
+  root.scale.set(1, 1, 1);
+  root.updateMatrixWorld(true);
+
+  const buckets = new Map<THREE.Material, THREE.Mesh[]>();
+  const walk = (node: THREE.Object3D) => {
+    if (excludeSubtrees?.has(node)) return;
+    if (node instanceof THREE.Mesh) {
+      if (
+        !Array.isArray(node.material) &&
+        node.material &&
+        node.material.depthWrite !== false
+      ) {
+        let list = buckets.get(node.material);
+        if (!list) {
+          list = [];
+          buckets.set(node.material, list);
+        }
+        list.push(node);
+      }
+    }
+    for (let i = 0; i < node.children.length; i++) {
+      walk(node.children[i]);
+    }
+  };
+  walk(root);
+
+  for (const [mat, meshes] of buckets.entries()) {
+    if (meshes.length < 2) continue;
+
+    const bakedParts: THREE.BufferGeometry[] = [];
+    let anyCastShadow = false;
+    let anyReceiveShadow = false;
+
+    for (const m of meshes) {
+      if (m.castShadow) anyCastShadow = true;
+      if (m.receiveShadow) anyReceiveShadow = true;
+
+      const baked = m.geometry.index
+        ? m.geometry.toNonIndexed()
+        : m.geometry.clone();
+      const posAttr = baked.getAttribute('position');
+      if (!baked.hasAttribute('normal')) {
+        baked.computeVertexNormals();
+      }
+      if (!baked.hasAttribute('uv') && posAttr) {
+        baked.setAttribute(
+          'uv',
+          new THREE.Float32BufferAttribute(new Float32Array(posAttr.count * 2), 2)
+        );
+      }
+      for (const attrName of Object.keys(baked.attributes)) {
+        if (attrName !== 'position' && attrName !== 'normal' && attrName !== 'uv') {
+          baked.deleteAttribute(attrName);
+        }
+      }
+      baked.clearGroups();
+      baked.applyMatrix4(m.matrixWorld);
+      bakedParts.push(baked);
+    }
+
+    const mergedGeo = mergeGeometries(bakedParts, false);
+    for (const bp of bakedParts) {
+      bp.dispose();
+    }
+    if (!mergedGeo) continue;
+
+    for (const m of meshes) {
+      m.parent?.remove(m);
+      if (m.geometry && !m.geometry.userData?.sharedStatic) {
+        m.geometry.dispose();
+      }
+    }
+
+    const mergedMesh = new THREE.Mesh(mergedGeo, mat);
+    mergedMesh.castShadow = anyCastShadow;
+    mergedMesh.receiveShadow = anyReceiveShadow;
+    root.add(mergedMesh);
+  }
+
+  // Prune empty intermediate Groups left behind after merging
+  const pruneEmptyGroups = (parent: THREE.Object3D) => {
+    for (let i = parent.children.length - 1; i >= 0; i--) {
+      const child = parent.children[i];
+      if (excludeSubtrees?.has(child)) continue;
+      if (child.type === 'Group') {
+        pruneEmptyGroups(child);
+        if (child.children.length === 0) {
+          parent.remove(child);
+        }
+      }
+    }
+  };
+  pruneEmptyGroups(root);
+
+  root.position.copy(savedPos);
+  root.quaternion.copy(savedQuat);
+  root.scale.copy(savedScale);
+}
+
 const contactShadowTexCache = new Map<number, THREE.CanvasTexture>();
 
 function createContactShadow(radius: number, opacity = 0.3): THREE.Mesh {
@@ -299,7 +456,9 @@ const SHARED_TAB_WALL_MAT = markSharedMat(
 );
 const SHARED_TAB_NECK_GEO = markSharedGeo(new THREE.BoxGeometry(1.04, 0.24, 0.38));
 const SHARED_TAB_COLLAR_GEO = markSharedGeo(new THREE.BoxGeometry(1.44, 0.18, 1.04));
-const SHARED_TAB_PLATE_GEO = markSharedGeo(new THREE.BoxGeometry(1.34, 0.18, 0.92));
+const SHARED_TAB_PLATE_GEO = markSharedGeo(
+  createTopCappedBoxGeometry(1.34, 0.18, 0.92)
+);
 
 /**
  * Builds a chunky Business Tour 3D Price Tab extending OUTWARD from the outer edge of a tile.
@@ -338,27 +497,25 @@ export function createProtrudingPriceTab(
     metalness: 0.08,
   });
 
-  // 1. Structural 3D bridge neck anchored into the tile's outer wall
+  // 1. Structural 3D bridge neck + 2. Chunky lower bevelled 3D collar (merged into 1 draw call!)
+  const collarGroup = new THREE.Group();
   const neck = new THREE.Mesh(SHARED_TAB_NECK_GEO, collarMat);
   neck.position.set(0, 0.1, 1.35);
   neck.castShadow = true;
-  group.add(neck);
+  collarGroup.add(neck);
 
-  // 2. Chunky lower bevelled 3D collar extending outward from the tile edge
   const lowerCollar = new THREE.Mesh(SHARED_TAB_COLLAR_GEO, collarMat);
   lowerCollar.position.set(0, 0.08, 1.81);
   lowerCollar.castShadow = true;
   lowerCollar.receiveShadow = true;
-  group.add(lowerCollar);
+  collarGroup.add(lowerCollar);
+  mergeGroupMeshesByMaterial(collarGroup);
+  group.add(collarGroup);
 
   // 3. Raised #F4F5F7 3D price plate displaying bold dark-slate shorthand (200K, 1.2M)
   const hitMesh = new THREE.Mesh(SHARED_TAB_PLATE_GEO, [
     SHARED_TAB_WALL_MAT,
-    SHARED_TAB_WALL_MAT,
     topMat,
-    SHARED_TAB_WALL_MAT,
-    SHARED_TAB_WALL_MAT,
-    SHARED_TAB_WALL_MAT,
   ]);
   hitMesh.position.set(0, 0.22, 1.81);
   hitMesh.castShadow = true;
@@ -730,6 +887,7 @@ export function createPlayerTokenMesh(
   }
 
   group.add(headGroup);
+  mergeGroupMeshesByMaterial(group);
   return group;
 }
 
@@ -754,12 +912,80 @@ const SHARED_SHIELD_WHITE_MAT = markSharedMat(
     metalness: 0.08,
   })
 );
-const SHARED_SHIELD_UPPER_GOLD_GEO = markSharedGeo(new THREE.BoxGeometry(0.42, 0.28, 0.08));
-const SHARED_SHIELD_LOWER_GOLD_GEO = markSharedGeo(new THREE.ConeGeometry(0.295, 0.28, 4));
-const SHARED_SHIELD_UPPER_RED_GEO = markSharedGeo(new THREE.BoxGeometry(0.32, 0.21, 0.098));
-const SHARED_SHIELD_LOWER_RED_GEO = markSharedGeo(new THREE.ConeGeometry(0.225, 0.21, 4));
-const SHARED_SHIELD_VBAR_GEO = markSharedGeo(new THREE.BoxGeometry(0.07, 0.2, 0.112));
-const SHARED_SHIELD_HBAR_GEO = markSharedGeo(new THREE.BoxGeometry(0.18, 0.07, 0.112));
+
+const SHARED_SHIELD_GEOS: {
+  gold: THREE.BufferGeometry;
+  ruby: THREE.BufferGeometry;
+  white: THREE.BufferGeometry;
+} = (() => {
+  const proto = new THREE.Group();
+
+  const upperGold = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.28, 0.08),
+    SHARED_SHIELD_GOLD_MAT
+  );
+  upperGold.position.y = 0.12;
+  proto.add(upperGold);
+
+  const lowerGold = new THREE.Mesh(
+    new THREE.ConeGeometry(0.295, 0.28, 4),
+    SHARED_SHIELD_GOLD_MAT
+  );
+  lowerGold.rotation.z = Math.PI;
+  lowerGold.rotation.y = Math.PI / 4;
+  lowerGold.scale.set(1, 1, 0.28);
+  lowerGold.position.y = -0.14;
+  proto.add(lowerGold);
+
+  const upperRed = new THREE.Mesh(
+    new THREE.BoxGeometry(0.32, 0.21, 0.098),
+    SHARED_SHIELD_RUBY_MAT
+  );
+  upperRed.position.y = 0.12;
+  proto.add(upperRed);
+
+  const lowerRed = new THREE.Mesh(
+    new THREE.ConeGeometry(0.225, 0.21, 4),
+    SHARED_SHIELD_RUBY_MAT
+  );
+  lowerRed.rotation.z = Math.PI;
+  lowerRed.rotation.y = Math.PI / 4;
+  lowerRed.scale.set(1, 1, 0.34);
+  lowerRed.position.y = -0.11;
+  proto.add(lowerRed);
+
+  const vBar = new THREE.Mesh(
+    new THREE.BoxGeometry(0.07, 0.2, 0.112),
+    SHARED_SHIELD_WHITE_MAT
+  );
+  vBar.position.y = 0.07;
+  proto.add(vBar);
+
+  const hBar = new THREE.Mesh(
+    new THREE.BoxGeometry(0.18, 0.07, 0.112),
+    SHARED_SHIELD_WHITE_MAT
+  );
+  hBar.position.y = 0.09;
+  proto.add(hBar);
+
+  mergeGroupMeshesByMaterial(proto);
+
+  let goldGeo: THREE.BufferGeometry | null = null;
+  let rubyGeo: THREE.BufferGeometry | null = null;
+  let whiteGeo: THREE.BufferGeometry | null = null;
+  for (const ch of proto.children) {
+    if (ch instanceof THREE.Mesh) {
+      if (ch.material === SHARED_SHIELD_GOLD_MAT) goldGeo = markSharedGeo(ch.geometry);
+      else if (ch.material === SHARED_SHIELD_RUBY_MAT) rubyGeo = markSharedGeo(ch.geometry);
+      else if (ch.material === SHARED_SHIELD_WHITE_MAT) whiteGeo = markSharedGeo(ch.geometry);
+    }
+  }
+  return {
+    gold: goldGeo!,
+    ruby: rubyGeo!,
+    white: whiteGeo!,
+  };
+})();
 
 /**
  * Floating 3D Gold/Red Protection Shield Icon bobbing above Level 4 Luxury Hotels.
@@ -767,39 +993,15 @@ const SHARED_SHIELD_HBAR_GEO = markSharedGeo(new THREE.BoxGeometry(0.18, 0.07, 0
 function createProtectionShieldModel(): THREE.Group {
   const shield = new THREE.Group();
 
-  // Outer Gold Shield Body (upper crest + lower tapered point)
-  const upperGold = new THREE.Mesh(SHARED_SHIELD_UPPER_GOLD_GEO, SHARED_SHIELD_GOLD_MAT);
-  upperGold.position.y = 0.12;
-  upperGold.castShadow = true;
-  shield.add(upperGold);
+  const goldBody = new THREE.Mesh(SHARED_SHIELD_GEOS.gold, SHARED_SHIELD_GOLD_MAT);
+  goldBody.castShadow = true;
+  shield.add(goldBody);
 
-  const lowerGold = new THREE.Mesh(SHARED_SHIELD_LOWER_GOLD_GEO, SHARED_SHIELD_GOLD_MAT);
-  lowerGold.rotation.z = Math.PI;
-  lowerGold.rotation.y = Math.PI / 4;
-  lowerGold.scale.set(1, 1, 0.28);
-  lowerGold.position.y = -0.14;
-  shield.add(lowerGold);
+  const rubyFace = new THREE.Mesh(SHARED_SHIELD_GEOS.ruby, SHARED_SHIELD_RUBY_MAT);
+  shield.add(rubyFace);
 
-  // Inner Crimson-Red Shield Face (both front & back)
-  const upperRed = new THREE.Mesh(SHARED_SHIELD_UPPER_RED_GEO, SHARED_SHIELD_RUBY_MAT);
-  upperRed.position.y = 0.12;
-  shield.add(upperRed);
-
-  const lowerRed = new THREE.Mesh(SHARED_SHIELD_LOWER_RED_GEO, SHARED_SHIELD_RUBY_MAT);
-  lowerRed.rotation.z = Math.PI;
-  lowerRed.rotation.y = Math.PI / 4;
-  lowerRed.scale.set(1, 1, 0.34);
-  lowerRed.position.y = -0.11;
-  shield.add(lowerRed);
-
-  // Crisp White Star/Cross Emblem in center of shield
-  const vBar = new THREE.Mesh(SHARED_SHIELD_VBAR_GEO, SHARED_SHIELD_WHITE_MAT);
-  vBar.position.y = 0.07;
-  shield.add(vBar);
-
-  const hBar = new THREE.Mesh(SHARED_SHIELD_HBAR_GEO, SHARED_SHIELD_WHITE_MAT);
-  hBar.position.y = 0.09;
-  shield.add(hBar);
+  const whiteCross = new THREE.Mesh(SHARED_SHIELD_GEOS.white, SHARED_SHIELD_WHITE_MAT);
+  shield.add(whiteCross);
 
   return shield;
 }
@@ -1214,6 +1416,11 @@ export function createOwnershipBuildingSuite(
       hotel.add(spire);
     }
   }
+  mergeGroupMeshesByMaterial(starterPavilion);
+  for (const hGroup of houses) {
+    mergeGroupMeshesByMaterial(hGroup);
+  }
+  mergeGroupMeshesByMaterial(hotel);
   root.add(hotel);
 
   // Floating 3D Gold/Red Shield Icon above Protected Level 4 Properties
@@ -1718,6 +1925,17 @@ export function createCornerDiorama(
     group.add(airport);
   }
 
+  if (spinTarget instanceof THREE.Group) {
+    mergeGroupMeshesByMaterial(spinTarget);
+  }
+  if (bobTarget instanceof THREE.Group) {
+    mergeGroupMeshesByMaterial(bobTarget);
+  }
+  const excludedAnimTargets = new Set<THREE.Object3D>();
+  if (spinTarget) excludedAnimTargets.add(spinTarget);
+  if (bobTarget) excludedAnimTargets.add(bobTarget);
+  mergeGroupMeshesByMaterial(group, excludedAnimTargets);
+
   return {
     group,
     anim: {
@@ -1750,9 +1968,9 @@ function createOuterQuestionCardStack(maxAnisotropy: number): THREE.Group {
 
   g.add(createContactShadow(1.35, 0.26));
 
-  // Fan of 4 thick 3D question-mark cards stacked organically
-  const cardGeo = new THREE.BoxGeometry(1.78, 0.12, 1.16);
-  const mats = [cardSideMat, cardSideMat, topMat, cardSideMat, cardSideMat, cardSideMat];
+  // Fan of 4 thick 3D question-mark cards stacked organically (2 groups instead of 6!)
+  const cardGeo = createTopCappedBoxGeometry(1.78, 0.12, 1.16);
+  const mats = [cardSideMat, topMat];
   for (let i = 0; i < 4; i++) {
     const slice = new THREE.Mesh(cardGeo, mats);
     slice.position.set(
@@ -1965,13 +2183,14 @@ export function createCourtyardDiorama(
   let lastClockSec = 45;
   let lastTurnNum = 1;
   let lastClockHex = '#F5B800';
-  let clockScreenTex = createCountdownClockBoardTexture(
+  const clockScreenTex = createCountdownClockBoardTexture(
     formatCountdownClock(lastClockSec),
     lastTurnNum,
     lastClockSec,
     lastClockHex,
     maxAnisotropy
   );
+  const clockCanvas = clockScreenTex.image as HTMLCanvasElement;
   const clockScreenMat = new THREE.MeshBasicMaterial({
     map: clockScreenTex,
   });
@@ -2004,17 +2223,14 @@ export function createCourtyardDiorama(
     lastTurnNum = safeTurn;
     lastClockHex = activeColorHex;
 
-    const prevTex = clockScreenTex;
-    clockScreenTex = createCountdownClockBoardTexture(
+    drawCountdownClockBoardToCanvas(
+      clockCanvas,
       formatCountdownClock(clampedSec),
       safeTurn,
       clampedSec,
-      activeColorHex,
-      maxAnisotropy
+      activeColorHex
     );
-    clockScreenMat.map = clockScreenTex;
-    clockScreenMat.needsUpdate = true;
-    prevTex.dispose();
+    clockScreenTex.needsUpdate = true;
   };
 
   const refreshTextTextures = () => {
@@ -2048,15 +2264,18 @@ export function createCourtyardDiorama(
   };
 }
 
-function createSoftPastelCloud(scale = 1): THREE.Group {
-  const cloud = new THREE.Group();
-  const cloudMat = new THREE.MeshStandardMaterial({
+const SHARED_PASTEL_CLOUD_MAT = markSharedMat(
+  new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.88,
     metalness: 0.0,
     emissive: 0xffe4ec,
     emissiveIntensity: 0.22,
-  });
+  })
+);
+
+function createSoftPastelCloud(scale = 1): THREE.Group {
+  const cloud = new THREE.Group();
 
   for (const [x, y, z, r] of [
     [0, 0.22, 0, 0.72],
@@ -2064,11 +2283,15 @@ function createSoftPastelCloud(scale = 1): THREE.Group {
     [0.6, 0.16, -0.08, 0.54],
     [0.12, 0.12, 0.44, 0.46],
   ]) {
-    const puff = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), cloudMat);
+    const puff = new THREE.Mesh(
+      new THREE.SphereGeometry(r, 14, 10),
+      SHARED_PASTEL_CLOUD_MAT
+    );
     puff.scale.set(1.25, 0.58, 1.06);
     puff.position.set(x, y, z);
     cloud.add(puff);
   }
+  mergeGroupMeshesByMaterial(cloud);
   cloud.scale.setScalar(scale);
   return cloud;
 }
@@ -2193,6 +2416,7 @@ function createVietnameseBlossomAndLanternAccent(
   lanternGroup.add(tassel);
 
   branch.add(lanternGroup);
+  mergeGroupMeshesByMaterial(branch);
   return branch;
 }
 
@@ -2352,6 +2576,7 @@ export function createSurroundingVista(
   const haloPlaneGeo = new THREE.PlaneGeometry(1.9, 1.9);
   haloPlaneGeo.rotateX(-Math.PI / 2);
 
+  const perimeterLampsGroup = new THREE.Group();
   for (const [lx, lz] of [
     [-8.65, 8.65],
     [8.65, -8.65],
@@ -2394,8 +2619,10 @@ export function createSurroundingVista(
     groundHalo.position.y = 0.03;
     postGroup.add(groundHalo);
 
-    vista.add(postGroup);
+    perimeterLampsGroup.add(postGroup);
   }
+  mergeGroupMeshesByMaterial(perimeterLampsGroup);
+  vista.add(perimeterLampsGroup);
 
   const cloudSpots: Array<[number, number, number, number, number]> = [
     [-13.8, -1.1, -9.8, 1.35, 0.4],

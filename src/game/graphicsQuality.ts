@@ -33,6 +33,36 @@ export interface BoardAnimationActivityInput {
   idleBoardFps: number;
 }
 
+export interface BoardFrameScheduleDecision {
+  mode: 'stop' | 'interval' | 'raf' | 'background_sim';
+  intervalMs: number;
+}
+
+export interface BoardFrameSchedulerOptions {
+  isSoftwareGl: boolean;
+  now?: () => number;
+  isDocumentHidden: () => boolean;
+  hasPendingGameplayPromises: () => boolean;
+  requestRaf?: (cb: () => void) => number;
+  cancelRaf?: (id: number) => void;
+  setTimer?: (cb: () => void, ms: number) => number;
+  clearTimer?: (id: number) => void;
+  afterSoftwareDraw?: (
+    scheduleTimeout: (cb: () => void, ms: number) => void,
+    runNextTick: () => void
+  ) => (() => void) | void;
+  onMarkBackdropDirty?: () => void;
+  onFrame: (rawDtSec: number) => BoardFrameScheduleDecision;
+}
+
+export interface BoardFrameScheduler {
+  requestRender: (markBackdropDirty?: boolean) => void;
+  runImmediateTick: () => void;
+  handleVisibilityChange: () => void;
+  cancel: () => void;
+  dispose: () => void;
+}
+
 export interface GraphicsQualityOptionMeta {
   id: GraphicsQualityPref;
   shortLabel: string;
@@ -274,6 +304,168 @@ export function shouldKeepBoardAnimating(
   return {
     mode: 'interval',
     intervalMs: Math.max(16, Math.round(1000 / input.idleBoardFps)),
+  };
+}
+
+/**
+ * Single-flight WebGL frame scheduler that guarantees at most ONE pending RAF or timer
+ * exists at any moment — even when `OrbitControls.update()` synchronously dispatches
+ * `'change'` -> `requestRender()` from inside `onFrame()`.
+ */
+export function createBoardFrameScheduler(
+  options: BoardFrameSchedulerOptions
+): BoardFrameScheduler {
+  const nowFn = options.now ?? (() => performance.now());
+  const requestRafFn =
+    options.requestRaf ?? ((cb: () => void) => window.requestAnimationFrame(cb));
+  const cancelRafFn =
+    options.cancelRaf ?? ((id: number) => window.cancelAnimationFrame(id));
+  const setTimerFn =
+    options.setTimer ?? ((cb: () => void, ms: number) => window.setTimeout(cb, ms));
+  const clearTimerFn =
+    options.clearTimer ?? ((id: number) => window.clearTimeout(id));
+
+  let disposed = false;
+  let isTickRunning = false;
+  let dirtyWakeDuringTick = false;
+  let scheduledMode: 'none' | 'raf' | 'timeout' = 'none';
+  let frameId = 0;
+  let cleanupSoftwareSync: (() => void) | null = null;
+  let lastTimeMs = nowFn();
+
+  const cancel = (): void => {
+    if (scheduledMode === 'raf') {
+      cancelRafFn(frameId);
+    } else if (scheduledMode === 'timeout') {
+      clearTimerFn(frameId);
+    }
+    scheduledMode = 'none';
+    frameId = 0;
+    if (cleanupSoftwareSync) {
+      const fn = cleanupSoftwareSync;
+      cleanupSoftwareSync = null;
+      fn();
+    }
+  };
+
+  const scheduleRaf = (): void => {
+    if (disposed || scheduledMode === 'raf') return;
+    if (scheduledMode !== 'none') {
+      cancel();
+    }
+    scheduledMode = 'raf';
+    frameId = requestRafFn(tick);
+  };
+
+  const scheduleTimeout = (cb: () => void, ms: number): void => {
+    if (disposed) return;
+    if (scheduledMode !== 'none') {
+      cancel();
+    }
+    scheduledMode = 'timeout';
+    frameId = setTimerFn(cb, ms);
+  };
+
+  const tick = (): void => {
+    if (disposed || isTickRunning) return;
+    cancel();
+    isTickRunning = true;
+    dirtyWakeDuringTick = false;
+
+    const currentMs = nowFn();
+    const rawDtSec = Math.max(0.001, (currentMs - lastTimeMs) / 1000);
+    lastTimeMs = currentMs;
+
+    let decision: BoardFrameScheduleDecision;
+    try {
+      decision = options.onFrame(rawDtSec);
+    } finally {
+      isTickRunning = false;
+    }
+
+    if (disposed) return;
+
+    if (decision.mode === 'stop' && !dirtyWakeDuringTick) {
+      return;
+    }
+    if (decision.mode === 'interval' || decision.mode === 'background_sim') {
+      scheduleTimeout(tick, decision.intervalMs);
+      return;
+    }
+    if (options.isSoftwareGl) {
+      if (options.afterSoftwareDraw) {
+        const maybeCleanup = options.afterSoftwareDraw(scheduleTimeout, tick);
+        if (typeof maybeCleanup === 'function') {
+          cleanupSoftwareSync = maybeCleanup;
+        }
+      } else {
+        scheduleTimeout(tick, 33);
+      }
+      return;
+    }
+    scheduleRaf();
+  };
+
+  const requestRender = (markBackdropDirty = false): void => {
+    if (disposed) return;
+    if (markBackdropDirty) {
+      options.onMarkBackdropDirty?.();
+    }
+    if (isTickRunning) {
+      if (markBackdropDirty) {
+        dirtyWakeDuringTick = true;
+      }
+      return;
+    }
+    if (options.isDocumentHidden()) {
+      if (options.hasPendingGameplayPromises()) {
+        if (scheduledMode !== 'timeout') {
+          if (scheduledMode === 'none') {
+            lastTimeMs = nowFn() - 16;
+          }
+          scheduleTimeout(tick, 80);
+        }
+      } else {
+        cancel();
+      }
+      return;
+    }
+    if (scheduledMode === 'raf') return;
+    if (scheduledMode === 'none') {
+      lastTimeMs = nowFn() - 16;
+    }
+    if (options.isSoftwareGl) {
+      if (scheduledMode !== 'timeout') {
+        scheduleTimeout(tick, 16);
+      }
+    } else {
+      scheduleRaf();
+    }
+  };
+
+  const handleVisibilityChange = (): void => {
+    if (disposed) return;
+    if (options.isDocumentHidden()) {
+      cancel();
+      if (options.hasPendingGameplayPromises()) {
+        scheduleTimeout(tick, 80);
+      }
+    } else {
+      requestRender(true);
+    }
+  };
+
+  const dispose = (): void => {
+    disposed = true;
+    cancel();
+  };
+
+  return {
+    requestRender,
+    runImmediateTick: tick,
+    handleVisibilityChange,
+    cancel,
+    dispose,
   };
 }
 
