@@ -15,6 +15,7 @@ import {
   getVaultWorldAnchor,
 } from '../game/currencyLogic';
 import {
+  createBoardFrameScheduler,
   detectBrowserGpu,
   GraphicsQualityProfile,
   resolveGraphicsProfile,
@@ -52,9 +53,11 @@ import {
   createPlayerTokenMesh,
   createProtrudingPriceTab,
   createSurroundingVista,
+  createTopCappedBoxGeometry,
   OwnershipBuildingSuiteRefs,
   ProtrudingPriceTabRefs,
 } from '../three/models';
+import { setAvatarOrbitSuspended } from './PlayerAvatar3D';
 import {
   sampleDiceTrajectoryAt,
   simulateDeterministicDiceRoll,
@@ -474,6 +477,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       let composerWidth = 0;
       let composerHeight = 0;
       let transparentListDirty = true;
+      let aoCacheDirty = true;
       const cachedTransparentMeshes: THREE.Mesh[] = [];
 
       const rebuildTransparentMeshCache = () => {
@@ -544,7 +548,9 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         const renderPass = new RenderPass(scene, camera);
         composer.addPass(renderPass);
 
-        gtaoPass = new GTAOPass(scene, camera, effW, effH);
+        const aoW = Math.max(1, Math.floor(effW * 0.5));
+        const aoH = Math.max(1, Math.floor(effH * 0.5));
+        gtaoPass = new GTAOPass(scene, camera, aoW, aoH);
         gtaoPass.output = GTAOPass.OUTPUT.Default;
         gtaoPass.blendIntensity = 0.68;
         gtaoPass.setSceneClipBox(
@@ -555,11 +561,57 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           distanceExponent: 1.3,
           thickness: 0.65,
           scale: 0.9,
-          samples: 12,
+          samples: 8,
         });
+        gtaoPass.updatePdMaterial({
+          rings: 1,
+          samples: 8,
+        });
+        const origGtaoSetSize = gtaoPass.setSize.bind(gtaoPass);
+        gtaoPass.setSize = (fullW: number, fullH: number) => {
+          aoCacheDirty = true;
+          origGtaoSetSize(
+            Math.max(1, Math.floor(fullW * 0.5)),
+            Math.max(1, Math.floor(fullH * 0.5))
+          );
+        };
         const origGtaoRender = gtaoPass.render.bind(gtaoPass);
         const hiddenForPass: THREE.Mesh[] = [];
+        const gtaoInternals = gtaoPass as unknown as {
+          copyMaterial: THREE.ShaderMaterial;
+          blendMaterial: THREE.ShaderMaterial;
+          pdRenderTarget: THREE.WebGLRenderTarget;
+          renderToScreen: boolean;
+          blendIntensity: number;
+          _renderPass: (
+            r: THREE.WebGLRenderer,
+            m: THREE.Material,
+            rt: THREE.WebGLRenderTarget | null,
+            clearColor?: number,
+            clearAlpha?: number
+          ) => void;
+        };
+        aoCacheDirty = true;
         gtaoPass.render = (rendererArg, writeBuf, readBuf, dtArg, maskArg) => {
+          if (!aoCacheDirty && gtaoInternals.pdRenderTarget) {
+            gtaoInternals.copyMaterial.uniforms.tDiffuse.value = readBuf.texture;
+            gtaoInternals.copyMaterial.blending = THREE.NoBlending;
+            gtaoInternals._renderPass(
+              rendererArg,
+              gtaoInternals.copyMaterial,
+              gtaoInternals.renderToScreen ? null : writeBuf
+            );
+            gtaoInternals.blendMaterial.uniforms.intensity.value =
+              gtaoInternals.blendIntensity;
+            gtaoInternals.blendMaterial.uniforms.tDiffuse.value =
+              gtaoInternals.pdRenderTarget.texture;
+            gtaoInternals._renderPass(
+              rendererArg,
+              gtaoInternals.blendMaterial,
+              gtaoInternals.renderToScreen ? null : writeBuf
+            );
+            return;
+          }
           if (transparentListDirty) {
             rebuildTransparentMeshCache();
           }
@@ -575,6 +627,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             hiddenForPass[i].visible = true;
           }
           hiddenForPass.length = 0;
+          aoCacheDirty = false;
         };
         composer.addPass(gtaoPass);
 
@@ -638,6 +691,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
       // OrbitControls locked gently around clean isometric range (dynamic maxDistance for portrait screens)
       let controlsChangedThisFrame = false;
+      let isOrbitDragging = false;
+      const prevFrameCamPos = new THREE.Vector3();
       const controls = new OrbitControls(camera, renderer.domElement);
       controls.target.copy(_scratchDefaultCamTarget);
       controls.enableDamping = !isSoftwareGl;
@@ -652,8 +707,14 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         RIGHT: THREE.MOUSE.ROTATE,
       };
       controls.addEventListener('start', () => {
+        isOrbitDragging = true;
         cameraResetActiveRef.current = false;
         manualOrbitOverrideRef.current = true;
+        setAvatarOrbitSuspended(true);
+      });
+      controls.addEventListener('end', () => {
+        isOrbitDragging = false;
+        requestRender();
       });
       controls.update();
 
@@ -715,13 +776,27 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
       const tileEntries: TileVisualEntry[] = [];
       const cornerAnims: CornerDioramaAnimRefs[] = [];
-      const clickableRoots: THREE.Object3D[] = [];
-      const sharedBoxGeoCache = new Map<string, THREE.BoxGeometry>();
-      const getSharedBoxGeo = (w: number, h: number, d: number): THREE.BoxGeometry => {
-        const key = `${w.toFixed(3)}x${h.toFixed(3)}x${d.toFixed(3)}`;
+      const clickableStaticMeshes: THREE.Object3D[] = [];
+      const sharedBoxGeoCache = new Map<string, THREE.BufferGeometry>();
+      const getSharedBoxGeo = (w: number, h: number, d: number): THREE.BufferGeometry => {
+        const key = `box:${w.toFixed(3)}x${h.toFixed(3)}x${d.toFixed(3)}`;
         let geo = sharedBoxGeoCache.get(key);
         if (!geo) {
           geo = new THREE.BoxGeometry(w, h, d);
+          geo.userData.sharedStatic = true;
+          sharedBoxGeoCache.set(key, geo);
+        }
+        return geo;
+      };
+      const getSharedTopCappedBoxGeo = (
+        w: number,
+        h: number,
+        d: number
+      ): THREE.BufferGeometry => {
+        const key = `capped:${w.toFixed(3)}x${h.toFixed(3)}x${d.toFixed(3)}`;
+        let geo = sharedBoxGeoCache.get(key);
+        if (!geo) {
+          geo = createTopCappedBoxGeometry(w, h, d);
           geo.userData.sharedStatic = true;
           sharedBoxGeoCache.set(key, geo);
         }
@@ -734,7 +809,6 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         tileGroup.position.set(tf.x, 0, tf.z);
         tileGroup.rotation.y = tf.rotationY;
         tileGroup.userData.tileIndex = tile.index;
-        clickableRoots.push(tileGroup);
 
         const flip180 = tf.side === 'top' || tf.side === 'left';
         const topTex = createTileTopTexture(tile, maxAniso, flip180);
@@ -757,27 +831,21 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         lowerPlinth.receiveShadow = true;
         tileGroup.add(lowerPlinth);
 
-        // Extruded #F4F5F7 off-white 3D stone/plastic block up to TILE_SURFACE_Y = 0.44
+        // Extruded #F4F5F7 off-white 3D stone/plastic block up to TILE_SURFACE_Y = 0.44 (2 draw groups instead of 6!)
         const mainBlockHeight = 0.56;
-        const tileGeo = getSharedBoxGeo(
+        const tileGeo = getSharedTopCappedBoxGeo(
           tf.width - 0.05,
           mainBlockHeight,
           tf.depth - 0.05
         );
-        const mats = [
-          sideBodyMat,
-          sideBodyMat,
-          topMat,
-          sideBodyMat,
-          sideBodyMat,
-          sideBodyMat,
-        ];
+        const mats = [sideBodyMat, topMat];
         const tileMesh = new THREE.Mesh(tileGeo, mats);
         tileMesh.position.y = TILE_SURFACE_Y - mainBlockHeight / 2;
         tileMesh.receiveShadow = true;
         tileMesh.castShadow = true;
         tileMesh.userData.tileIndex = tile.index;
         tileGroup.add(tileMesh);
+        clickableStaticMeshes.push(tileMesh);
 
         // 4 Corner 3D Dioramas (0: Start Arch, 8: Lost Island, 16: National Cup Stadium, 24: World Tour Airport)
         if (tf.isCorner) {
@@ -812,6 +880,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           );
           priceTab.hitMesh.userData.tileIndex = tile.index;
           tileGroup.add(priceTab.group);
+          clickableStaticMeshes.push(priceTab.hitMesh);
           lastTabSignature = `${initialPriceLabel}|null|false|null|false|false`;
         }
 
@@ -1007,24 +1076,18 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       }
 
       let disposed = false;
-      let scheduledMode: 'none' | 'raf' | 'timeout' = 'none';
-      let frameId = 0;
-      let lastTimeMs = performance.now();
       let elapsedSec = 0;
       let shadowMapDirty = true;
       let occludedBackdropDirty = true;
       let renderedFrames = 0;
+      let viewportWidth = width;
+      let viewportHeight = height;
+      let cachedBubbleW = 0;
+      let cachedBubbleH = 0;
+      let cachedBubbleVisible = false;
+      let cachedBubbleBorderColor = '';
       renderer.domElement.dataset.qualityTier = currentProfile.tier;
       renderer.domElement.dataset.renderedFrames = '0';
-
-      const cancelScheduledTick = () => {
-        if (scheduledMode === 'raf') {
-          cancelAnimationFrame(frameId);
-        } else if (scheduledMode === 'timeout') {
-          clearTimeout(frameId);
-        }
-        scheduledMode = 'none';
-      };
 
       // Raycasting interaction (click vs drag)
       const raycaster = new THREE.Raycaster();
@@ -1059,7 +1122,12 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       const raycastBoardTile = (clientX: number, clientY: number): number | null => {
         updateNDC(clientX, clientY);
         raycaster.setFromCamera(pointerNDC, camera);
-        const targets: THREE.Object3D[] = [...clickableRoots];
+        const targets: THREE.Object3D[] = [...clickableStaticMeshes];
+        for (const entry of tileEntries) {
+          if (entry.displayedLevel >= 0 && entry.buildingSuite) {
+            targets.push(entry.buildingSuite.root);
+          }
+        }
         for (const tok of tokenGroupsRef.current.values()) {
           if (tok.visible) targets.push(tok);
         }
@@ -1081,7 +1149,6 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         }
       };
 
-      let tick = () => {};
       let requestRender: (markBackdropDirty?: boolean) => void = () => {};
 
       const onPointerMove = (e: PointerEvent) => {
@@ -1122,6 +1189,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         if (!container) return;
         const w = container.clientWidth || window.innerWidth;
         const h = container.clientHeight || window.innerHeight;
+        viewportWidth = w;
+        viewportHeight = h;
         const nextAspect = w / h;
         camera.aspect = nextAspect;
         camera.updateProjectionMatrix();
@@ -1150,39 +1219,6 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       resizeObserver.observe(container);
       window.addEventListener('resize', handleResize);
 
-      const handleVisibilityChange = () => {
-        if (typeof document !== 'undefined' && document.hidden) {
-          cancelScheduledTick();
-          if (activeDiceAnimRef.current || activeHopAnimRef.current) {
-            scheduledMode = 'timeout';
-            frameId = window.setTimeout(tick, 80);
-          }
-        } else {
-          requestRender(true);
-        }
-      };
-      document.addEventListener('visibilitychange', handleVisibilityChange);
-
-      const afterDraw = (cb: () => void) => {
-        const gl = renderer.getContext() as WebGL2RenderingContext;
-        const sync = gl.fenceSync ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) : null;
-        gl.flush();
-        const poll = () => {
-          if (disposed) return;
-          const state = sync ? gl.getSyncParameter(sync, gl.SYNC_STATUS) : gl.SIGNALED;
-          if (state === gl.UNSIGNALED) {
-            scheduledMode = 'timeout';
-            frameId = window.setTimeout(poll, 5);
-          } else {
-            if (sync) gl.deleteSync(sync);
-            scheduledMode = 'timeout';
-            frameId = window.setTimeout(cb, 80);
-          }
-        };
-        scheduledMode = 'timeout';
-        frameId = window.setTimeout(poll, 5);
-      };
-
       let currentNightFactor = nightModeRef.current ? 1 : 0;
       let appliedNightSnapshot = -1;
       let lastRenderedSpeech = '';
@@ -1193,8 +1229,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         currentProfile = nextProfile;
         renderer.domElement.dataset.qualityTier = nextProfile.tier;
 
-        const w = container.clientWidth || window.innerWidth;
-        const h = container.clientHeight || window.innerHeight;
+        const w = viewportWidth || container.clientWidth || window.innerWidth;
+        const h = viewportHeight || container.clientHeight || window.innerHeight;
         currentPixelRatio = isSoftwareGl
           ? 1
           : Math.min(window.devicePixelRatio || 1, nextProfile.maxPixelRatio);
@@ -1922,8 +1958,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         // 6. Camera Reset & Cinematic Camera Auto-Panning (scaled cleanly for 26-deg low-FOV)
         if (cameraResetActiveRef.current) {
           hasActiveMotion = true;
-          const cw = container.clientWidth || window.innerWidth;
-          const ch = container.clientHeight || window.innerHeight;
+          const cw = viewportWidth || container.clientWidth || window.innerWidth;
+          const ch = viewportHeight || container.clientHeight || window.innerHeight;
           applySafeDefaultCameraPose(
             cw,
             ch,
@@ -1997,17 +2033,28 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           }
         }
 
+        // Apply OrbitControls damping BEFORE speech-bubble projection so 2D overlay has 0-frame lag
+        controls.update();
+
         if (sceneShadowCastersMoved) {
           shadowMapDirty = true;
         }
 
-        // 7. Zero-GC World-to-Screen 2D Comic Speech Bubble floating above Active 3D Character Pawn
+        // 7. Zero-Reflow World-to-Screen 2D Comic Speech Bubble floating above Active 3D Character Pawn
         const bubbleEl = speechBubbleRef.current;
         const textSpanEl = speechTextSpanRef.current;
         const speechMsg = activeSpeechTextRef.current;
         if (bubbleEl && textSpanEl) {
           const activeTok = activeP ? tokenGroupsRef.current.get(activeP.id) : null;
           if (activeP && activeTok && speechMsg) {
+            if (lastRenderedSpeech !== speechMsg) {
+              lastRenderedSpeech = speechMsg;
+              textSpanEl.textContent = speechMsg;
+              cachedBubbleW =
+                bubbleEl.offsetWidth || Math.max(120, speechMsg.length * 8.5 + 32);
+              cachedBubbleH = bubbleEl.offsetHeight || 38;
+            }
+
             _scratchSpeechProj.set(
               activeTok.position.x,
               activeTok.position.y + 1.38,
@@ -2017,17 +2064,13 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             _scratchSpeechProj.project(camera);
 
             if (_scratchSpeechProj.z >= -1 && _scratchSpeechProj.z <= 1) {
-              const cw = container.clientWidth || window.innerWidth;
-              const ch = container.clientHeight || window.innerHeight;
+              const cw = viewportWidth || window.innerWidth;
+              const ch = viewportHeight || window.innerHeight;
               const sx = (_scratchSpeechProj.x * 0.5 + 0.5) * cw;
               const sy = (-_scratchSpeechProj.y * 0.5 + 0.5) * ch;
 
-              if (lastRenderedSpeech !== speechMsg) {
-                lastRenderedSpeech = speechMsg;
-                textSpanEl.textContent = speechMsg;
-              }
-              const estW = bubbleEl.offsetWidth || Math.max(120, speechMsg.length * 8.5 + 32);
-              const estH = bubbleEl.offsetHeight || 38;
+              const estW = cachedBubbleW || Math.max(120, speechMsg.length * 8.5 + 32);
+              const estH = cachedBubbleH || 38;
               const clamped = clampSpeechBubbleToViewport(
                 sx,
                 sy,
@@ -2037,16 +2080,24 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
                 ch,
                 14
               );
-              bubbleEl.style.borderColor = activeP.color;
-              bubbleEl.style.opacity = '1';
+              if (cachedBubbleBorderColor !== activeP.color) {
+                cachedBubbleBorderColor = activeP.color;
+                bubbleEl.style.borderColor = activeP.color;
+              }
+              if (!cachedBubbleVisible) {
+                cachedBubbleVisible = true;
+                bubbleEl.style.opacity = '1';
+              }
               bubbleEl.style.transform = `translate3d(${clamped.x.toFixed(1)}px, ${clamped.y.toFixed(1)}px, 0) translate(-50%, -100%)`;
               if (speechTailRef.current) {
                 speechTailRef.current.style.transform = `translateX(calc(-50% + ${clamped.tailOffsetPx.toFixed(1)}px)) rotate(45deg)`;
               }
-            } else {
+            } else if (cachedBubbleVisible) {
+              cachedBubbleVisible = false;
               bubbleEl.style.opacity = '0';
             }
-          } else {
+          } else if (cachedBubbleVisible) {
+            cachedBubbleVisible = false;
             bubbleEl.style.opacity = '0';
           }
         }
@@ -2054,112 +2105,108 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         return hasActiveMotion;
       };
 
-      tick = () => {
-        if (disposed) return;
-        scheduledMode = 'none';
-
-        const nowMs = performance.now();
-        const rawDt = Math.max(0.001, (nowMs - lastTimeMs) / 1000);
-        lastTimeMs = nowMs;
-
-        const simDt = Math.min(rawDt, 0.08);
-        const animDt = Math.min(rawDt, isSoftwareGl ? 0.35 : 0.06);
-        elapsedSec += simDt;
-
-        controlsChangedThisFrame = false;
-        const sceneMoving = syncSceneFromState(simDt, animDt, elapsedSec);
-        controls.update();
-        const hasActiveMotion = sceneMoving || controlsChangedThisFrame;
-
-        const docHidden = typeof document !== 'undefined' && document.hidden;
-        const occludedNow = isBoardOccludedRef.current;
-        if (!occludedNow) {
+      const frameScheduler = createBoardFrameScheduler({
+        isSoftwareGl,
+        isDocumentHidden: () => typeof document !== 'undefined' && document.hidden,
+        hasPendingGameplayPromises: () =>
+          Boolean(activeDiceAnimRef.current || activeHopAnimRef.current),
+        onMarkBackdropDirty: () => {
           occludedBackdropDirty = true;
-        }
-        const shouldDrawWebGl = !docHidden && (!occludedNow || occludedBackdropDirty);
-        if (shouldDrawWebGl) {
-          if (currentProfile.shadowsEnabled && shadowMapDirty) {
-            renderer.shadowMap.needsUpdate = true;
-            shadowMapDirty = false;
-          }
-          if (composer) {
-            composer.render();
-          } else {
-            renderer.render(scene, camera);
-          }
-          if (occludedNow) {
-            occludedBackdropDirty = false;
-          }
-          renderedFrames += 1;
-          renderer.domElement.dataset.renderedFrames = String(renderedFrames);
-        }
-
-        const hasPendingGameplayPromises = Boolean(
-          activeDiceAnimRef.current || activeHopAnimRef.current
-        );
-        const scheduleDecision = shouldKeepBoardAnimating({
-          isDocumentHidden: docHidden,
-          isBoardOccluded: occludedNow,
-          hasActiveMotion,
-          hasPendingGameplayPromises,
-          idleBoardFps: currentProfile.idleBoardFps,
-        });
-
-        if (scheduleDecision.mode === 'stop') {
-          return;
-        }
-        if (
-          scheduleDecision.mode === 'interval' ||
-          scheduleDecision.mode === 'background_sim'
-        ) {
-          scheduledMode = 'timeout';
-          frameId = window.setTimeout(tick, scheduleDecision.intervalMs);
-          return;
-        }
-        if (isSoftwareGl) {
-          afterDraw(tick);
-          return;
-        }
-        scheduledMode = 'raf';
-        frameId = requestAnimationFrame(tick);
-      };
-
-      requestRender = (markBackdropDirty = false) => {
-        if (disposed) return;
-        if (markBackdropDirty) {
-          occludedBackdropDirty = true;
-        }
-        const docHiddenNow = typeof document !== 'undefined' && document.hidden;
-        if (docHiddenNow) {
-          if (activeDiceAnimRef.current || activeHopAnimRef.current) {
-            if (scheduledMode === 'raf') {
-              cancelScheduledTick();
+        },
+        afterSoftwareDraw: (scheduleTimeout, runNextTick) => {
+          const gl = renderer.getContext() as WebGL2RenderingContext;
+          let sync: WebGLSync | null = gl.fenceSync
+            ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+            : null;
+          gl.flush();
+          const poll = () => {
+            if (disposed) return;
+            const state = sync
+              ? gl.getSyncParameter(sync, gl.SYNC_STATUS)
+              : gl.SIGNALED;
+            if (state === gl.UNSIGNALED) {
+              scheduleTimeout(poll, 5);
+            } else {
+              if (sync) {
+                gl.deleteSync(sync);
+                sync = null;
+              }
+              scheduleTimeout(runNextTick, 33);
             }
-            if (scheduledMode === 'none') {
-              lastTimeMs = performance.now() - 16;
-              scheduledMode = 'timeout';
-              frameId = window.setTimeout(tick, 80);
+          };
+          scheduleTimeout(poll, 5);
+          return () => {
+            if (sync) {
+              gl.deleteSync(sync);
+              sync = null;
             }
+          };
+        },
+        onFrame: (rawDt) => {
+          const simDt = Math.min(rawDt, 0.08);
+          const animDt = Math.min(rawDt, isSoftwareGl ? 0.35 : 0.06);
+          elapsedSec += simDt;
+
+          controlsChangedThisFrame = false;
+          if (isOrbitDragging && hoveredTileIdx !== null) {
+            hoveredTileIdx = null;
           }
-          return;
-        }
-        if (scheduledMode === 'raf') return;
-        if (scheduledMode === 'timeout') {
-          clearTimeout(frameId);
-          scheduledMode = 'none';
-        }
-        if (scheduledMode === 'none') {
-          lastTimeMs = performance.now() - 16;
-        }
-        if (isSoftwareGl) {
-          scheduledMode = 'timeout';
-          frameId = window.setTimeout(tick, 16);
-        } else {
-          scheduledMode = 'raf';
-          frameId = requestAnimationFrame(tick);
-        }
-      };
+          prevFrameCamPos.copy(camera.position);
+          const sceneMoving = syncSceneFromState(simDt, animDt, elapsedSec);
+          const camMovedVisibly =
+            prevFrameCamPos.distanceToSquared(camera.position) > 0.0025;
+          const cameraOrbitActive = isOrbitDragging || camMovedVisibly;
+          setAvatarOrbitSuspended(isOrbitDragging || controlsChangedThisFrame);
+          const hasActiveMotion = sceneMoving || controlsChangedThisFrame;
+
+          const docHidden = typeof document !== 'undefined' && document.hidden;
+          const occludedNow = isBoardOccludedRef.current;
+          if (!occludedNow) {
+            occludedBackdropDirty = true;
+          }
+          const shouldDrawWebGl = !docHidden && (!occludedNow || occludedBackdropDirty);
+          if (shouldDrawWebGl) {
+            if (shadowMapDirty || controlsChangedThisFrame) {
+              aoCacheDirty = true;
+            }
+            if (currentProfile.shadowsEnabled && shadowMapDirty) {
+              renderer.shadowMap.needsUpdate = true;
+              shadowMapDirty = false;
+            } else if (!currentProfile.shadowsEnabled && shadowMapDirty) {
+              shadowMapDirty = false;
+            }
+            if (gtaoPass) {
+              gtaoPass.enabled = !cameraOrbitActive;
+            }
+            if (composer) {
+              composer.render();
+            } else {
+              renderer.render(scene, camera);
+            }
+            if (occludedNow) {
+              occludedBackdropDirty = false;
+            }
+            renderedFrames += 1;
+            renderer.domElement.dataset.renderedFrames = String(renderedFrames);
+          }
+
+          const hasPendingGameplayPromises = Boolean(
+            activeDiceAnimRef.current || activeHopAnimRef.current
+          );
+          return shouldKeepBoardAnimating({
+            isDocumentHidden: docHidden,
+            isBoardOccluded: occludedNow,
+            hasActiveMotion,
+            hasPendingGameplayPromises,
+            idleBoardFps: currentProfile.idleBoardFps,
+          });
+        },
+      });
+
+      requestRender = frameScheduler.requestRender;
       wakeRenderRef.current = requestRender;
+      const handleVisibilityChange = () => frameScheduler.handleVisibilityChange();
+      document.addEventListener('visibilitychange', handleVisibilityChange);
 
       const winHook = window as unknown as {
         __btGetTileScreenPoint?: (
@@ -2191,14 +2238,15 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         };
       };
 
-      tick();
+      frameScheduler.runImmediateTick();
 
       return () => {
         disposed = true;
+        setAvatarOrbitSuspended(false);
         delete winHook.__btGetTileScreenPoint;
         wakeRenderRef.current = null;
         applyQualityTierRef.current = null;
-        cancelScheduledTick();
+        frameScheduler.dispose();
         if (activeDiceAnimRef.current) {
           const pendingDiceResolve = activeDiceAnimRef.current.resolve;
           activeDiceAnimRef.current = null;
