@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   classifyGpuRenderer,
+  createBoardFrameScheduler,
   loadSavedGraphicsQualityPref,
   resolveEffectiveGraphicsTier,
   resolveGraphicsProfile,
@@ -245,3 +246,99 @@ test('shouldKeepBoardAnimating stops when hidden/occluded, runs raf on motion, a
     { mode: 'background_sim', intervalMs: 80 }
   );
 });
+
+test('createBoardFrameScheduler prevents 2^N RAF fork bomb when OrbitControls dispatches change inside onFrame', () => {
+  let nowMs = 1000;
+  let nextId = 1;
+  const activeRafs = new Map<number, () => void>();
+  const activeTimers = new Map<number, { cb: () => void; ms: number }>();
+
+  let frameExecutions = 0;
+  let orbitDampingActive = false;
+
+  const scheduler = createBoardFrameScheduler({
+    isSoftwareGl: false,
+    now: () => nowMs,
+    isDocumentHidden: () => false,
+    hasPendingGameplayPromises: () => false,
+    requestRaf: (cb) => {
+      const id = nextId++;
+      activeRafs.set(id, cb);
+      return id;
+    },
+    cancelRaf: (id) => {
+      activeRafs.delete(id);
+    },
+    setTimer: (cb, ms) => {
+      const id = nextId++;
+      activeTimers.set(id, { cb, ms });
+      return id;
+    },
+    clearTimer: (id) => {
+      activeTimers.delete(id);
+    },
+    onFrame: () => {
+      frameExecutions++;
+      if (orbitDampingActive) {
+        // Simulates OrbitControls.update() synchronously firing 'change' -> requestRender() inside tick()!
+        scheduler.requestRender();
+        return { mode: 'raf', intervalMs: 0 };
+      }
+      return { mode: 'interval', intervalMs: 50 };
+    },
+  });
+
+  // Initial mount renders 1 frame and schedules 50ms idle interval (medium tier)
+  scheduler.runImmediateTick();
+  assert.equal(frameExecutions, 1);
+  assert.equal(activeRafs.size, 0);
+  assert.equal(activeTimers.size, 1);
+
+  // Simulate 16 high-polling pointermove events arriving before next VSync while user starts dragging
+  orbitDampingActive = true;
+  for (let p = 0; p < 16; p++) {
+    scheduler.requestRender();
+  }
+  assert.equal(
+    activeTimers.size,
+    0,
+    'Pending idle timeout must be cancelled when upgrading to RAF'
+  );
+  assert.equal(
+    activeRafs.size,
+    1,
+    'High-frequency pointermove must queue at most 1 RAF callback'
+  );
+
+  // Advance 20 VSync frames while OrbitControls damping continues firing requestRender() inside onFrame
+  for (let vsync = 0; vsync < 20; vsync++) {
+    nowMs += 16.67;
+    const queuedThisVsync = [...activeRafs.entries()];
+    assert.equal(
+      queuedThisVsync.length,
+      1,
+      `VSync ${vsync + 1} must execute exactly 1 RAF callback (got ${queuedThisVsync.length})`
+    );
+    activeRafs.clear();
+    for (const [, cb] of queuedThisVsync) {
+      cb();
+    }
+  }
+
+  assert.equal(frameExecutions, 21);
+
+  // Stop damping -> next VSync transitions cleanly back to 1 idle timer with 0 stray RAFs
+  orbitDampingActive = false;
+  nowMs += 16.67;
+  const finalMotionVsync = [...activeRafs.values()];
+  activeRafs.clear();
+  finalMotionVsync.forEach((cb) => cb());
+  assert.equal(activeRafs.size, 0);
+  assert.equal(activeTimers.size, 1);
+
+  // Dispose cleans up all pending timers/RAFs
+  scheduler.dispose();
+  assert.equal(activeRafs.size, 0);
+  assert.equal(activeTimers.size, 0);
+});
+
