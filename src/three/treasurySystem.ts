@@ -10,6 +10,7 @@ import {
 import { GraphicsQualityProfile } from '../game/graphicsQuality';
 import { getTileTransform } from '../game/rules';
 import { CurrencyStyleId, PlayerState } from '../game/types';
+import { mergeGroupMeshesByMaterial } from './models';
 import { computePhysicalTrayBounceY } from './physicsEngine';
 
 export interface TreasurySystemController {
@@ -372,6 +373,8 @@ function buildVaultTrayMesh(
   );
   accentBar.position.set(0, 0.085, trayD / 2 + 0.018);
   root.add(accentBar);
+
+  mergeGroupMeshesByMaterial(root);
 
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {

@@ -4,8 +4,13 @@ import * as THREE from 'three';
 import { DEFAULT_PLAYER_CONFIGS } from '../game/boardData';
 import { createInitialPlayers } from '../game/rules';
 import {
+  createCornerDiorama,
+  createCourtyardDiorama,
   createOwnershipBuildingSuite,
   createPlayerTokenMesh,
+  createProtrudingPriceTab,
+  createSurroundingVista,
+  createTopCappedBoxGeometry,
   NightLightingPalette,
 } from './models';
 import { createTreasurySystem } from './treasurySystem';
@@ -184,6 +189,11 @@ test('createTreasurySystem reports hasActiveAnimations accurately and applies se
       (ch): ch is THREE.InstancedMesh => ch instanceof THREE.InstancedMesh
     );
     assert.equal(instancedPools.length, 4);
+    assert.equal(
+      countMeshes(treasury.group) <= 29,
+      true,
+      `Expected treasury.group <= 29 meshes after rim wall batching, got ${countMeshes(treasury.group)}`
+    );
     for (const im of instancedPools) {
       assert.equal(im.castShadow, false);
       assert.equal(im.receiveShadow, false);
@@ -236,3 +246,110 @@ test('createPlayerTokenMesh differentiates female personas (yacht, crown) with n
     restoreDom();
   }
 });
+
+function countMeshes(root: THREE.Object3D): number {
+  let count = 0;
+  root.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) count++;
+  });
+  return count;
+}
+
+test('createTopCappedBoxGeometry batches 5 side/bottom faces into group 0 and top face into group 1 (2 draw calls instead of 6)', () => {
+  const restoreDom = installMinimalCanvasDomStub();
+  try {
+    const geo = createTopCappedBoxGeometry(1.5, 0.56, 2.5);
+    assert.equal(geo.groups.length, 2);
+    assert.equal(geo.groups[0].materialIndex, 0);
+    assert.equal(geo.groups[0].count, 30);
+    assert.equal(geo.groups[1].materialIndex, 1);
+    assert.equal(geo.groups[1].count, 6);
+
+    const tab = createProtrudingPriceTab('200K', '#22B8F8', false, 4);
+    assert.equal(Array.isArray(tab.hitMesh.material), true);
+    assert.equal((tab.hitMesh.material as THREE.Material[]).length, 2);
+    assert.equal(tab.hitMesh.geometry.groups.length, 2);
+    geo.dispose();
+  } finally {
+    restoreDom();
+  }
+});
+
+test('static geometry batching cuts mesh draw-call counts across pawns, vista, corners, and courtyard clock reuses texture', () => {
+  const restoreDom = installMinimalCanvasDomStub();
+  try {
+    const palette = makeDummyNightPalette();
+
+    // Pawns: merged by material (was ~29 meshes per pawn -> <= 10 meshes)
+    const carPawn = createPlayerTokenMesh('car', '#F5B800', palette);
+    const crownPawn = createPlayerTokenMesh('crown', '#29B6F6', palette);
+    assert.equal(
+      countMeshes(carPawn) <= 10,
+      true,
+      `Expected carPawn <= 10 meshes after material batching, got ${countMeshes(carPawn)}`
+    );
+    assert.equal(
+      countMeshes(crownPawn) <= 10,
+      true,
+      `Expected crownPawn <= 10 meshes after material batching, got ${countMeshes(crownPawn)}`
+    );
+
+    // Vista: blossoms, clouds, lamp posts, card stack merged (was ~135 meshes -> <= 32 meshes)
+    const dummyBump = new THREE.Texture();
+    const { vista, animatedCars } = createSurroundingVista(dummyBump, palette, 4);
+    assert.equal(animatedCars.length >= 7, true);
+    assert.equal(
+      countMeshes(vista) <= 34,
+      true,
+      `Expected vista <= 34 meshes after batching, got ${countMeshes(vista)}`
+    );
+
+    // Corners: static parts merged while preserving animated spinTarget / bobTarget
+    const c0 = createCornerDiorama(0, 0.44, palette);
+    const c8 = createCornerDiorama(8, 0.44, palette);
+    const c16 = createCornerDiorama(16, 0.44, palette);
+    const c24 = createCornerDiorama(24, 0.44, palette);
+    assert.notEqual(c0.anim.spinTarget, null);
+    assert.notEqual(c8.anim.bobTarget, null);
+    assert.notEqual(c16.anim.spinTarget, null);
+    assert.notEqual(c24.anim.spinTarget, null);
+    assert.notEqual(c24.anim.bobTarget, null);
+    const totalCornerMeshes =
+      countMeshes(c0.group) +
+      countMeshes(c8.group) +
+      countMeshes(c16.group) +
+      countMeshes(c24.group);
+    assert.equal(
+      totalCornerMeshes <= 42,
+      true,
+      `Expected 4 corners <= 42 total meshes after batching, got ${totalCornerMeshes}`
+    );
+
+    // Courtyard digital countdown reuses a single CanvasTexture in-place across 1s ticks
+    const courtyard = createCourtyardDiorama(palette, 4);
+    let clockScreenMat: THREE.MeshBasicMaterial | null = null;
+    courtyard.group.traverse((obj) => {
+      if (
+        obj instanceof THREE.Mesh &&
+        obj.material instanceof THREE.MeshBasicMaterial &&
+        !obj.material.transparent &&
+        obj.material.map
+      ) {
+        clockScreenMat = obj.material;
+      }
+    });
+    assert.notEqual(clockScreenMat, null);
+    const initialTex = clockScreenMat!.map;
+    courtyard.animated.updateCountdown(44, 1, '#F5B800');
+    courtyard.animated.updateCountdown(43, 1, '#F5B800');
+    assert.equal(
+      clockScreenMat!.map,
+      initialTex,
+      'Countdown ticks must redraw in-place on the persistent CanvasTexture instead of reallocating GPU textures every second'
+    );
+    courtyard.animated.disposeDynamicTextures();
+  } finally {
+    restoreDom();
+  }
+});
+

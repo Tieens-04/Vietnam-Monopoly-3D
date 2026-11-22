@@ -1314,20 +1314,20 @@ export function create3DTaxGrassTexture(
  * Generates the sleek dark-gray 3D digital timer + active turn counter face texture
  * placed at the top inner corner of the green courtyard.
  */
-export function createCountdownClockBoardTexture(
+export function drawCountdownClockBoardToCanvas(
+  canvas: HTMLCanvasElement,
   timeStr: string,
   turnNumber: number,
   secondsLeft: number,
-  activeColorHex: string,
-  maxAnisotropy: number
-): THREE.CanvasTexture {
+  activeColorHex: string
+): void {
   const W = 640;
   const H = 320;
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
+  if (canvas.width !== W) canvas.width = W;
+  if (canvas.height !== H) canvas.height = H;
   const ctx = canvas.getContext('2d')!;
 
+  ctx.clearRect(0, 0, W, H);
   const bg = ctx.createLinearGradient(0, 0, 0, H);
   bg.addColorStop(0, '#1E293B');
   bg.addColorStop(1, '#0F172A');
@@ -1363,15 +1363,38 @@ export function createCountdownClockBoardTexture(
   const digitColor =
     secondsLeft <= 5 ? '#FF5252' : secondsLeft <= 10 ? '#FFD740' : '#A3E66A';
   ctx.save();
-  ctx.shadowColor = digitColor;
-  ctx.shadowBlur = 16;
-  ctx.fillStyle = digitColor;
   ctx.font = `800 144px ${CANVAS_FONT_MONO}`;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = digitColor;
+  ctx.globalAlpha = 0.24;
+  ctx.lineWidth = 14;
+  ctx.strokeText(timeStr, W / 2, 208);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = digitColor;
   ctx.fillText(timeStr, W / 2, 208);
   ctx.restore();
+}
+
+export function createCountdownClockBoardTexture(
+  timeStr: string,
+  turnNumber: number,
+  secondsLeft: number,
+  activeColorHex: string,
+  maxAnisotropy: number
+): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  drawCountdownClockBoardToCanvas(
+    canvas,
+    timeStr,
+    turnNumber,
+    secondsLeft,
+    activeColorHex
+  );
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   tex.anisotropy = maxAnisotropy;
   tex.needsUpdate = true;
   return tex;
