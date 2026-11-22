@@ -16,6 +16,7 @@ export interface CharacterPersonaMeta {
   roleTitle: string;
   tokenLabel: string;
   botDefaultName: string;
+  isFemale: boolean;
   suitHex: number;
   lapelHex: number;
   accentHex: number;
@@ -33,6 +34,7 @@ export const CHARACTER_PERSONAS: Record<AvatarArchetypeId, CharacterPersonaMeta>
     roleTitle: 'Tài Phiệt Công Nghệ · Siêu Xe',
     tokenLabel: 'Tài Phiệt Vàng Kim',
     botDefaultName: 'CEO Minh Khôi',
+    isFemale: false,
     suitHex: 0xf5b800,
     lapelHex: 0xd97706,
     accentHex: 0xef4444,
@@ -48,6 +50,7 @@ export const CHARACTER_PERSONAS: Record<AvatarArchetypeId, CharacterPersonaMeta>
     roleTitle: 'Nữ Hoàng Nghỉ Dưỡng · Du Thuyền',
     tokenLabel: 'Nữ Hoàng Xanh Cốm',
     botDefaultName: 'Chủ Tịch Lan Anh',
+    isFemale: true,
     suitHex: 0x66c61c,
     lapelHex: 0x3f8f0f,
     accentHex: 0xfde047,
@@ -63,6 +66,7 @@ export const CHARACTER_PERSONAS: Record<AvatarArchetypeId, CharacterPersonaMeta>
     roleTitle: 'Tỷ Phú Hàng Không · Chuyên Cơ',
     tokenLabel: 'Cá Mập Hồng Đậm',
     botDefaultName: 'Shark Hoàng Nam',
+    isFemale: false,
     suitHex: 0xe91e63,
     lapelHex: 0xad1457,
     accentHex: 0xfbbf24,
@@ -78,6 +82,7 @@ export const CHARACTER_PERSONAS: Record<AvatarArchetypeId, CharacterPersonaMeta>
     roleTitle: 'Đại Gia Địa Ốc · Vương Miện',
     tokenLabel: 'Quý Tộc Lam Ngọc',
     botDefaultName: 'Phu Nhân Ngọc Diệp',
+    isFemale: true,
     suitHex: 0x29b6f6,
     lapelHex: 0x0288d1,
     accentHex: 0xfde047,
@@ -106,7 +111,7 @@ export function deriveAvatarMood(input: DeriveAvatarMoodInput): AvatarMood {
   if (input.inJail) return 'jailed';
 
   if (
-    (typeof input.recentCashDelta === 'number' && input.recentCashDelta >= 40) ||
+    (typeof input.recentCashDelta === 'number' && input.recentCashDelta >= 100_000) ||
     (input.bubble?.status === 'ready' &&
       (input.bubble.eventKind === 'BUY_PRIME_LAND' ||
         input.bubble.eventKind === 'COLLECT_BIG_RENT'))
@@ -115,8 +120,8 @@ export function deriveAvatarMood(input: DeriveAvatarMoodInput): AvatarMood {
   }
 
   if (
-    (typeof input.recentCashDelta === 'number' && input.recentCashDelta <= -40) ||
-    input.cash < 180 ||
+    (typeof input.recentCashDelta === 'number' && input.recentCashDelta <= -100_000) ||
+    input.cash < 250_000 ||
     (input.bubble?.status === 'ready' && input.bubble.eventKind === 'PAY_PENALTY')
   ) {
     return 'stressed';
@@ -224,17 +229,17 @@ export function computeAvatarPoseTargets(input: ComputeAvatarPoseInput): AvatarP
   if (mood === 'celebrating') {
     const bounce = Math.abs(Math.sin(t * 6.4 + seedOffset));
     return {
-      headYaw: inwardYawBias + Math.sin(t * 3.2 + seedOffset) * 0.18 + hoverYaw,
-      headPitch: -0.08 - bounce * 0.1 + hoverPitch,
-      headRoll: Math.sin(t * 3.2 + seedOffset) * 0.09,
-      torsoYaw: inwardYawBias * 0.75 + Math.sin(t * 3.2) * 0.08,
-      torsoBobY: bounce * 0.045,
-      shoulderTiltZ: Math.sin(t * 6.4) * 0.045,
-      browAngle: -0.14,
-      browLiftY: 0.026,
+      headYaw: inwardYawBias + Math.sin(t * 3.2 + seedOffset) * 0.14 + hoverYaw,
+      headPitch: -0.015 - bounce * 0.035 + hoverPitch,
+      headRoll: Math.sin(t * 3.2 + seedOffset) * 0.06,
+      torsoYaw: inwardYawBias * 0.75 + Math.sin(t * 3.2) * 0.07,
+      torsoBobY: bounce * 0.036,
+      shoulderTiltZ: Math.sin(t * 6.4) * 0.035,
+      browAngle: -0.1,
+      browLiftY: 0.016,
       blinkAmount: baseBlink * 0.7,
-      smileScale: 1.35,
-      propGestureAngle: 0.28 + bounce * 0.15,
+      smileScale: 1.14,
+      propGestureAngle: 0.24 + bounce * 0.12,
     };
   }
 
