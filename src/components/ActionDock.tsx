@@ -1,28 +1,40 @@
 import React, { useState } from 'react';
+import { GRAPHICS_TIER_LABELS } from '../game/graphicsQuality';
 import { formatBusinessTourCompact, JAIL_FINE } from '../game/rules';
-import { GameLogEntry, PlayerState, TurnPhase } from '../game/types';
+import {
+  CurrencyStyleId,
+  GameLogEntry,
+  GraphicsQualityPref,
+  GraphicsQualityTier,
+  PlayerState,
+  TurnPhase,
+} from '../game/types';
+import { CurrencyStylePicker } from './CurrencyStyleBadge';
+import { GraphicsQualityPicker } from './GraphicsQualityPicker';
 
 interface ActionDockProps {
   currentPlayer: PlayerState;
-  turnCount: number;
   turnPhase: TurnPhase;
-  lastDice: [number, number] | null;
   logs: GameLogEntry[];
   ownedCount: number;
-  canTrade: boolean;
+  canAct?: boolean;
+  isOnlineMatch?: boolean;
+  currencyStyle: CurrencyStyleId;
+  graphicsQualityPref: GraphicsQualityPref;
+  effectiveQualityTier: GraphicsQualityTier;
+  gpuLabel?: string;
   speedMultiplier: 1 | 2;
   cinematicCamera: boolean;
   nightMode: boolean;
   soundMuted: boolean;
-  dockCollapsed: boolean;
-  onToggleDock: () => void;
   onRollDice: () => void;
   onPayJailFine: () => void;
   onUseJailCard: () => void;
   onOpenAssetsModal: () => void;
-  onOpenTradeModal: () => void;
   onOpenRulebook: () => void;
   onEndTurn: () => void;
+  onChangeCurrencyStyle: (next: CurrencyStyleId) => void;
+  onChangeGraphicsQuality: (next: GraphicsQualityPref) => void;
   onChangeSpeed: (speed: 1 | 2) => void;
   onToggleCinematic: () => void;
   onToggleNightMode: () => void;
@@ -38,15 +50,20 @@ const QUICK_EMOTES: Array<{ emoji: string; label: string }> = [
   { emoji: '💸', label: 'Xin tiền thuê nhé!' },
   { emoji: '😱', label: 'Thôi xong rồi!' },
   { emoji: '🔥', label: 'Quyết chiến!' },
-  { emoji: '🤝', label: 'Giao dịch nhé!' },
+  { emoji: '🏆', label: 'Đăng cai Cúp thôi!' },
 ];
 
-export const ActionDock: React.FC<ActionDockProps> = ({
+const ActionDockInner: React.FC<ActionDockProps> = ({
   currentPlayer,
   logs,
   turnPhase,
   ownedCount,
-  canTrade,
+  canAct,
+  isOnlineMatch = false,
+  currencyStyle,
+  graphicsQualityPref,
+  effectiveQualityTier,
+  gpuLabel,
   speedMultiplier,
   cinematicCamera,
   nightMode,
@@ -55,9 +72,10 @@ export const ActionDock: React.FC<ActionDockProps> = ({
   onPayJailFine,
   onUseJailCard,
   onOpenAssetsModal,
-  onOpenTradeModal,
   onOpenRulebook,
   onEndTurn,
+  onChangeCurrencyStyle,
+  onChangeGraphicsQuality,
   onChangeSpeed,
   onToggleCinematic,
   onToggleNightMode,
@@ -68,7 +86,8 @@ export const ActionDock: React.FC<ActionDockProps> = ({
 }) => {
   const [openMenu, setOpenMenu] = useState<'none' | 'emotes' | 'settings' | 'logs'>('none');
 
-  const isHumanTurn = !currentPlayer.isBot && !currentPlayer.bankrupt;
+  const isHumanTurn =
+    canAct !== undefined ? canAct : !currentPlayer.isBot && !currentPlayer.bankrupt;
 
   const canHumanManageAssets =
     isHumanTurn &&
@@ -76,17 +95,15 @@ export const ActionDock: React.FC<ActionDockProps> = ({
       turnPhase === 'AWAIT_END_TURN' ||
       turnPhase === 'DEBT_RESOLUTION');
 
-  const canHumanTradeNow =
-    isHumanTurn &&
-    canTrade &&
-    (turnPhase === 'AWAIT_ROLL' || turnPhase === 'AWAIT_END_TURN');
-
   const isModalDecisionPhase =
     turnPhase === 'BUY_DECISION' ||
+    turnPhase === 'START_UPGRADE_SELECTION' ||
     turnPhase === 'UPGRADE_DECISION' ||
     turnPhase === 'BUYOUT_DECISION' ||
+    turnPhase === 'CHAMPIONSHIP_SELECTION' ||
     turnPhase === 'WORLD_TOUR' ||
     turnPhase === 'CARD_REVEAL' ||
+    turnPhase === 'CARD_TARGET_SELECTION' ||
     turnPhase === 'DEBT_RESOLUTION';
 
   const toggleMenu = (target: 'emotes' | 'settings' | 'logs') => {
@@ -101,7 +118,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           ================================================================= */}
       <div
         data-testid="bt-right-utility-rail"
-        className="fixed right-3 sm:right-4 top-1/2 -translate-y-1/2 z-25 flex flex-col items-center gap-3 pointer-events-none"
+        className="fixed right-[max(0.55rem,env(safe-area-inset-right,0px))] sm:right-4 top-1/2 -translate-y-1/2 z-25 flex flex-col items-center gap-2.5 sm:gap-3 pointer-events-none"
       >
         {/* Button 1: Emotes / Quick Chat */}
         <button
@@ -115,7 +132,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           aria-expanded={openMenu === 'emotes'}
           aria-label="Biểu cảm và Trò chuyện nhanh"
           title="Biểu cảm nhân vật"
-          className={`pointer-events-auto h-12 w-12 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
+          className={`pointer-events-auto h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
             openMenu === 'emotes' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
           }`}
         >
@@ -143,7 +160,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           aria-expanded={openMenu === 'settings'}
           aria-label="Âm thanh và Cài đặt bàn cờ"
           title="Âm thanh & Cài đặt"
-          className={`pointer-events-auto relative h-12 w-12 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
+          className={`pointer-events-auto relative h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
             openMenu === 'settings' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
           }`}
         >
@@ -186,7 +203,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           }}
           aria-label="Tạm dừng trò chơi"
           title="Tạm dừng [Esc]"
-          className="pointer-events-auto h-12 w-12 sm:h-13 sm:w-13 rounded-full bt-float-circle-cyan flex items-center justify-center cursor-pointer"
+          className="pointer-events-auto h-11 w-11 sm:h-13 sm:w-13 rounded-full bt-float-circle-cyan flex items-center justify-center cursor-pointer"
         >
           <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5.5 w-5.5 fill-current">
             <rect x="6" y="4.5" width="4.2" height="15" rx="1.6" />
@@ -258,6 +275,42 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           </div>
 
           <div className="p-3 space-y-2 text-xs">
+            <div className="rounded-xl bg-sky-50/90 border border-sky-200 p-2 space-y-1.5">
+              <div className="flex items-center justify-between px-0.5 gap-1">
+                <span className="font-extrabold text-slate-800">
+                  Đồ họa 3D & Hiệu năng
+                </span>
+                <span className="text-[10px] font-black uppercase text-[#16A34A] truncate">
+                  {graphicsQualityPref === 'auto'
+                    ? `Tự động · ${GRAPHICS_TIER_LABELS[effectiveQualityTier]}`
+                    : `Mức ${GRAPHICS_TIER_LABELS[effectiveQualityTier]}`}
+                </span>
+              </div>
+              <GraphicsQualityPicker
+                value={graphicsQualityPref}
+                effectiveTier={effectiveQualityTier}
+                gpuLabel={gpuLabel}
+                onChange={onChangeGraphicsQuality}
+                compact
+              />
+            </div>
+
+            <div className="rounded-xl bg-sky-50/90 border border-sky-200 p-2 space-y-1.5">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="font-extrabold text-slate-800">
+                  Kho bạc Tiền tệ 3D
+                </span>
+                <span className="text-[10px] font-black uppercase text-sky-700">
+                  Đổi tức thì
+                </span>
+              </div>
+              <CurrencyStylePicker
+                value={currencyStyle}
+                onChange={onChangeCurrencyStyle}
+                compact
+              />
+            </div>
+
             <button
               type="button"
               onClick={onToggleSound}
@@ -304,9 +357,9 @@ export const ActionDock: React.FC<ActionDockProps> = ({
               onClick={onToggleNightMode}
               className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
             >
-              <span>Bầu trời Pastel</span>
+              <span>Chế độ ánh sáng</span>
               <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-800 text-[10px] font-black uppercase">
-                {nightMode ? 'Hoàng hôn' : 'Ban ngày'}
+                {nightMode ? 'Ban đêm' : 'Ban ngày'}
               </span>
             </button>
 
@@ -369,7 +422,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
                 className="py-1.5 text-xs leading-snug flex items-start gap-2"
               >
                 <span className="font-mono-num text-[10px] font-bold text-sky-600 shrink-0 mt-0.5">
-                  V{entry.turn}
+                  L{entry.turn}
                 </span>
                 {entry.playerColor && (
                   <span
@@ -402,7 +455,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
       {isHumanTurn &&
         !isModalDecisionPhase &&
         (turnPhase === 'AWAIT_ROLL' || turnPhase === 'AWAIT_END_TURN') && (
-          <div className="fixed bottom-3.5 left-1/2 -translate-x-1/2 z-25 flex items-center gap-2 pointer-events-none">
+          <div className="fixed bottom-[106px] sm:bottom-[max(0.9rem,env(safe-area-inset-bottom,0px))] left-1/2 -translate-x-1/2 z-25 flex items-center gap-2 pointer-events-none">
             {turnPhase === 'AWAIT_ROLL' ? (
               currentPlayer.inJail ? (
                 <div className="pointer-events-auto flex items-center gap-2">
@@ -436,7 +489,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
                       }}
                       className="bt-btn-cyan px-3.5 sm:px-4 py-2.5 rounded-full font-extrabold text-xs sm:text-sm uppercase cursor-pointer whitespace-nowrap"
                     >
-                      Dùng Thẻ VIP
+                      Dùng Thẻ Thoát Đảo
                     </button>
                   )}
                 </div>
@@ -491,22 +544,21 @@ export const ActionDock: React.FC<ActionDockProps> = ({
                 Tài Sản ({ownedCount})
               </button>
             )}
-
-            {canHumanTradeNow && ownedCount > 0 && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  onOpenTradeModal();
-                }}
-                aria-label="Giao dịch bất động sản"
-                className="pointer-events-auto bt-btn-gold px-3.5 py-2.5 rounded-full text-xs font-black uppercase tracking-wide cursor-pointer whitespace-nowrap hidden sm:inline-flex"
-              >
-                Giao Dịch
-              </button>
-            )}
+          </div>
+        )}
+      {/* Online Waiting Indicator when it's another player's or bot's turn */}
+      {isOnlineMatch &&
+        !isHumanTurn &&
+        !isModalDecisionPhase &&
+        (turnPhase === 'AWAIT_ROLL' || turnPhase === 'AWAIT_END_TURN') && (
+          <div className="fixed bottom-[106px] sm:bottom-[max(0.9rem,env(safe-area-inset-bottom,0px))] left-1/2 -translate-x-1/2 z-25 pointer-events-none">
+            <div className="px-5 py-2.5 rounded-full bt-casual-modal text-xs sm:text-sm font-black text-sky-900 whitespace-nowrap">
+              ⏳ Đang chờ {currentPlayer.name}...
+            </div>
           </div>
         )}
     </>
   );
 };
+
+export const ActionDock = React.memo(ActionDockInner);

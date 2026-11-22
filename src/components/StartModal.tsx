@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { CHARACTER_PERSONAS } from '../game/avatarLogic';
 import {
   formatBusinessTourCompact,
@@ -6,12 +6,28 @@ import {
   START_SALARY,
   WORLD_TOUR_FEE,
 } from '../game/rules';
-import { PlayerSetupConfig } from '../game/types';
+import {
+  CurrencyStyleId,
+  GraphicsQualityPref,
+  GraphicsQualityTier,
+  PlayerSetupConfig,
+} from '../game/types';
+import type { useOnlineMultiplayer } from '../utils/onlineClient';
+import { CurrencyStylePicker } from './CurrencyStyleBadge';
+import { GraphicsQualityPicker } from './GraphicsQualityPicker';
+import { OnlineLobbyPanel } from './OnlineLobbyPanel';
 import { PlayerAvatar3D } from './PlayerAvatar3D';
 
 interface StartModalProps {
   initialConfigs: PlayerSetupConfig[];
   initialStartingCash: number;
+  currencyStyle: CurrencyStyleId;
+  onChangeCurrencyStyle: (next: CurrencyStyleId) => void;
+  graphicsQualityPref: GraphicsQualityPref;
+  effectiveQualityTier: GraphicsQualityTier;
+  gpuLabel?: string;
+  onChangeGraphicsQuality: (next: GraphicsQualityPref) => void;
+  online?: ReturnType<typeof useOnlineMultiplayer>;
   onStartGame: (configs: PlayerSetupConfig[], startingCash: number) => void;
   onOpenRulebook: () => void;
 }
@@ -23,6 +39,13 @@ const TOKEN_SIGNATURE_HEX: Record<PlayerSetupConfig['tokenType'], string> = {
   yacht: '#66C61C',
   jet: '#E91E63',
   crown: '#29B6F6',
+};
+
+const TOKEN_SIGNATURE_COLOR_NAME: Record<PlayerSetupConfig['tokenType'], string> = {
+  car: 'Vàng kim',
+  yacht: 'Xanh cốm',
+  jet: 'Hồng đậm',
+  crown: 'Xanh da trời',
 };
 
 /**
@@ -71,15 +94,31 @@ const BusinessTourCrestSvg: React.FC = () => (
 export const StartModal: React.FC<StartModalProps> = ({
   initialConfigs,
   initialStartingCash,
+  currencyStyle,
+  onChangeCurrencyStyle,
+  graphicsQualityPref,
+  effectiveQualityTier,
+  gpuLabel,
+  onChangeGraphicsQuality,
+  online,
   onStartGame,
   onOpenRulebook,
 }) => {
+  const [lobbyMode, setLobbyMode] = useState<'offline' | 'online'>(() =>
+    online && (online.initialInviteCode || online.roomSnapshot) ? 'online' : 'offline'
+  );
   const [playerCount, setPlayerCount] = useState<number>(
     initialConfigs.filter((c) => c.enabled).length || 4
   );
   const [configs, setConfigs] = useState<PlayerSetupConfig[]>(initialConfigs);
   const [startingCash, setStartingCash] = useState<number>(initialStartingCash);
   const [validationError, setValidationError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (online?.roomSnapshot) {
+      setLobbyMode('online');
+    }
+  }, [online?.roomSnapshot]);
 
   const leadPlayer = configs[0];
   const leadPersona = CHARACTER_PERSONAS[leadPlayer.tokenType];
@@ -110,10 +149,16 @@ export const StartModal: React.FC<StartModalProps> = ({
 
       return prev.map((p, idx) => {
         if (idx === 0) {
+          const prevLeadBotDefault = CHARACTER_PERSONAS[currentLeadToken].botDefaultName;
+          const nextLeadBotDefault = CHARACTER_PERSONAS[nextToken].botDefaultName;
           return {
             ...p,
             tokenType: nextToken,
             color: swappedSlot ? swappedSlot.color : TOKEN_SIGNATURE_HEX[nextToken],
+            colorName: swappedSlot
+              ? swappedSlot.colorName
+              : TOKEN_SIGNATURE_COLOR_NAME[nextToken],
+            name: p.isBot && p.name === prevLeadBotDefault ? nextLeadBotDefault : p.name,
           };
         }
         if (idx === swapIdx) {
@@ -123,6 +168,7 @@ export const StartModal: React.FC<StartModalProps> = ({
             ...p,
             tokenType: currentLeadToken,
             color: lead.color,
+            colorName: lead.colorName,
             name: p.isBot && p.name === prevBotDefault ? nextBotDefault : p.name,
           };
         }
@@ -157,10 +203,10 @@ export const StartModal: React.FC<StartModalProps> = ({
     >
       <div
         data-testid="bt-casual-lobby"
-        className="w-full max-w-5xl my-auto bt-casual-modal rounded-[28px] overflow-hidden animate-pop-in"
+        className="w-full max-w-5xl shrink-0 my-auto bt-casual-modal rounded-[28px] overflow-hidden animate-pop-in"
       >
         {/* Playful Glossy Sky-Cyan Game Lobby Banner */}
-        <div className="bt-header-sky px-5 sm:px-7 py-4 flex items-center justify-between gap-4">
+        <div className="bt-header-sky px-5 sm:px-7 py-3 sm:py-3.5 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3.5 min-w-0">
             <BusinessTourCrestSvg />
             <div className="min-w-0">
@@ -176,9 +222,9 @@ export const StartModal: React.FC<StartModalProps> = ({
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-bold text-sky-100 mt-0.5">
                 <span>Sảnh Đấu Business Tour</span>
                 <span aria-hidden="true">·</span>
-                <span>28 Điểm Đến Việt Nam</span>
+                <span>32 Ô Bàn Cờ Việt Nam</span>
                 <span aria-hidden="true">·</span>
-                <span>Đấu Trí AI 3D</span>
+                <span>Chơi Offline & Online</span>
               </div>
             </div>
           </div>
@@ -194,12 +240,49 @@ export const StartModal: React.FC<StartModalProps> = ({
           </div>
         </div>
 
-        {/* 3-Column Casual Game Setup Body */}
-        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+        {/* Mode Switcher Tabs (Offline vs Online Multiplayer) */}
+        {online && (
+          <div className="px-4 sm:px-6 pt-3">
+            <div className="grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-sky-100 border-2 border-sky-200 max-w-lg mx-auto">
+              <button
+                type="button"
+                data-testid="bt-tab-offline"
+                onClick={() => setLobbyMode('offline')}
+                className={`py-2 px-3 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wide transition-all cursor-pointer whitespace-nowrap ${
+                  lobbyMode === 'offline'
+                    ? 'bt-btn-cyan'
+                    : 'text-sky-900 hover:bg-white/60'
+                }`}
+              >
+                🎮 Chơi Với Máy / Cùng Máy
+              </button>
+              <button
+                type="button"
+                data-testid="bt-tab-online"
+                onClick={() => {
+                  setLobbyMode('online');
+                  online.ensureConnected();
+                }}
+                className={`py-2 px-3 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wide transition-all cursor-pointer whitespace-nowrap ${
+                  lobbyMode === 'online'
+                    ? 'bt-btn-green'
+                    : 'text-sky-900 hover:bg-white/60'
+                }`}
+              >
+                🌐 Chơi Online Cùng Bạn Bè
+              </button>
+            </div>
+          </div>
+        )}
+
+        {lobbyMode === 'online' && online ? (
+          <OnlineLobbyPanel online={online} />
+        ) : (
+        <form onSubmit={handleSubmit} className="p-4 sm:p-5 space-y-3.5">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
             {/* LEFT COLUMN: Casual Match Rules & Starting Pot */}
-            <div className="lg:col-span-4 rounded-2xl bg-sky-50/90 border-2 border-sky-200 flex flex-col justify-between p-4 space-y-4">
-              <div className="space-y-3.5">
+            <div className="lg:col-span-4 rounded-2xl bg-sky-50/90 border-2 border-sky-200 flex flex-col justify-between p-3.5 space-y-3">
+              <div className="space-y-2.5">
                 <div className="pb-2 border-b border-sky-200 flex items-center justify-between">
                   <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
                     Thiết Lập Bàn Đấu
@@ -236,7 +319,7 @@ export const StartModal: React.FC<StartModalProps> = ({
                     Ngân sách khởi điểm
                   </span>
                   <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
-                    {[1500, 2500].map((cash) => (
+                    {[2_000_000, 3_000_000].map((cash) => (
                       <button
                         key={cash}
                         type="button"
@@ -252,25 +335,57 @@ export const StartModal: React.FC<StartModalProps> = ({
                     ))}
                   </div>
                 </div>
+
+                <div>
+                  <span className="block text-xs font-extrabold text-slate-600 mb-1.5">
+                    Hình thức Tiền tệ 3D
+                  </span>
+                  <CurrencyStylePicker
+                    value={currencyStyle}
+                    onChange={onChangeCurrencyStyle}
+                    compact
+                  />
+                </div>
+
+                <div>
+                  <span className="block text-xs font-extrabold text-slate-600 mb-1.5">
+                    Chất lượng Đồ họa 3D
+                  </span>
+                  <GraphicsQualityPicker
+                    value={graphicsQualityPref}
+                    effectiveTier={effectiveQualityTier}
+                    gpuLabel={gpuLabel}
+                    compact
+                    onChange={onChangeGraphicsQuality}
+                  />
+                </div>
               </div>
 
               <div className="pt-3 border-t border-sky-200 space-y-1.5 text-xs">
                 <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-600 font-semibold">Bàn cờ chuẩn</span>
+                  <span className="font-extrabold text-slate-900 text-right">
+                    32 ô Việt Nam · 8 Bộ Màu · 4 Đảo Du Lịch
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-slate-600 font-semibold">Xây công trình</span>
                   <span className="font-extrabold text-slate-900 text-right">
-                    Xây ngay · Khiên Khách sạn ★
+                    Vòng 2+ lên thẳng Khách sạn ★ · Bắt Đầu nâng cấp nhà
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-slate-600 font-semibold">Đặc quyền</span>
                   <span className="font-extrabold text-[#16A34A] text-right">
-                    Mua lại 2× · Vé Bay {formatBusinessTourCompact(WORLD_TOUR_FEE)}
+                    Cúp Quốc Gia 0K lũy tiến · Bán trả nợ hoàn 100%
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-600 font-semibold">Thưởng qua Bắt Đầu</span>
-                  <span className="font-black text-[#16A34A] font-mono-num">
-                    +{formatBusinessTourSpaced(START_SALARY)}
+                  <span className="font-black text-[#16A34A]">
+                    <span className="font-mono-num">+{formatBusinessTourSpaced(START_SALARY)}</span>{' '}
+                    (Vé bay{' '}
+                    <span className="font-mono-num">{formatBusinessTourCompact(WORLD_TOUR_FEE)}</span>)
                   </span>
                 </div>
               </div>
@@ -451,11 +566,12 @@ export const StartModal: React.FC<StartModalProps> = ({
             </button>
           </div>
         </form>
+        )}
       </div>
 
       {/* Clean inline control hint in bottom safe margin */}
       <p
-        className="mt-2 text-xs font-extrabold text-slate-900 text-center select-none"
+        className="mt-1.5 shrink-0 text-xs font-extrabold text-slate-900 text-center select-none"
         style={{
           textShadow:
             '0 0 8px rgba(255,255,255,0.98), 0 1px 2px rgba(255,255,255,0.98)',
