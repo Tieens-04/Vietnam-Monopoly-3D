@@ -3,7 +3,7 @@ services:
     name: co-ty-phu-3d-viet-nam
     runtime: node
     plan: free
-    buildCommand: npm install --include=dev --legacy-peer-deps && npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
