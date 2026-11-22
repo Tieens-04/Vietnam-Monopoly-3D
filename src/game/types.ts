@@ -1,14 +1,12 @@
 export enum TileKind {
   START = 'START',
-  JAIL = 'JAIL',
-  FREE_PARKING = 'FREE_PARKING',
-  GO_TO_JAIL = 'GO_TO_JAIL',
+  LOST_ISLAND = 'LOST_ISLAND',
+  WORLD_CHAMPIONSHIPS = 'WORLD_CHAMPIONSHIPS',
+  WORLD_TOUR = 'WORLD_TOUR',
   PROPERTY = 'PROPERTY',
-  TRANSPORT = 'TRANSPORT',
-  UTILITY = 'UTILITY',
+  RESORT = 'RESORT',
   TAX = 'TAX',
   CHANCE = 'CHANCE',
-  CHEST = 'CHEST',
 }
 
 export enum ColorGroup {
@@ -16,7 +14,9 @@ export enum ColorGroup {
   CYAN = 'CYAN',
   PINK = 'PINK',
   ORANGE = 'ORANGE',
+  AMBER = 'AMBER',
   RED = 'RED',
+  PURPLE = 'PURPLE',
   EMERALD = 'EMERALD',
 }
 
@@ -30,18 +30,33 @@ export interface TileDefinition {
   groupLabel?: string;
   price?: number;
   houseCost?: number;
-  /** Rents for [base, 1 house, 2 houses, 3 houses, hotel(4)] */
+  /** Rents for [land, 1 house, 2 houses, 3 houses, hotel(4)] */
   rents?: [number, number, number, number, number];
-  taxAmount?: number;
   description: string;
 }
 
 export interface PropertyState {
   tileIndex: number;
   ownerId: number | null;
-  /** 0 = land only, 1..3 = green houses, 4 = hotel / protected landmark */
+  /** 0 = land only (or Resort), 1..3 = green houses, 4 = hotel / protected landmark */
   level: number;
-  mortgaged?: boolean;
+}
+
+export type TacticalCardActionKind = 'EARTHQUAKE' | 'POWER_OUTAGE' | 'SHIELD_CITY';
+
+export interface MatchBoardModifiers {
+  festivalTileIndices: number[];
+  championshipTileIndex: number | null;
+  championshipMultiplier: number;
+  outageTileIndices?: number[];
+  shieldedTileIndices?: number[];
+}
+
+export interface AutoSalePlan {
+  sufficient: boolean;
+  tileIndicesToSell: number[];
+  totalRefund: number;
+  cashAfterDebt: number;
 }
 
 export interface PlayerSetupConfig {
@@ -63,24 +78,31 @@ export interface PlayerState {
   tokenType: 'car' | 'yacht' | 'jet' | 'crown';
   cash: number;
   position: number;
+  laps: number;
   inJail: boolean;
   jailTurns: number;
   jailFreeCards: number;
   doublesStreak: number;
+  pendingWorldTour: boolean;
   bankrupt: boolean;
+  onlineConnected?: boolean;
+  onlineBotTakeover?: boolean;
 }
 
-export type CardDeckType = 'CHANCE' | 'CHEST';
+export type CardDeckType = 'CHANCE';
 
 export type CardEffect =
   | { type: 'GAIN_CASH'; amount: number }
   | { type: 'PAY_CASH'; amount: number }
   | { type: 'MOVE_TO'; targetTile: number; collectStart: boolean }
-  | { type: 'MOVE_RELATIVE'; steps: number }
   | { type: 'GO_TO_JAIL' }
   | { type: 'JAIL_FREE_CARD' }
-  | { type: 'HOUSE_REPAIR'; perHouse: number; perHotel: number }
-  | { type: 'COLLECT_FROM_ALL'; amountEach: number };
+  | { type: 'COLLECT_FROM_ALL'; amountEach: number }
+  | { type: 'HOST_CHAMPIONSHIP' }
+  | { type: 'GO_TO_WORLD_TOUR' }
+  | { type: 'EARTHQUAKE' }
+  | { type: 'POWER_OUTAGE' }
+  | { type: 'SHIELD_CITY' };
 
 export interface LuckCard {
   id: string;
@@ -98,9 +120,12 @@ export type TurnPhase =
   | 'MOVING_TOKEN'
   | 'BUY_DECISION'
   | 'UPGRADE_DECISION'
+  | 'START_UPGRADE_SELECTION'
   | 'BUYOUT_DECISION'
+  | 'CHAMPIONSHIP_SELECTION'
   | 'WORLD_TOUR'
   | 'CARD_REVEAL'
+  | 'CARD_TARGET_SELECTION'
   | 'DEBT_RESOLUTION'
   | 'AWAIT_END_TURN'
   | 'GAME_OVER';
@@ -108,27 +133,13 @@ export type TurnPhase =
 export type VictoryConditionKind =
   | 'LAST_STANDING'
   | 'TRIPLE_MONOPOLY'
-  | 'SIDE_MONOPOLY';
+  | 'SIDE_MONOPOLY'
+  | 'RESORT_MONOPOLY';
 
 export interface MatchWinnerResult {
   winner: PlayerState;
   condition: VictoryConditionKind;
   label: string;
-}
-
-export interface TradeOffer {
-  fromPlayerId: number;
-  toPlayerId: number;
-  offeredTileIndices: number[];
-  requestedTileIndices: number[];
-  offeredCash: number;
-  requestedCash: number;
-}
-
-export interface TradeEvaluationResult {
-  valid: boolean;
-  accepted: boolean;
-  reason: string;
 }
 
 export interface GameLogEntry {
@@ -143,8 +154,8 @@ export interface PendingDebt {
   amount: number;
   creditorId: number | null; // null = bank
   reason: string;
-  /** Optional steps to advance once mandatory 3rd-turn Jail bail debt is paid */
-  postPayMoveSteps?: number;
+  /** Tile index where rent was incurred so post-debt excess cash can still offer 2x Buyout */
+  originTileIndex?: number;
 }
 
 export interface DiceRollVisualRequest {
@@ -159,6 +170,7 @@ export type BotQuipEventKind =
   | 'PAY_PENALTY';
 
 export interface BotQuipPayload {
+  sessionId?: string;
   botId: number;
   botName: string;
   botPersona: string;
@@ -169,6 +181,12 @@ export interface BotQuipPayload {
   extraContext: string;
 }
 
+export type CurrencyStyleId = 'cash' | 'coins' | 'bullion' | 'mixed';
+
+export type GraphicsQualityPref = 'auto' | 'low' | 'medium' | 'high';
+
+export type GraphicsQualityTier = 'low' | 'medium' | 'high';
+
 export interface BotChatBubbleState {
   id: number;
   botId: number;
@@ -176,4 +194,3 @@ export interface BotChatBubbleState {
   status: 'loading' | 'ready' | 'error';
   text: string;
 }
-

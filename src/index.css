@@ -1,28 +1,62 @@
 @import "tailwindcss";
 
-@layer base {
+:root {
+  --font-display: "Be Vietnam Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-body: "Be Vietnam Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Be Vietnam Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  --surface-ivory: #ffffff;
+  --surface-parchment: #f0f9ff;
+  --surface-obsidian: #0284c7;
+  --border-hairline: #bae6fd;
+  --accent-gold: #f5b800;
+  --accent-emerald: #66c61c;
+
+  --in-oklab: ;
+  --in-oklch: ;
+  --target-size: 24px;
+}
+
+@supports (background: linear-gradient(in oklab, white, black)) {
   :root {
-    --font-display: "Be Vietnam Pro", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-body: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-
-    --surface-ivory: #ffffff;
-    --surface-parchment: #f0f9ff;
-    --surface-obsidian: #0284c7;
-    --border-hairline: #bae6fd;
-    --accent-gold: #f5b800;
-    --accent-emerald: #66c61c;
+    --in-oklab: in oklab;
+    --in-oklch: in oklch;
   }
+}
 
+@media (pointer: coarse) {
+  :root {
+    --target-size: 44px;
+  }
+}
+
+@layer base {
   html,
-  body,
-  #root {
+  body {
     width: 100%;
     height: 100%;
     margin: 0;
     padding: 0;
-    overflow: hidden;
     font-family: var(--font-body);
+    overflow-wrap: break-word;
+  }
+
+  #root {
+    width: 100%;
+    height: 100%;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p,
+  li {
+    text-wrap: pretty;
   }
 }
 
@@ -33,57 +67,70 @@
 .font-mono-num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Expands touch hit area on compact icon buttons without bloating visual layout */
+.icon-hit-target {
+  position: relative;
+}
+.icon-hit-target::after {
+  content: "";
+  position: absolute;
+  inset: -9px;
 }
 
 /* ==========================================================================
    BUSINESS TOUR CASUAL 3D GLOSSY UI DESIGN SYSTEM
-   (Strictly zero backdrop-filter over active WebGL canvas)
+   (Perceptual oklab gradients + layered shadows; zero backdrop-filter over WebGL)
    ========================================================================== */
 
 @layer components {
   /* Bright Casual White & Sky-Bordered Modal Shell */
   .id-modal-shell,
   .bt-casual-modal {
-    background: linear-gradient(180deg, #ffffff 0%, #f4f9ff 100%);
+    background: linear-gradient(to bottom var(--in-oklab), #ffffff 0%, #f0f7ff 100%);
     border: 3px solid #ffffff;
     outline: 2px solid #7dd3fc;
     box-shadow:
-      0 22px 46px -10px rgba(14, 42, 71, 0.34),
-      0 6px 0 rgba(2, 132, 199, 0.22);
+      0 24px 50px -10px rgba(14, 42, 71, 0.36),
+      0 6px 0 rgba(2, 132, 199, 0.24),
+      inset 0 2px 0 rgba(255, 255, 255, 0.9);
   }
 
-  /* Vibrant Glossy Sky-Azure Header Strip (replaces dark obsidian) */
+  /* Vibrant Glossy Sky-Azure Header Strip */
   .id-header-obsidian,
   .bt-header-sky {
-    background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
+    background: linear-gradient(to bottom var(--in-oklab), #38bdf8 0%, #0284c7 100%);
     border-bottom: 3px solid #0369a1;
-    box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45);
+    box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.48);
     color: #ffffff;
-    text-shadow: 0 1px 2px rgba(3, 52, 86, 0.45);
+    text-shadow: 0 1.5px 2px rgba(3, 52, 86, 0.48);
   }
 
   /* Glossy Lime-Emerald Header Strip */
   .id-header-emerald,
   .bt-header-green {
-    background: linear-gradient(180deg, #7ae22e 0%, #4ea812 100%);
+    background: linear-gradient(to bottom var(--in-oklab), #7ae22e 0%, #4ea812 100%);
     border-bottom: 3px solid #387c0b;
-    box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45);
+    box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.48);
     color: #ffffff;
-    text-shadow: 0 1px 2px rgba(20, 56, 6, 0.45);
+    text-shadow: 0 1.5px 2px rgba(20, 56, 6, 0.48);
   }
 
   /* Glossy Hot-Pink / Coral Alert Header Strip */
   .id-header-crimson,
   .bt-header-pink {
-    background: linear-gradient(180deg, #fb4b84 0%, #e11d48 100%);
+    background: linear-gradient(to bottom var(--in-oklab), #fb4b84 0%, #e11d48 100%);
     border-bottom: 3px solid #9f1239;
-    box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.42);
+    box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.44);
     color: #ffffff;
-    text-shadow: 0 1px 2px rgba(88, 10, 32, 0.45);
+    text-shadow: 0 1.5px 2px rgba(88, 10, 32, 0.48);
   }
 
   /* Soft Sky Table Subheader Strip */
@@ -95,12 +142,12 @@
 
   /* Circular Glossy Cyan/Blue Floating Utility Button (Middle-Right Toolbar) */
   .bt-float-circle-cyan {
-    background: radial-gradient(circle at 35% 22%, #7dd3fc 0%, #29b6f6 45%, #0284c7 100%);
+    background: radial-gradient(circle at 35% 22% var(--in-oklab), #7dd3fc 0%, #29b6f6 45%, #0284c7 100%);
     border: 2.5px solid #ffffff;
     box-shadow:
       0 4px 0 #0369a1,
-      0 10px 20px -4px rgba(3, 105, 161, 0.45),
-      inset 0 2px 2px rgba(255, 255, 255, 0.65);
+      0 10px 22px -4px rgba(3, 105, 161, 0.46),
+      inset 0 2px 2px rgba(255, 255, 255, 0.68);
     color: #ffffff;
     transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
   }
@@ -119,7 +166,7 @@
   }
 
   .bt-float-circle-active {
-    background: radial-gradient(circle at 35% 22%, #fde047 0%, #f5b800 50%, #d97706 100%);
+    background: radial-gradient(circle at 35% 22% var(--in-oklab), #fde047 0%, #f5b800 50%, #d97706 100%);
     border: 2.5px solid #ffffff;
     box-shadow:
       0 4px 0 #92400e,
@@ -132,14 +179,14 @@
   .id-btn-emerald,
   .bt-btn-green {
     font-family: var(--font-display);
-    background: linear-gradient(180deg, #84e83a 0%, #58b916 55%, #469a0d 100%);
-    border: 2px solid #ffffff;
+    background: linear-gradient(to bottom var(--in-oklab), #86eb3b 0%, #58b916 55%, #43950b 100%);
+    border: 2.5px solid #ffffff;
     box-shadow:
       0 4px 0 #2f6f07,
-      0 8px 18px -4px rgba(70, 154, 13, 0.45),
-      inset 0 2px 1px rgba(255, 255, 255, 0.55);
+      0 10px 20px -4px rgba(70, 154, 13, 0.48),
+      inset 0 2px 1px rgba(255, 255, 255, 0.58);
     color: #ffffff;
-    text-shadow: 0 1px 2px rgba(22, 62, 4, 0.55);
+    text-shadow: 0 1.5px 2px rgba(22, 62, 4, 0.58);
     transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
   }
 
@@ -159,14 +206,14 @@
   .id-btn-gold,
   .bt-btn-gold {
     font-family: var(--font-display);
-    background: linear-gradient(180deg, #ffe047 0%, #f5b800 55%, #ea8c00 100%);
-    border: 2px solid #ffffff;
+    background: linear-gradient(to bottom var(--in-oklab), #ffe047 0%, #f5b800 55%, #ea8c00 100%);
+    border: 2.5px solid #ffffff;
     box-shadow:
       0 4px 0 #b45309,
-      0 8px 18px -4px rgba(217, 119, 6, 0.45),
+      0 10px 20px -4px rgba(217, 119, 6, 0.48),
       inset 0 2px 1px rgba(255, 255, 255, 0.65);
     color: #ffffff;
-    text-shadow: 0 1px 2px rgba(120, 53, 15, 0.65);
+    text-shadow: 0 1.5px 2px rgba(120, 53, 15, 0.65);
     transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
   }
 
@@ -185,14 +232,14 @@
   /* Glossy Hot-Pink 3D Dice Roll Button */
   .bt-btn-pink {
     font-family: var(--font-display);
-    background: linear-gradient(180deg, #ff629d 0%, #e91e63 55%, #c2185b 100%);
+    background: linear-gradient(to bottom var(--in-oklab), #ff66a1 0%, #e91e63 55%, #be1452 100%);
     border: 2.5px solid #ffffff;
     box-shadow:
       0 4px 0 #880e4f,
-      0 10px 22px -4px rgba(233, 30, 99, 0.5),
-      inset 0 2px 1px rgba(255, 255, 255, 0.55);
+      0 12px 24px -4px rgba(233, 30, 99, 0.54),
+      inset 0 2px 1px rgba(255, 255, 255, 0.58);
     color: #ffffff;
-    text-shadow: 0 1px 2px rgba(88, 10, 42, 0.6);
+    text-shadow: 0 1.5px 2px rgba(88, 10, 42, 0.62);
     transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
   }
 
@@ -210,14 +257,14 @@
   .id-btn-sapphire,
   .bt-btn-cyan {
     font-family: var(--font-display);
-    background: linear-gradient(180deg, #56ccf8 0%, #29b6f6 50%, #0284c7 100%);
+    background: linear-gradient(to bottom var(--in-oklab), #56ccf8 0%, #29b6f6 50%, #0284c7 100%);
     border: 2px solid #ffffff;
     box-shadow:
       0 4px 0 #0369a1,
-      0 8px 18px -4px rgba(2, 132, 199, 0.42),
-      inset 0 2px 1px rgba(255, 255, 255, 0.55);
+      0 8px 18px -4px rgba(2, 132, 199, 0.44),
+      inset 0 2px 1px rgba(255, 255, 255, 0.58);
     color: #ffffff;
-    text-shadow: 0 1px 2px rgba(3, 52, 86, 0.55);
+    text-shadow: 0 1.5px 2px rgba(3, 52, 86, 0.58);
     transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
   }
 
@@ -236,14 +283,14 @@
   /* Glossy Coral-Red Danger / Sell Button */
   .id-btn-crimson {
     font-family: var(--font-display);
-    background: linear-gradient(180deg, #fb5679 0%, #e11d48 55%, #be123c 100%);
+    background: linear-gradient(to bottom var(--in-oklab), #fb5679 0%, #e11d48 55%, #be123c 100%);
     border: 2px solid #ffffff;
     box-shadow:
       0 4px 0 #881337,
-      0 8px 16px -4px rgba(190, 18, 60, 0.4),
-      inset 0 2px 1px rgba(255, 255, 255, 0.45);
+      0 8px 16px -4px rgba(190, 18, 60, 0.42),
+      inset 0 2px 1px rgba(255, 255, 255, 0.48);
     color: #ffffff;
-    text-shadow: 0 1px 2px rgba(76, 5, 25, 0.55);
+    text-shadow: 0 1.5px 2px rgba(76, 5, 25, 0.58);
     transition: transform 130ms cubic-bezier(0.16, 1, 0.3, 1), filter 130ms ease;
   }
 
@@ -260,7 +307,7 @@
   .id-btn-neutral,
   .bt-btn-white {
     font-family: var(--font-display);
-    background: linear-gradient(180deg, #ffffff 0%, #e2f1fc 100%);
+    background: linear-gradient(to bottom var(--in-oklab), #ffffff 0%, #e2f1fc 100%);
     border: 2px solid #93c5fd;
     box-shadow:
       0 3px 0 #60a5fa,
@@ -278,6 +325,30 @@
   .bt-btn-white:active:not(:disabled) {
     transform: translateY(2px);
     box-shadow: 0 1px 0 #60a5fa;
+  }
+}
+
+/* Windows High Contrast / Forced Colors accessibility fallbacks */
+@media (forced-colors: active) {
+  .id-modal-shell,
+  .bt-casual-modal {
+    border: 2px solid CanvasText;
+    outline: none;
+  }
+
+  .bt-btn-green,
+  .bt-btn-gold,
+  .bt-btn-pink,
+  .bt-btn-cyan,
+  .bt-btn-white,
+  .id-btn-emerald,
+  .id-btn-gold,
+  .id-btn-sapphire,
+  .id-btn-crimson,
+  .id-btn-neutral,
+  .bt-float-circle-cyan,
+  .bt-float-circle-active {
+    border: 2px solid ButtonText;
   }
 }
 

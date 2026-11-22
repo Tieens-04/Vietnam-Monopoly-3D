@@ -15,6 +15,10 @@ test('all 4 Business Tour character personas define distinct palettes and Vietna
   const suits = new Set(keys.map((k) => CHARACTER_PERSONAS[k].suitHex));
   assert.equal(names.size, 4);
   assert.equal(suits.size, 4);
+  assert.equal(CHARACTER_PERSONAS.car.isFemale, false);
+  assert.equal(CHARACTER_PERSONAS.jet.isFemale, false);
+  assert.equal(CHARACTER_PERSONAS.yacht.isFemale, true);
+  assert.equal(CHARACTER_PERSONAS.crown.isFemale, true);
 });
 
 test('deriveAvatarMood prioritizes bankrupt > jailed > celebrating > stressed > active > idle', () => {
@@ -22,9 +26,9 @@ test('deriveAvatarMood prioritizes bankrupt > jailed > celebrating > stressed > 
     deriveAvatarMood({
       bankrupt: true,
       inJail: true,
-      cash: 2000,
+      cash: 2_000_000,
       isActive: true,
-      recentCashDelta: 200,
+      recentCashDelta: 300_000,
     }),
     'bankrupt'
   );
@@ -33,9 +37,9 @@ test('deriveAvatarMood prioritizes bankrupt > jailed > celebrating > stressed > 
     deriveAvatarMood({
       bankrupt: false,
       inJail: true,
-      cash: 1500,
+      cash: 1_500_000,
       isActive: true,
-      recentCashDelta: 200,
+      recentCashDelta: 300_000,
     }),
     'jailed'
   );
@@ -44,9 +48,9 @@ test('deriveAvatarMood prioritizes bankrupt > jailed > celebrating > stressed > 
     deriveAvatarMood({
       bankrupt: false,
       inJail: false,
-      cash: 1700,
+      cash: 1_700_000,
       isActive: false,
-      recentCashDelta: 200,
+      recentCashDelta: 120_000,
     }),
     'celebrating'
   );
@@ -55,7 +59,18 @@ test('deriveAvatarMood prioritizes bankrupt > jailed > celebrating > stressed > 
     deriveAvatarMood({
       bankrupt: false,
       inJail: false,
-      cash: 120,
+      cash: 1_500_000,
+      isActive: false,
+      recentCashDelta: 30_000,
+    }),
+    'idle'
+  );
+
+  assert.equal(
+    deriveAvatarMood({
+      bankrupt: false,
+      inJail: false,
+      cash: 180_000,
       isActive: true,
       recentCashDelta: 0,
     }),
@@ -66,7 +81,7 @@ test('deriveAvatarMood prioritizes bankrupt > jailed > celebrating > stressed > 
     deriveAvatarMood({
       bankrupt: false,
       inJail: false,
-      cash: 1500,
+      cash: 1_500_000,
       isActive: true,
       recentCashDelta: 0,
     }),
@@ -77,7 +92,7 @@ test('deriveAvatarMood prioritizes bankrupt > jailed > celebrating > stressed > 
     deriveAvatarMood({
       bankrupt: false,
       inJail: false,
-      cash: 1500,
+      cash: 1_500_000,
       isActive: false,
       recentCashDelta: 0,
     }),
@@ -123,4 +138,21 @@ test('computeBlinkFactor and computeAvatarPoseTargets produce bounded natural ki
   assert.ok(celebratingPose.smileScale > 1);
   assert.ok(bankruptPose.headPitch > 0.2);
   assert.ok(bankruptPose.smileScale < 0);
+
+  // Celebrating pose (including static snapshot t = 0.35) must keep head upright so royal tiara/crown stays clearly visible
+  for (const sampleT of [0, 0.25, 0.35, 0.5, 0.75]) {
+    const sampleCelebrate = computeAvatarPoseTargets({
+      mood: 'celebrating',
+      elapsedSec: sampleT,
+      phaseSeed: 0,
+    });
+    assert.ok(
+      sampleCelebrate.headPitch >= -0.06,
+      `Expected upright celebrating headPitch >= -0.06 at t=${sampleT}, got ${sampleCelebrate.headPitch}`
+    );
+    assert.ok(
+      sampleCelebrate.smileScale <= 1.18,
+      `Expected poised celebrating smileScale <= 1.18 at t=${sampleT}, got ${sampleCelebrate.smileScale}`
+    );
+  }
 });
