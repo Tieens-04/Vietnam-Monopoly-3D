@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import express, { type Request, type Response } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -7,21 +7,43 @@ import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type { BotQuipPayload } from '../game/types';
 import { generateOfflineBotQuip } from '../game/visualTheme';
-import { attachMultiplayerWebSocketServer } from './wsServer';
+import { attachMultiplayerWebSocketServer, type MultiplayerWsServerHandle } from './wsServer';
 
 interface BotQuipRequestBody {
-  sessionId?: string;
-  botId?: number;
-  botName?: string;
-  botPersona?: string;
-  eventKind?: 'BUY_PRIME_LAND' | 'COLLECT_BIG_RENT' | 'PAY_PENALTY';
-  tileName?: string;
-  amount?: number;
-  botCashAfter?: number;
-  extraContext?: string;
+  sessionId?: unknown;
+  botId?: unknown;
+  botName?: unknown;
+  botPersona?: unknown;
+  eventKind?: unknown;
+  tileName?: unknown;
+  amount?: unknown;
+  botCashAfter?: unknown;
+  extraContext?: unknown;
 }
 
 const BT_PROMPT_MULTIPLIER = 1;
+const DEFAULT_BOT_QUIP_RATE_LIMIT_MAX = 20;
+const DEFAULT_BOT_QUIP_RATE_LIMIT_WINDOW_MS = 60_000;
+
+function sanitizePromptField(raw: unknown, maxLen: number): string {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/[\r\n\t\x00-\x1f\x7f]+/g, ' ')
+    .replace(/[`<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLen);
+}
+
+function isValidEventKind(
+  val: unknown
+): val is 'BUY_PRIME_LAND' | 'COLLECT_BIG_RENT' | 'PAY_PENALTY' {
+  return (
+    val === 'BUY_PRIME_LAND' ||
+    val === 'COLLECT_BIG_RENT' ||
+    val === 'PAY_PENALTY'
+  );
+}
 
 function formatPromptCompact(rawDollars: number): string {
   const absScaled = Math.abs(rawDollars) * BT_PROMPT_MULTIPLIER;
@@ -68,7 +90,15 @@ function getGeminiClient(): GoogleGenAI {
   });
 }
 
-function buildEventPrompt(body: Required<Omit<BotQuipRequestBody, 'botId' | 'sessionId'>>): string {
+function buildEventPrompt(body: {
+  botName: string;
+  botPersona: string;
+  eventKind: 'BUY_PRIME_LAND' | 'COLLECT_BIG_RENT' | 'PAY_PENALTY';
+  tileName: string;
+  amount: number;
+  botCashAfter: number;
+  extraContext: string;
+}): string {
   const compactAmt = formatPromptCompact(body.amount);
   const spacedCash = formatPromptSpaced(body.botCashAfter);
   const eventDesc =
@@ -151,39 +181,38 @@ async function generateQuipWithRetry(prompt: string): Promise<string> {
 }
 
 async function generateBotQuipText(body: BotQuipRequestBody): Promise<string> {
-  const botName = String(body.botName ?? '').trim();
+  const botName = sanitizePromptField(body.botName, 30);
   const eventKind = body.eventKind;
-  const tileName = String(body.tileName ?? '').trim();
+  const tileName = sanitizePromptField(body.tileName, 60);
   const amount = Number(body.amount ?? 0);
 
-  if (
-    !botName ||
-    !tileName ||
-    !eventKind ||
-    !['BUY_PRIME_LAND', 'COLLECT_BIG_RENT', 'PAY_PENALTY'].includes(eventKind)
-  ) {
+  if (!botName || !tileName || !isValidEventKind(eventKind)) {
     throw new Error('Thiếu thông tin sự kiện hợp lệ để tạo bình luận cho Bot AI.');
   }
 
   const parsedBotId = Number(body.botId);
   const botIdNum = Number.isInteger(parsedBotId) && parsedBotId >= 0 ? parsedBotId : -1;
-  const sessionKey = String(body.sessionId ?? 'default').trim().slice(0, 64) || 'default';
+  const sessionKey = sanitizePromptField(body.sessionId, 64) || 'default';
   const quipCacheKey = botIdNum >= 0 ? `${sessionKey}:${botIdNum}` : '';
   const prevQuip = quipCacheKey ? recentBotQuips.get(quipCacheKey) : undefined;
   const antiRepeatNote = prevQuip
-    ? ` (Lưu ý: không lặp lại cách diễn đạt của câu trước đó: "${prevQuip}")`
+    ? ` (Lưu ý: không lặp lại cách diễn đạt của câu trước đó: "${sanitizePromptField(prevQuip, 160)}")`
     : '';
+
+  const botPersona =
+    sanitizePromptField(body.botPersona, 120) || 'Tỷ phú đầu tư bất động sản hóm hỉnh.';
+  const extraContext = sanitizePromptField(body.extraContext, 200);
 
   const prompt = buildEventPrompt({
     botName,
-    botPersona: String(body.botPersona ?? 'Tỷ phú đầu tư bất động sản hóm hỉnh.'),
+    botPersona,
     eventKind,
     tileName,
     amount: Number.isFinite(amount) ? Math.max(0, Math.round(amount)) : 0,
     botCashAfter: Number.isFinite(Number(body.botCashAfter))
       ? Math.round(Number(body.botCashAfter))
       : 0,
-    extraContext: `${String(body.extraContext ?? '')}${antiRepeatNote}`,
+    extraContext: `${extraContext}${antiRepeatNote}`,
   });
 
   const quip = await generateQuipWithRetry(prompt);
@@ -212,16 +241,23 @@ async function generateOptionalOnlineBotQuip(payload: BotQuipPayload): Promise<s
 }
 
 async function handleBotQuip(req: Request, res: Response): Promise<void> {
-  const body = (req.body ?? {}) as BotQuipRequestBody;
-  const botName = String(body.botName ?? '').trim();
-  const eventKind = body.eventKind;
-  const tileName = String(body.tileName ?? '').trim();
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+    res.status(400).json({ error: 'Dữ liệu yêu cầu không hợp lệ.' });
+    return;
+  }
 
+  const body = req.body as BotQuipRequestBody;
   if (
-    !botName ||
-    !tileName ||
-    !eventKind ||
-    !['BUY_PRIME_LAND', 'COLLECT_BIG_RENT', 'PAY_PENALTY'].includes(eventKind)
+    typeof body.botName !== 'string' ||
+    typeof body.tileName !== 'string' ||
+    !isValidEventKind(body.eventKind) ||
+    (body.botPersona !== undefined && typeof body.botPersona !== 'string') ||
+    (body.extraContext !== undefined && typeof body.extraContext !== 'string') ||
+    (body.sessionId !== undefined && typeof body.sessionId !== 'string') ||
+    (body.botId !== undefined && (typeof body.botId !== 'number' || !Number.isFinite(body.botId))) ||
+    (body.amount !== undefined && (typeof body.amount !== 'number' || !Number.isFinite(body.amount))) ||
+    (body.botCashAfter !== undefined &&
+      (typeof body.botCashAfter !== 'number' || !Number.isFinite(body.botCashAfter)))
   ) {
     res.status(400).json({
       error: 'Thiếu thông tin sự kiện hợp lệ để tạo bình luận cho Bot AI.',
@@ -229,15 +265,38 @@ async function handleBotQuip(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const fallbackPayload: BotQuipPayload = {
-    botId: Number(body.botId ?? 1),
+  const botName = sanitizePromptField(body.botName, 30);
+  const tileName = sanitizePromptField(body.tileName, 60);
+  const eventKind = body.eventKind;
+
+  if (!botName || !tileName) {
+    res.status(400).json({
+      error: 'Thiếu thông tin sự kiện hợp lệ để tạo bình luận cho Bot AI.',
+    });
+    return;
+  }
+
+  const sanitizedBody: BotQuipRequestBody = {
+    sessionId: sanitizePromptField(body.sessionId, 64),
+    botId: body.botId ?? 1,
     botName,
-    botPersona: String(body.botPersona ?? 'Tỷ phú đầu tư bất động sản hóm hỉnh.'),
+    botPersona: sanitizePromptField(body.botPersona, 120) || 'Tỷ phú đầu tư bất động sản hóm hỉnh.',
     eventKind,
     tileName,
-    amount: Number(body.amount ?? 0),
-    botCashAfter: Number(body.botCashAfter ?? 0),
-    extraContext: String(body.extraContext ?? ''),
+    amount: Math.max(0, Math.round(body.amount ?? 0)),
+    botCashAfter: Math.round(body.botCashAfter ?? 0),
+    extraContext: sanitizePromptField(body.extraContext, 200),
+  };
+
+  const fallbackPayload: BotQuipPayload = {
+    botId: Number(sanitizedBody.botId ?? 1),
+    botName,
+    botPersona: String(sanitizedBody.botPersona),
+    eventKind,
+    tileName,
+    amount: Number(sanitizedBody.amount ?? 0),
+    botCashAfter: Number(sanitizedBody.botCashAfter ?? 0),
+    extraContext: String(sanitizedBody.extraContext ?? ''),
   };
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -247,21 +306,67 @@ async function handleBotQuip(req: Request, res: Response): Promise<void> {
   }
 
   try {
-    const quip = await generateBotQuipText(body);
+    const quip = await generateBotQuipText(sanitizedBody);
     res.status(200).json({ quip });
   } catch {
     res.status(200).json({ quip: generateOfflineBotQuip(fallbackPayload) });
   }
 }
 
-export async function startServer(): Promise<http.Server> {
+export interface CreateAppServerOptions {
+  enableVite?: boolean;
+  botQuipRateLimitMax?: number;
+  botQuipRateLimitWindowMs?: number;
+  generateBotQuip?: (payload: BotQuipPayload) => Promise<string | null>;
+}
+
+export interface CreatedAppServer {
+  app: express.Express;
+  httpServer: http.Server;
+  wsHandle: MultiplayerWsServerHandle;
+  close: () => Promise<void>;
+}
+
+export async function createAppServer(
+  options: CreateAppServerOptions = {}
+): Promise<CreatedAppServer> {
   const app = express();
+  app.disable('x-powered-by');
+
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    next();
+  });
+
   app.use(express.json({ limit: '32kb' }));
+  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (err instanceof SyntaxError && 'status' in err && (err as { status?: number }).status === 400) {
+      res.status(400).json({ error: 'JSON không hợp lệ.' });
+      return;
+    }
+    if (
+      err &&
+      typeof err === 'object' &&
+      'type' in err &&
+      (err as { type?: string }).type === 'entity.too.large'
+    ) {
+      res.status(413).json({ error: 'Dữ liệu quá lớn.' });
+      return;
+    }
+    next(err);
+  });
 
   const httpServer = http.createServer(app);
   const wsHandle = attachMultiplayerWebSocketServer(httpServer, {
-    generateBotQuip: generateOptionalOnlineBotQuip,
+    generateBotQuip: options.generateBotQuip ?? generateOptionalOnlineBotQuip,
   });
+
+  const rateMax = options.botQuipRateLimitMax ?? DEFAULT_BOT_QUIP_RATE_LIMIT_MAX;
+  const rateWindowMs = options.botQuipRateLimitWindowMs ?? DEFAULT_BOT_QUIP_RATE_LIMIT_WINDOW_MS;
+  const ipTimestamps = new Map<string, number[]>();
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.status(200).json({
@@ -270,27 +375,58 @@ export async function startServer(): Promise<http.Server> {
     });
   });
 
-  app.post('/api/bot-quip', (req, res) => {
+  app.post('/api/bot-quip', (req: Request, res: Response) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const list = ipTimestamps.get(ip) ?? [];
+    while (list.length > 0 && now - list[0] >= rateWindowMs) {
+      list.shift();
+    }
+    if (list.length >= rateMax) {
+      ipTimestamps.set(ip, list);
+      res.status(429).json({
+        error: 'Quá nhiều yêu cầu bình luận Bot AI. Vui lòng thử lại sau.',
+      });
+      return;
+    }
+    list.push(now);
+    ipTimestamps.set(ip, list);
+    if (ipTimestamps.size > 1000) {
+      for (const [k, ts] of ipTimestamps) {
+        if (ts.length === 0 || now - ts[ts.length - 1] >= rateWindowMs) {
+          ipTimestamps.delete(k);
+        }
+      }
+    }
     void handleBotQuip(req, res);
+  });
+
+  app.all('/api/*', (_req: Request, res: Response) => {
+    res.status(404).json({ error: 'Not found' });
   });
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const isProd = process.env.NODE_ENV === 'production' || import.meta.url.endsWith('.js');
+  const shouldUseVite = options.enableVite ?? !isProd;
+  let viteClose: (() => Promise<void>) | null = null;
 
-  if (!isProd) {
+  if (shouldUseVite) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
+    viteClose = () => vite.close();
   } else {
     const distCandidates = [
       path.resolve(__dirname, 'dist'),
       path.resolve(process.cwd(), 'dist'),
     ];
     const distPath = distCandidates.find((d) => fs.existsSync(d)) || distCandidates[0];
-    app.use(express.static(distPath));
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+    }
     app.get('*', (_req: Request, res: Response) => {
       const indexHtml = path.join(distPath, 'index.html');
       if (fs.existsSync(indexHtml)) {
@@ -301,6 +437,21 @@ export async function startServer(): Promise<http.Server> {
     });
   }
 
+  const close = async () => {
+    await wsHandle.close();
+    if (viteClose) {
+      await viteClose();
+    }
+    await new Promise<void>((resolve) => {
+      httpServer.close(() => resolve());
+    });
+  };
+
+  return { app, httpServer, wsHandle, close };
+}
+
+export async function startServer(): Promise<http.Server> {
+  const { httpServer } = await createAppServer();
   const port = Number(process.env.PORT) || 3000;
   await new Promise<void>((resolve) => {
     httpServer.listen(port, '0.0.0.0', () => {
@@ -312,6 +463,16 @@ export async function startServer(): Promise<http.Server> {
   return httpServer;
 }
 
-if (process.env.NODE_ENV !== 'test') {
+const isServerEntrypoint = (() => {
+  const entry = process.argv[1] ? path.resolve(process.argv[1]) : '';
+  const self = path.resolve(fileURLToPath(import.meta.url));
+  return (
+    entry === self ||
+    entry.endsWith(`${path.sep}server.ts`) ||
+    entry.endsWith(`${path.sep}server.js`)
+  );
+})();
+
+if (process.env.NODE_ENV !== 'test' && isServerEntrypoint) {
   void startServer();
 }
