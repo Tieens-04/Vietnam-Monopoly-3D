@@ -72,7 +72,7 @@ interface VaultTrayVisualRefs {
 const MAX_INSTANCES_PER_POOL = 320;
 const MAX_ACTIVE_FLIGHTS = 64;
 const BANK_RESERVE_CASH = 3_800_000;
-const BANK_VAULT_SCALE = 0.76;
+const BANK_VAULT_SCALE = 0.8;
 const PLAYER_VAULT_SCALE = 1.08;
 
 function createNeutralPolymerBillTexture(maxAnisotropy: number): THREE.CanvasTexture {
@@ -457,7 +457,8 @@ function chooseTransferPalette(
 
 /**
  * Builds the GPU-instanced 3D Treasury Vault & Live Cash-Flow System:
- * - 4 Personal Player Vault Trays outside the 4 board edges + 1 Central Bank Vault.
+ * - 4 Personal Player Vault Trays at the 4 board edges + 1 Central Bank Reserve Vault
+ *   inlaid on the right wing of the sunken courtyard.
  * - 4 Batched `InstancedMesh` layers (`bill`, `coin`, `bullion`, `chip`) with Custom GLSL
  *   Vertex Flutter on Polymer Banknotes and Specular Metallic Glint Sweep on 999.9 Gold Bullion.
  */
@@ -696,7 +697,7 @@ export function createTreasurySystem(
       });
     };
 
-    // 4 Player Vault Trays
+    // 4 Player Vault Trays at the 4 board edges
     for (let slot = 0; slot < 4; slot++) {
       const tray = playerTrays[slot];
       const player = players[slot];
@@ -720,7 +721,7 @@ export function createTreasurySystem(
       }
     }
 
-    // Central Bank Reserve Vault
+    // Central Bank Reserve Vault inlaid inside the board courtyard
     appendTrayUnits(-1, BANK_RESERVE_CASH, BANK_VAULT_SCALE, bankTray.recoilOffset);
     staticDirty = true;
   };

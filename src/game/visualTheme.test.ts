@@ -40,11 +40,11 @@ test('computeSafeBoardCameraPose fits full diamond board horizontally on both de
   const desktop = computeSafeBoardCameraPose(1440, 900);
   const mobile = computeSafeBoardCameraPose(390, 844);
 
-  // Camera sits along +X, +Y, +Z isometric diagonal with snug framing (not overly zoomed out)
-  assert.ok(desktop.posX > 23 && desktop.posX < 26.5, 'Desktop camera frames diamond board boldly without clipping');
-  assert.ok(mobile.posX > desktop.posX * 1.45, 'Portrait mobile zooms out to fit full horizontal diamond span');
+  // Camera sits along +X, +Y, +Z isometric diagonal with snug board-only framing (zero wasted off-board space)
+  assert.ok(desktop.posX > 22 && desktop.posX < 26, 'Desktop camera frames diamond board boldly without clipping');
+  assert.ok(mobile.posX > desktop.posX * 1.4, 'Portrait mobile zooms out to fit full horizontal diamond span');
 
-  // Verify projected horizontal half-span at FOV=26deg is snug in [12.3, 13.4] world units on mobile 390x844
+  // Verify projected horizontal half-span at FOV=26deg hugs the 11.74-unit diamond board in [11.8, 12.6] world units on mobile 390x844
   const fovRad = (26 * Math.PI) / 180;
   const dx = mobile.posX - mobile.targetX;
   const dy = mobile.posY - mobile.targetY;
@@ -53,8 +53,8 @@ test('computeSafeBoardCameraPose fits full diamond board horizontally on both de
   const halfHeightWorld = dist * Math.tan(fovRad / 2);
   const halfWidthWorld = halfHeightWorld * (390 / 844);
   assert.ok(
-    halfWidthWorld >= 12.3 && halfWidthWorld <= 13.4,
-    `Expected snug mobile halfWidthWorld in [12.3, 13.4], got ${halfWidthWorld.toFixed(2)}`
+    halfWidthWorld >= 11.8 && halfWidthWorld <= 12.6,
+    `Expected snug board-focused mobile halfWidthWorld in [11.8, 12.6], got ${halfWidthWorld.toFixed(2)}`
   );
 });
 

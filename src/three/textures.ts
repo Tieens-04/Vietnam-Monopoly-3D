@@ -845,25 +845,29 @@ export function createTileTopTexture(
     }
 
     ctx.fillStyle = '#0F172A';
-    ctx.font = `900 70px ${CANVAS_FONT_DISPLAY}`;
+    ctx.font = `900 74px ${CANVAS_FONT_DISPLAY}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    drawWrappedTitle(ctx, tile.name, W / 2, 504, W - 82, 78);
+    drawWrappedTitle(ctx, tile.name, W / 2, 496, W - 76, 82);
 
-    // Tinted region/landmark pill badge at bottom
+    // High-contrast region/landmark pill badge at bottom (crisp legibility at isometric zoom)
     ctx.fillStyle = pal.topHex;
-    ctx.globalAlpha = 0.14;
-    roundRect(ctx, 64, 652, W - 128, 48, 24);
+    ctx.globalAlpha = 0.18;
+    roundRect(ctx, 44, 646, W - 88, 56, 28);
     ctx.fill();
     ctx.globalAlpha = 1;
+    ctx.strokeStyle = pal.topHex;
+    ctx.lineWidth = 2.5;
+    roundRect(ctx, 44, 646, W - 88, 56, 28);
+    ctx.stroke();
 
     ctx.fillStyle = pal.emblemHex;
-    ctx.font = `900 25px ${CANVAS_FONT_DISPLAY}`;
+    ctx.font = `900 30px ${CANVAS_FONT_DISPLAY}`;
     ctx.fillText(
       (profile.regionBadge || tile.groupLabel || '').toUpperCase(),
       W / 2,
-      677,
-      W - 144
+      675,
+      W - 112
     );
     ctx.restore();
   } else if (tile.kind === TileKind.RESORT) {
@@ -910,18 +914,22 @@ export function createTileTopTexture(
     }
 
     ctx.fillStyle = '#0F172A';
-    ctx.font = `900 68px ${CANVAS_FONT_DISPLAY}`;
+    ctx.font = `900 72px ${CANVAS_FONT_DISPLAY}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    drawWrappedTitle(ctx, tile.name, W / 2, 504, W - 76, 76);
+    drawWrappedTitle(ctx, tile.name, W / 2, 496, W - 72, 80);
 
-    ctx.fillStyle = 'rgba(14, 165, 233, 0.14)';
-    roundRect(ctx, 68, 652, W - 136, 48, 24);
+    ctx.fillStyle = 'rgba(14, 165, 233, 0.18)';
+    roundRect(ctx, 48, 646, W - 96, 56, 28);
     ctx.fill();
+    ctx.strokeStyle = '#0EA5E9';
+    ctx.lineWidth = 2.5;
+    roundRect(ctx, 48, 646, W - 96, 56, 28);
+    ctx.stroke();
 
     ctx.fillStyle = '#0369A1';
-    ctx.font = `900 26px ${CANVAS_FONT_DISPLAY}`;
-    ctx.fillText('★ ĐẢO NGHỈ DƯỠNG', W / 2, 677, W - 148);
+    ctx.font = `900 30px ${CANVAS_FONT_DISPLAY}`;
+    ctx.fillText('★ ĐẢO NGHỈ DƯỠNG', W / 2, 675, W - 116);
     ctx.restore();
   } else {
     // Functional Tile (Chance, Tax)
@@ -1203,15 +1211,32 @@ export function createBusinessTourPitchTexture(maxAnisotropy: number): THREE.Can
   ctx.restore();
 
   // Crisp stadium outer chalk line + subtle inner golden corner flourishes
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.78)';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.82)';
   ctx.lineWidth = 7;
   roundRect(ctx, 34, 34, S - 68, S - 68, 26);
   ctx.stroke();
 
-  ctx.strokeStyle = 'rgba(254, 240, 138, 0.55)';
+  ctx.strokeStyle = 'rgba(254, 240, 138, 0.58)';
   ctx.lineWidth = 3;
   roundRect(ctx, 50, 50, S - 100, S - 100, 18);
   ctx.stroke();
+
+  // Inlaid center stadium medallion ring framing the 3D "VIỆT NAM 3D" / "CÚP QUỐC GIA" crest
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(S / 2, S / 2, 236, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(254, 240, 138, 0.45)';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([16, 12]);
+  ctx.beginPath();
+  ctx.arc(S / 2, S / 2, 218, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -1340,19 +1365,25 @@ export function drawCountdownClockBoardToCanvas(
   roundRect(ctx, 22, 20, W - 44, 72, 18);
   ctx.fill();
 
-  ctx.fillStyle = activeColorHex || '#29B6F6';
-  roundRect(ctx, 30, 28, 248, 56, 13);
+  const pillHex = (activeColorHex || '#29B6F6').toUpperCase();
+  ctx.fillStyle = pillHex;
+  roundRect(ctx, 30, 26, 256, 60, 14);
   ctx.fill();
 
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = `900 34px ${CANVAS_FONT_DISPLAY}`;
+  const isLightActiveBadge =
+    pillHex.startsWith('#F5') ||
+    pillHex.startsWith('#FD') ||
+    pillHex.startsWith('#FE') ||
+    pillHex.startsWith('#66');
+  ctx.fillStyle = isLightActiveBadge ? '#0F172A' : '#FFFFFF';
+  ctx.font = `900 36px ${CANVAS_FONT_DISPLAY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(`LƯỢT ${Math.max(1, turnNumber)}`, 154, 57);
+  ctx.fillText(`LƯỢT ${Math.max(1, turnNumber)}`, 158, 57);
 
-  ctx.fillStyle = '#CBD5E1';
-  ctx.font = `800 26px ${CANVAS_FONT_DISPLAY}`;
-  ctx.fillText('ĐẾM NGƯỢC', 452, 57);
+  ctx.fillStyle = '#E2E8F0';
+  ctx.font = `800 28px ${CANVAS_FONT_DISPLAY}`;
+  ctx.fillText('ĐẾM NGƯỢC', 456, 57);
 
   ctx.fillStyle = '#060B14';
   roundRect(ctx, 24, 108, W - 48, H - 130, 20);
@@ -1394,8 +1425,6 @@ export function createCountdownClockBoardTexture(
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.generateMipmaps = false;
-  tex.minFilter = THREE.LinearFilter;
   tex.anisotropy = maxAnisotropy;
   tex.needsUpdate = true;
   return tex;

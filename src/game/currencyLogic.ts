@@ -111,21 +111,22 @@ export const METALLIC_COLORS = {
 
 /**
  * Returns symmetric 3D world coordinates for each player's 3D Vault Tray (`0..3`)
- * matching their exact HUD screen corner under the `(+X, +Y, +Z)` isometric camera,
- * or `-1` for the Central Bank Reserve Vault inside the upper sunken courtyard.
+ * at the 4 board edges matching their exact HUD screen corner under the `(+X, +Y, +Z)`
+ * isometric camera, or `-1` for the Central Bank Reserve Vault inlaid on the right wing
+ * of the sunken courtyard (mirror-symmetric with the inlaid Chance Card Deck).
  */
 export function getVaultWorldAnchor(slotIndex: number): VaultWorldAnchor {
   switch (slotIndex) {
     case 0: // Top-Left HUD (Screen X = x - z < 0, Screen Y = x + z < 0)
-      return { x: -10.45, y: -0.22, z: -2.15, rotY: Math.PI / 4 };
+      return { x: -13.15, y: -0.22, z: -0.15, rotY: Math.PI / 4 };
     case 1: // Top-Right HUD (Screen X = x - z > 0, Screen Y = x + z < 0)
-      return { x: -2.15, y: -0.22, z: -10.45, rotY: Math.PI / 4 };
+      return { x: -0.15, y: -0.22, z: -13.15, rotY: Math.PI / 4 };
     case 2: // Bottom-Right HUD (Screen X = x - z > 0, Screen Y = x + z > 0)
-      return { x: 10.45, y: -0.22, z: 2.15, rotY: Math.PI / 4 };
+      return { x: 12.55, y: -0.22, z: -0.25, rotY: Math.PI / 4 };
     case 3: // Bottom-Left HUD (Screen X = x - z < 0, Screen Y = x + z > 0)
-      return { x: 2.15, y: -0.22, z: 10.45, rotY: Math.PI / 4 };
-    default: // Central Bank Vault (-1) inside upper sunken grass courtyard
-      return { x: -4.05, y: 0.16, z: -4.05, rotY: Math.PI / 4 };
+      return { x: -0.25, y: -0.22, z: 12.55, rotY: Math.PI / 4 };
+    default: // Central Bank Vault (-1) inlaid on right wing of sunken grass courtyard
+      return { x: 1.06, y: 0.16, z: -3.68, rotY: Math.PI / 4 };
   }
 }
 

@@ -294,15 +294,45 @@ test('static geometry batching cuts mesh draw-call counts across pawns, vista, c
       `Expected crownPawn <= 10 meshes after material batching, got ${countMeshes(crownPawn)}`
     );
 
-    // Vista: blossoms, clouds, lamp posts, card stack merged (was ~135 meshes -> <= 32 meshes)
+    // Vista: zero floating off-board clutter (no branches, clouds, outer card stack, or outer street lamps);
+    // only clean skyDome + merged under-board chassis + board shadow + night sky stars!
     const dummyBump = new THREE.Texture();
     const { vista, animatedCars } = createSurroundingVista(dummyBump, palette, 4);
-    assert.equal(animatedCars.length >= 7, true);
+    assert.equal(animatedCars.length, 0, 'Expected zero floating animated props outside the board');
     assert.equal(
-      countMeshes(vista) <= 34,
+      countMeshes(vista) <= 8,
       true,
-      `Expected vista <= 34 meshes after batching, got ${countMeshes(vista)}`
+      `Expected clean vista <= 8 meshes without off-board clutter, got ${countMeshes(vista)}`
     );
+    vista.updateMatrixWorld(true);
+    vista.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.renderOrder !== -10) {
+        const box = new THREE.Box3().setFromObject(obj);
+        assert.ok(
+          box.min.x >= -9.6 && box.max.x <= 9.6 && box.min.z >= -9.6 && box.max.z <= 9.6,
+          `Expected non-sky vista mesh strictly beneath board [-9.6, +9.6], got [${box.min.x.toFixed(2)}..${box.max.x.toFixed(2)}, ${box.min.z.toFixed(2)}..${box.max.z.toFixed(2)}]`
+        );
+      }
+    });
+
+    // Treasury: 4 edge player trays + 1 inlaid courtyard Central Bank Vault + 4 InstancedMesh pools
+    const treasuryCheck = createTreasurySystem(4, false);
+    assert.equal(treasuryCheck.group.children.length, 9);
+    const twoPlayers = createInitialPlayers(DEFAULT_PLAYER_CONFIGS.slice(0, 2), 2_000_000);
+    treasuryCheck.syncVaults(twoPlayers, 'mixed', 0);
+    assert.equal(treasuryCheck.group.children[0].visible, true);
+    assert.equal(treasuryCheck.group.children[1].visible, true);
+    assert.equal(treasuryCheck.group.children[2].visible, false);
+    assert.equal(treasuryCheck.group.children[3].visible, false);
+    assert.equal(treasuryCheck.group.children[4].visible, true); // Central Bank
+
+    // Bankrupt player keeps dark empty tray visible while clearing their stacked units
+    const withBankrupt = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000).map((p, idx) =>
+      idx === 3 ? { ...p, cash: 0, bankrupt: true } : p
+    );
+    treasuryCheck.syncVaults(withBankrupt, 'cash', 0);
+    assert.equal(treasuryCheck.group.children[3].visible, true);
+    treasuryCheck.dispose();
 
     // Corners: static parts merged while preserving animated spinTarget / bobTarget
     const c0 = createCornerDiorama(0, 0.44, palette);
