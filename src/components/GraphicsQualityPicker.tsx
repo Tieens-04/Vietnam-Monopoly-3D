@@ -37,8 +37,8 @@ export const GraphicsQualityPicker: React.FC<GraphicsQualityPickerProps> = ({
       : activeMeta.subtitle;
 
   return (
-    <div data-testid="bt-graphics-quality-picker" className="space-y-1.5">
-      <div className="grid grid-cols-4 gap-1 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+    <div data-testid="bt-graphics-quality-picker" className="bt-quality-picker-wrap space-y-1.5">
+      <div className="bt-quality-grid grid grid-cols-2 gap-1 p-1 rounded-2xl bg-sky-100 border border-sky-200">
         {GRAPHICS_QUALITY_OPTIONS.map((opt) => {
           const active = opt.id === value;
           return (

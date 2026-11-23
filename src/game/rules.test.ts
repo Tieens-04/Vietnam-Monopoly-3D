@@ -12,15 +12,17 @@ import {
   applyEarthquakeToTile,
   applyPowerOutageToTile,
   applyShieldToTile,
+  areTeammates,
   botChooseJailAction,
+  botChooseTacticalDice,
   botPickChampionshipTarget,
   botPickInitialPurchaseTier,
   botPickOnTileUpgradeTargetLevel,
-  botPickStartUpgradePlan,
   botPickTacticalCardTarget,
   botPickWorldTourTarget,
   botShouldBuyoutProperty,
   botShouldBuyProperty,
+  botShouldRerollDice,
   buildBotBuyQuipPayload,
   buildBotPenaltyQuipPayload,
   buildBotRentCollectedQuipPayload,
@@ -39,28 +41,37 @@ import {
   computeDayNightLightingState,
   computeForwardSteps,
   computeOptimalAutoSale,
+  computePathToTile,
   computeTokenHopTiming,
   createDefaultBoardModifiers,
   createInitialPlayers,
   createInitialProperties,
+  DEFAULT_EVEN_ODD_CHARGES,
+  DEFAULT_FESTIVAL_CITY_COUNT,
+  DEFAULT_REROLL_CHARGES,
   DICE_BOX_FACE_VALUES,
   evaluateMatchWinner,
+  evaluateTimeLimitWinner,
   formatBusinessTourCompact,
   formatBusinessTourSpaced,
   formatCountdownClock,
+  formatFestivalStartLog,
   formatTilePriceLabel,
   getDiceFaceBaseEuler,
   getInitialPurchaseTiers,
-  getStartUpgradableTileIndices,
   getTileTransform,
   getValidTacticalCardTargets,
+  isValidInitialPurchaseLevel,
+  isValidTileIndex,
+  isValidUpgradeTargetLevel,
   isValidWorldTourTarget,
+  MATCH_DURATION_SECONDS,
   ownsFullColorGroup,
   parseDeterministicDiceQueue,
   rankPlayersForVictory,
   resolveIslandRollOutcome,
-  resolvePostActionTurnPhase,
   resolveWorldTourMovement,
+  rollTacticalDicePair,
   shouldGrantImmediateDoublesRoll,
   TOTAL_TILES,
   TURN_COUNTDOWN_SECONDS,
@@ -202,25 +213,22 @@ test('cinematic camera pose tracks moving tokens and day/night lighting interpol
   assert.ok(night.starOpacity > 0.9);
 });
 
-test('doubles roll skips end-turn confirmation and transitions directly to AWAIT_ROLL unless jailed or bankrupt', () => {
+test('doubles roll grants immediate bonus roll unless 3rd double, jailed, or bankrupt', () => {
   const [basePlayer] = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000);
   const props = createInitialProperties();
   assert.ok(Object.keys(props).length >= 20);
 
   assert.equal(shouldGrantImmediateDoublesRoll(basePlayer), false);
-  assert.equal(resolvePostActionTurnPhase(basePlayer), 'AWAIT_END_TURN');
 
   const firstDoubles = { ...basePlayer, doublesStreak: 1 };
   const secondDoubles = { ...basePlayer, doublesStreak: 2 };
   assert.equal(shouldGrantImmediateDoublesRoll(firstDoubles), true);
-  assert.equal(resolvePostActionTurnPhase(firstDoubles), 'AWAIT_ROLL');
   assert.equal(shouldGrantImmediateDoublesRoll(secondDoubles), true);
-  assert.equal(resolvePostActionTurnPhase(secondDoubles), 'AWAIT_ROLL');
 
-  assert.equal(resolvePostActionTurnPhase({ ...basePlayer, doublesStreak: 3 }), 'AWAIT_END_TURN');
-  assert.equal(resolvePostActionTurnPhase({ ...basePlayer, doublesStreak: 1, inJail: true }), 'AWAIT_END_TURN');
-  assert.equal(resolvePostActionTurnPhase({ ...basePlayer, doublesStreak: 1, bankrupt: true }), 'AWAIT_END_TURN');
-  assert.equal(resolvePostActionTurnPhase(null), 'AWAIT_END_TURN');
+  assert.equal(shouldGrantImmediateDoublesRoll({ ...basePlayer, doublesStreak: 3 }), false);
+  assert.equal(shouldGrantImmediateDoublesRoll({ ...basePlayer, doublesStreak: 1, inJail: true }), false);
+  assert.equal(shouldGrantImmediateDoublesRoll({ ...basePlayer, doublesStreak: 1, bankrupt: true }), false);
+  assert.equal(shouldGrantImmediateDoublesRoll(null), false);
 
   assert.deepEqual(parseDeterministicDiceQueue(''), []);
   assert.deepEqual(
@@ -253,7 +261,7 @@ function makeTestProps(
   return props;
 }
 
-test('Lap building caps & Start upgrade: lap 0 caps at level 2; lap 1+ allows direct upgrade from any owned level (0..3) to Hotel ★ (level 4) on revisit or from Start', () => {
+test('Lap building caps & Business Tour upgrade progression: lap 0 caps at level 2; lap 1+ caps below Lv3 at 3 and unlocks Hotel ★ (4) only from Lv3 on-tile; no Start remote upgrade', () => {
   const pLap0 = makeTestPlayer({ id: 0, cash: 2_000_000, laps: 0 });
   assert.deepEqual(
     getInitialPurchaseTiers(pLap0, 1).map((t) => t.level),
@@ -273,30 +281,44 @@ test('Lap building caps & Start upgrade: lap 0 caps at level 2; lap 1+ allows di
     [0, 1, 2, 3]
   );
 
-  // Revisiting owned city at level 0, 1, 2, or 3 on lap 1+ CAN upgrade straight to Hotel ★ (level 4)!
+  // Revisiting owned city at level 0, 1, or 2 on lap 1+ can upgrade up to level 3, NEVER straight to Hotel ★ (4)
   const propsLv1 = makeTestProps({ 1: { ownerId: 0, level: 1 } });
-  const upgFrom1To4 = canUpgradeProperty(pLap1, 1, propsLv1, {
-    isOnTileLanding: true,
-    targetLevel: 4,
-  });
-  assert.equal(upgFrom1To4.allowed, true);
-  assert.equal(upgFrom1To4.cost, 3 * 50_000);
-
-  const propsLv2 = makeTestProps({ 1: { ownerId: 0, level: 2 }, 5: { ownerId: 0, level: 4 } });
   assert.equal(
-    canUpgradeProperty(pLap1, 1, propsLv2, { isOnTileLanding: true, targetLevel: 4 }).allowed,
-    true
-  );
-  assert.equal(
-    canUpgradeProperty(pLap1, 1, propsLv2, { isOnTileLanding: false, targetLevel: 4 }).allowed,
+    canUpgradeProperty(pLap1, 1, propsLv1, { isOnTileLanding: true, targetLevel: 4 }).allowed,
     false
   );
-  // Landing directly on START (allowRemoteFromStart: true) unlocks upgrading any owned city < level 4
+  const upgFrom1To3 = canUpgradeProperty(pLap1, 1, propsLv1, {
+    isOnTileLanding: true,
+    targetLevel: 3,
+  });
+  assert.equal(upgFrom1To3.allowed, true);
+  assert.equal(upgFrom1To3.cost, 2 * 50_000);
+
+  const propsLv2 = makeTestProps({ 1: { ownerId: 0, level: 2 }, 5: { ownerId: 0, level: 3 } });
   assert.equal(
-    canUpgradeProperty(pLap1, 1, propsLv2, { allowRemoteFromStart: true, targetLevel: 4 }).allowed,
+    canUpgradeProperty(pLap1, 1, propsLv2, { isOnTileLanding: true, targetLevel: 4 }).allowed,
+    false
+  );
+  assert.equal(
+    canUpgradeProperty(pLap1, 1, propsLv2, { isOnTileLanding: true, targetLevel: 3 }).allowed,
     true
   );
-  assert.deepEqual(getStartUpgradableTileIndices(pLap1, propsLv2), [1]);
+
+  // Already at level 3 -> revisit on-tile CAN upgrade to Hotel ★ (level 4)
+  assert.equal(
+    canUpgradeProperty(pLap1, 5, propsLv2, { isOnTileLanding: true, targetLevel: 4 }).allowed,
+    true
+  );
+  assert.equal(
+    canUpgradeProperty(pLap1, 5, propsLv2, { isOnTileLanding: false, targetLevel: 4 }).allowed,
+    false
+  );
+  // Remote upgrade without landing directly on the city (isOnTileLanding omitted/false) is strictly disabled (BUG-01)
+  assert.equal(
+    canUpgradeProperty(pLap1, 5, propsLv2, { isOnTileLanding: false, targetLevel: 4 }).allowed,
+    false
+  );
+  assert.equal(BOARD_TILES[0].description.includes('nâng cấp'), false);
 });
 
 test('Rent combines Color Monopoly (x2), Festival (x2) and progressive World Championships (x2 -> x3 -> x4) + live outer price tab labels', () => {
@@ -465,19 +487,21 @@ test('Bot AI 32-tile heuristics: Resort/Side blocking, valid World Tour targets,
   // Human owns 3/4 Resorts; Bot has 320K (120K left after buying tile 25) -> MUST buy to block win!
   assert.equal(botShouldBuyProperty(bot, 25, players, props), true);
 
-  // Authentic Business Tour World Tour targets: allows unowned, own, opponent-owned (for 2x Buyout), Start (0), Championship (16 when owning a city), Chance (12, 20, 28); blocks 24, 8 (Lost Island), 30 (Tax)
+  // Authentic Business Tour World Tour targets: ONLY unowned purchasable tiles or own purchasable tiles
   const wtProps = makeTestProps({
     1: { ownerId: 0, level: 1 },
     2: { ownerId: 1, level: 2 },
     4: { ownerId: 1, level: 0 },
   });
   const wtBot = { ...players[1], cash: 1_200_000, laps: 1 };
-  assert.equal(isValidWorldTourTarget(wtBot, 1, wtProps), true); // opponent city (can pay rent & 2x Buyout)
-  assert.equal(isValidWorldTourTarget(wtBot, 0, wtProps), true); // Start (salary + remote upgrade)
-  assert.equal(isValidWorldTourTarget(wtBot, 16, wtProps), true); // World Championships (owns city 2)
-  assert.equal(isValidWorldTourTarget(wtBot, 12, wtProps), true); // Chance
-  assert.equal(isValidWorldTourTarget(wtBot, 2, wtProps), true); // own city
-  assert.equal(isValidWorldTourTarget(wtBot, 25, wtProps), true); // unowned Resort
+  assert.equal(isValidWorldTourTarget(wtBot, 1, wtProps), false); // opponent city blocked (BUG-03)
+  assert.equal(isValidWorldTourTarget(wtBot, 0, wtProps), false); // Start blocked (BUG-03)
+  assert.equal(isValidWorldTourTarget(wtBot, 16, wtProps), false); // World Championships blocked (BUG-03)
+  assert.equal(isValidWorldTourTarget(wtBot, 12, wtProps), false); // Chance blocked (BUG-03)
+  assert.equal(isValidWorldTourTarget(wtBot, 2, wtProps), true); // own city allowed
+  assert.equal(isValidWorldTourTarget(wtBot, 4, wtProps), true); // own Resort allowed
+  assert.equal(isValidWorldTourTarget(wtBot, 25, wtProps), true); // unowned Resort allowed
+  assert.equal(isValidWorldTourTarget(wtBot, 5, wtProps), true); // unowned city allowed
   assert.equal(isValidWorldTourTarget(wtBot, 24, wtProps), false); // self World Tour blocked
   assert.equal(isValidWorldTourTarget(wtBot, 8, wtProps), false); // Lost Island blocked
   assert.equal(isValidWorldTourTarget(wtBot, 30, wtProps), false); // Tax blocked
@@ -489,7 +513,7 @@ test('Bot AI 32-tile heuristics: Resort/Side blocking, valid World Tour targets,
   );
   assert.ok(wtDest !== null && isValidWorldTourTarget(wtBot, wtDest, wtProps));
 
-  // Lap caps respected by Bot initial tier & on-tile upgrade (lap 1+ upgrades straight to Hotel ★ = 4!)
+  // Lap & Hotel caps respected by Bot initial tier & on-tile upgrade (Lv2 -> Lv3 max; Lv3 -> Hotel ★ = 4)
   const botLap0 = { ...players[1], cash: 1_500_000, laps: 0 };
   assert.ok(botPickInitialPurchaseTier(botLap0, 1, props) <= 2);
   assert.equal(
@@ -501,6 +525,13 @@ test('Bot AI 32-tile heuristics: Resort/Side blocking, valid World Tour targets,
   );
   assert.equal(
     botPickOnTileUpgradeTargetLevel(wtBot, 2, wtProps),
+    3
+  );
+  assert.equal(
+    botPickOnTileUpgradeTargetLevel(wtBot, 2, {
+      ...wtProps,
+      2: { tileIndex: 2, ownerId: 1, level: 3 },
+    }),
     4
   );
 
@@ -639,10 +670,8 @@ test('Business Tour Tactical Chance Cards (Earthquake, Power Outage, Shield) & B
   assert.equal(eqLand.nextProperties[1].ownerId, null);
   assert.equal(eqLand.nextProperties[1].level, 0);
 
-  // 3. Bot AI picks highest-impact tactical targets & Start upgrade plans
+  // 3. Bot AI picks highest-impact tactical targets
   const bot = { ...players[1], cash: 1_500_000, laps: 1 };
-  const startPlan = botPickStartUpgradePlan(bot, props, mods);
-  assert.deepEqual(startPlan, { tileIndex: 29, targetLevel: 4 });
   // Tile 1 is raw land (level 0) inside Player 0's full Brown monopoly (1,2,3) -> destroying it breaks the monopoly!
   assert.equal(botPickTacticalCardTarget('EARTHQUAKE', bot, players, props, mods), 1);
   // Without a full monopoly, Bot targets the highest-rent multi-house city (tile 15 over tile 1)
@@ -744,9 +773,407 @@ test('Bot AI executes affordable instant-victory moves (Resort, Triple Monopoly,
   const wtWinBot = { ...players[1], cash: 260_000, position: 24, pendingWorldTour: true };
   assert.equal(botPickWorldTourTarget(wtWinBot, resortProps, mods, players), 25);
 
-  // 4. World Tour from tile 24 (fee 50K) to opponent's tile 27 (rent 70K + buyout 700K = 820K total) with 830K cash (10K left < 150K reserve)
+  // 4. World Tour NEVER targets opponent-owned tile 27 (BUG-03), even if buyout would win;
+  //    however, when tile 27 is unowned, Bot flies there to win TRIPLE_MONOPOLY!
   const wtBuyoutWinBot = { ...players[1], cash: 830_000, position: 24, pendingWorldTour: true };
-  assert.equal(botPickWorldTourTarget(wtBuyoutWinBot, tripleBuyoutProps, mods, players), 27);
+  assert.notEqual(botPickWorldTourTarget(wtBuyoutWinBot, tripleBuyoutProps, mods, players), 27);
+  const wtTripleWinBot = { ...players[1], cash: 410_000, position: 24, pendingWorldTour: true };
+  assert.equal(botPickWorldTourTarget(wtTripleWinBot, tripleNearProps, mods, players), 27);
+});
+
+test('BUG-02 & BUG-03: Exhaustive upgrade progression (Lv0..2 -> 3 -> 4 ★) and full 32-tile World Tour target rules', () => {
+  const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000);
+  const p = { ...players[0], cash: 2_000_000, laps: 2 };
+  const props = makeTestProps({
+    1: { ownerId: 0, level: 0 },
+    2: { ownerId: 0, level: 1 },
+    3: { ownerId: 0, level: 2 },
+    5: { ownerId: 0, level: 3 },
+    6: { ownerId: 1, level: 1 }, // opponent
+    4: { ownerId: 0, level: 0 }, // own Resort
+    14: { ownerId: 1, level: 0 }, // opponent Resort
+  });
+
+  for (const ownLowTile of [1, 2, 3]) {
+    assert.equal(
+      canUpgradeProperty(p, ownLowTile, props, { isOnTileLanding: true, targetLevel: 4 }).allowed,
+      false
+    );
+    assert.equal(
+      canUpgradeProperty(p, ownLowTile, props, { isOnTileLanding: true, targetLevel: 3 }).allowed,
+      true
+    );
+    assert.equal(botPickOnTileUpgradeTargetLevel(p, ownLowTile, props), 3);
+  }
+  assert.equal(
+    canUpgradeProperty(p, 5, props, { isOnTileLanding: true, targetLevel: 4 }).allowed,
+    true
+  );
+  assert.equal(botPickOnTileUpgradeTargetLevel(p, 5, props), 4);
+
+  const expectedValid = new Set<number>();
+  for (const tile of BOARD_TILES) {
+    const prop = props[tile.index];
+    if (
+      (tile.kind === TileKind.PROPERTY || tile.kind === TileKind.RESORT) &&
+      (prop?.ownerId === null || prop?.ownerId === p.id)
+    ) {
+      expectedValid.add(tile.index);
+    }
+  }
+  for (let i = 0; i < TOTAL_TILES; i++) {
+    assert.equal(
+      isValidWorldTourTarget(p, i, props),
+      expectedValid.has(i),
+      `Unexpected World Tour eligibility for tile ${i} (${BOARD_TILES[i].name})`
+    );
+  }
+  assert.equal(BOARD_TILES[24].description.includes('Cúp Quốc Gia'), false);
+  assert.equal(BOARD_TILES[24].description.includes('Bắt Đầu'), false);
+});
+
+test('BUG-04: 20-minute match timer & Net Worth Sudden Death ranking for FFA and TEAMS_2V2', () => {
+  assert.equal(MATCH_DURATION_SECONDS, 1200);
+  assert.equal(formatCountdownClock(MATCH_DURATION_SECONDS), '20:00');
+
+  const base = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000);
+  const props = makeTestProps({
+    29: { ownerId: 1, level: 2 }, // 400K + 2*250K = 900K
+    31: { ownerId: 2, level: 1 }, // 450K + 250K = 700K
+  });
+  const ffaPlayers: PlayerState[] = [
+    { ...base[0], id: 0, cash: 1_800_000, laps: 3, bankrupt: false }, // NW 1.8M
+    { ...base[1], id: 1, cash: 1_200_000, laps: 1, bankrupt: false }, // NW 2.1M -> winner
+    { ...base[2], id: 2, cash: 1_400_000, laps: 5, bankrupt: false }, // NW 2.1M (same NW, higher cash -> wait: 1.4M+700K=2.1M vs 1.2M+900K=2.1M!)
+    { ...base[3], id: 3, cash: 5_000_000, laps: 9, bankrupt: true }, // bankrupt ignored
+  ];
+  const ffaWin = evaluateTimeLimitWinner(ffaPlayers, props, 'FFA');
+  assert.equal(ffaWin?.condition, 'TIME_LIMIT');
+  // P2 has same 2.1M NW as P1, higher cash (1.4M vs 1.2M) -> P2 wins tiebreak!
+  assert.equal(ffaWin?.winner.id, 2);
+
+  // Tiebreak by laps when Net Worth and cash are equal
+  const tiePlayers: PlayerState[] = [
+    { ...base[0], id: 0, cash: 1_000_000, laps: 2, bankrupt: false },
+    { ...base[1], id: 1, cash: 1_000_000, laps: 4, bankrupt: false },
+  ];
+  const tieWin = evaluateTimeLimitWinner(tiePlayers, makeTestProps({}), 'FFA');
+  assert.equal(tieWin?.winner.id, 1);
+
+  // 2v2 Team Net Worth Sudden Death
+  const teamPlayers = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000, 'TEAMS_2V2');
+  const teamOnlyProps = makeTestProps({
+    29: { ownerId: 1, level: 2 }, // 400K + 2*250K = 900K
+  });
+  // Team 0 = P0 & P2; Team 1 = P1 & P3
+  teamPlayers[0].cash = 1_500_000;
+  teamPlayers[2].cash = 1_400_000; // Team 0 NW = 2.9M
+  teamPlayers[1].cash = 1_100_000; // + tile 29 (900K) = 2.0M
+  teamPlayers[3].cash = 1_200_000; // Team 1 NW = 3.2M -> Team 1 wins!
+  const teamWin = evaluateTimeLimitWinner(teamPlayers, teamOnlyProps, 'TEAMS_2V2');
+  assert.equal(teamWin?.condition, 'TIME_LIMIT');
+  assert.equal(teamWin?.winningTeamId, 1);
+  assert.equal(teamWin?.winner.id, 1); // highest-NW member on winning Team 1 (P1 = 2.0M vs P3 = 1.2M)
+});
+
+test('BUG-05: 2v2 Doubles mode enforces teammate rent/buyout/attack exemption and combined team monopolies', () => {
+  const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000, 'TEAMS_2V2');
+  assert.deepEqual(
+    players.map((p) => p.teamId),
+    [0, 1, 0, 1]
+  );
+  assert.equal(areTeammates(players[0], players[2]), true);
+  assert.equal(areTeammates(players[0], players[1]), false);
+  assert.equal(areTeammates(players[0], players[0]), false);
+
+  // Teammates split Brown (1,2 belong to P0; 3 belongs to P2) -> team owns full color group!
+  const teamProps = makeTestProps({
+    1: { ownerId: 0, level: 1 }, // Hà Giang 1 house = 30K
+    2: { ownerId: 0, level: 0 },
+    3: { ownerId: 2, level: 0 },
+    4: { ownerId: 0, level: 0 }, // Resort 1
+    14: { ownerId: 2, level: 0 }, // Resort 2
+  });
+  assert.equal(ownsFullColorGroup(0, ColorGroup.BROWN, teamProps, players, 'TEAMS_2V2'), true);
+  // Rent to teammate visitor (P2) is 0; rent to opponent visitor (P1) includes 2x color monopoly bonus!
+  assert.equal(calculateRent(1, teamProps, undefined, players, 'TEAMS_2V2', 2), 0);
+  assert.equal(calculateRent(1, teamProps, undefined, players, 'TEAMS_2V2', 1), 60_000);
+  // Combined team Resort rent: P0 + P2 hold 2 Resorts -> 150K to opponent, 0 to teammate
+  assert.equal(calculateRent(4, teamProps, undefined, players, 'TEAMS_2V2', 1), 150_000);
+  assert.equal(calculateRent(4, teamProps, undefined, players, 'TEAMS_2V2', 2), 0);
+
+  // Buyout blocked against teammate, allowed against opponent
+  assert.equal(canBuyoutProperty(players[2], 1, teamProps, undefined, players, 'TEAMS_2V2').allowed, false);
+  assert.equal(canBuyoutProperty(players[1], 1, teamProps, undefined, players, 'TEAMS_2V2').allowed, true);
+  assert.equal(botShouldBuyoutProperty(players[2], 1, players, teamProps, undefined, 'TEAMS_2V2'), false);
+
+  // Tactical attack cards exclude teammate tiles
+  const mods = createDefaultBoardModifiers(0);
+  assert.deepEqual(
+    getValidTacticalCardTargets('EARTHQUAKE', 0, teamProps, mods, players, 'TEAMS_2V2'),
+    []
+  );
+  assert.deepEqual(
+    getValidTacticalCardTargets('POWER_OUTAGE', 0, teamProps, mods, players, 'TEAMS_2V2'),
+    []
+  );
+  assert.equal(
+    botPickTacticalCardTarget('EARTHQUAKE', players[0], players, teamProps, mods, 'TEAMS_2V2'),
+    null
+  );
+
+  // Combined team RESORT_MONOPOLY win (P0 owns 4,14; P2 owns 18,25)
+  const teamResortProps = makeTestProps({
+    4: { ownerId: 0 },
+    14: { ownerId: 0 },
+    18: { ownerId: 2 },
+    25: { ownerId: 2 },
+  });
+  const resortWin = evaluateMatchWinner(players, teamResortProps, 'TEAMS_2V2');
+  assert.equal(resortWin?.condition, 'RESORT_MONOPOLY');
+  assert.equal(resortWin?.winningTeamId, 0);
+
+  // Combined team TRIPLE_MONOPOLY & SIDE_MONOPOLY
+  const teamSideProps = makeTestProps({
+    25: { ownerId: 1 },
+    26: { ownerId: 1 },
+    27: { ownerId: 3 },
+    29: { ownerId: 3 },
+    31: { ownerId: 1 },
+  });
+  const sideWin = evaluateMatchWinner(players, teamSideProps, 'TEAMS_2V2');
+  assert.equal(sideWin?.condition, 'SIDE_MONOPOLY');
+  assert.equal(sideWin?.winningTeamId, 1);
+
+  // LAST_STANDING in 2v2: 1 bankrupt teammate does NOT end match; both opposing teammates bankrupt DOES
+  const oneDown = players.map((p) => (p.id === 3 ? { ...p, bankrupt: true } : p));
+  assert.equal(evaluateMatchWinner(oneDown, makeTestProps({}), 'TEAMS_2V2'), null);
+  const teamDown = players.map((p) => (p.teamId === 1 ? { ...p, bankrupt: true } : p));
+  const lastWin = evaluateMatchWinner(teamDown, makeTestProps({}), 'TEAMS_2V2');
+  assert.equal(lastWin?.condition, 'LAST_STANDING');
+  assert.equal(lastWin?.winningTeamId, 0);
+
+  // Ranking places winning team survivors #1 and #2 above opposing survivors
+  const ranked = rankPlayersForVictory(oneDown, teamResortProps, 0, 'TEAMS_2V2', 0);
+  assert.deepEqual(
+    ranked.map((p) => p.id),
+    [0, 2, 1, 3]
+  );
+});
+
+test('BUG-10: Tactical Dice (EVEN / ODD / REROLL) generates valid dice pairs and Bot AI heuristics respect charges', () => {
+  assert.equal(DEFAULT_EVEN_ODD_CHARGES, 3);
+  assert.equal(DEFAULT_REROLL_CHARGES, 2);
+
+  const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000);
+  assert.equal(players[0].evenOddCharges, 3);
+  assert.equal(players[0].rerollCharges, 2);
+
+  for (let i = 0; i < 36; i++) {
+    const r = i / 36;
+    const [e1, e2] = rollTacticalDicePair('EVEN', () => r);
+    assert.ok(e1 >= 1 && e1 <= 6 && e2 >= 1 && e2 <= 6);
+    assert.equal((e1 + e2) % 2, 0);
+
+    const [o1, o2] = rollTacticalDicePair('ODD', () => r);
+    assert.ok(o1 >= 1 && o1 <= 6 && o2 >= 1 && o2 <= 6);
+    assert.equal((o1 + o2) % 2, 1);
+
+    const [n1, n2] = rollTacticalDicePair('NORMAL', () => r);
+    assert.ok(n1 >= 1 && n1 <= 6 && n2 >= 1 && n2 <= 6);
+  }
+
+  const mods = createDefaultBoardModifiers(0);
+  // Bot with 0 charges never uses EVEN/ODD or Reroll
+  const noChargeBot = { ...players[1], evenOddCharges: 0, rerollCharges: 0, position: 0 };
+  const dangerProps = makeTestProps({
+    4: { ownerId: 0 },
+    14: { ownerId: 0 },
+    18: { ownerId: 0 },
+    25: { ownerId: 0 }, // 4 Resorts = 1M rent on tile 4!
+    2: { ownerId: 0, level: 4 }, // 500K rent on even tile 2
+  });
+  assert.equal(botChooseTacticalDice(noChargeBot, players, dangerProps, mods), 'NORMAL');
+  assert.equal(botShouldRerollDice(noChargeBot, 2, 2, players, dangerProps, mods), false);
+
+  // Bot with charges rerolls when rolling into 1M Resort rent or 3rd consecutive double
+  const chargeBot = { ...players[1], cash: 1_200_000, position: 0, rerollCharges: 2 };
+  assert.equal(botShouldRerollDice(chargeBot, 1, 3, players, dangerProps, mods), true); // 1+3=4 -> 1M rent
+  assert.equal(
+    botShouldRerollDice({ ...chargeBot, doublesStreak: 2 }, 3, 3, players, makeTestProps({}), mods),
+    true
+  );
+  assert.equal(botShouldRerollDice(chargeBot, 1, 2, players, makeTestProps({}), mods), false);
+});
+
+test('BUG-22 & BUG-23: Strict integer validation guards tile indices, initial levels, upgrade targets, rent, and paths', () => {
+  assert.equal(isValidTileIndex(0), true);
+  assert.equal(isValidTileIndex(31), true);
+  assert.equal(isValidTileIndex(-1), false);
+  assert.equal(isValidTileIndex(32), false);
+  assert.equal(isValidTileIndex(1.5), false);
+  assert.equal(isValidTileIndex(NaN), false);
+  assert.equal(isValidTileIndex('5'), false);
+
+  assert.equal(isValidInitialPurchaseLevel(2, 2), true);
+  assert.equal(isValidInitialPurchaseLevel(3, 2), false);
+  assert.equal(isValidInitialPurchaseLevel(1.5, 3), false);
+  assert.equal(isValidInitialPurchaseLevel(NaN, 3), false);
+  assert.equal(isValidInitialPurchaseLevel('2', 3), false);
+
+  assert.equal(isValidUpgradeTargetLevel(3, 1), true);
+  assert.equal(isValidUpgradeTargetLevel(2, 2), false);
+  assert.equal(isValidUpgradeTargetLevel(2, -1), false);
+  assert.equal(isValidUpgradeTargetLevel(0, -1), false);
+  assert.equal(isValidUpgradeTargetLevel(5, 3), false);
+  assert.equal(isValidUpgradeTargetLevel(2.5, 1), false);
+  assert.equal(isValidUpgradeTargetLevel(NaN, 1), false);
+
+  const nanEvenPair = rollTacticalDicePair('EVEN', () => Number.NaN);
+  assert.ok(
+    nanEvenPair[0] >= 1 &&
+      nanEvenPair[0] <= 6 &&
+      nanEvenPair[1] >= 1 &&
+      nanEvenPair[1] <= 6 &&
+      (nanEvenPair[0] + nanEvenPair[1]) % 2 === 0
+  );
+
+  // botPickChampionshipTarget accounts for TEAMS_2V2 shared color-group monopoly
+  const teamPlayers = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000, 'TEAMS_2V2');
+  const teamChampProps = makeTestProps({
+    1: { ownerId: 0, level: 0 }, // Brown (10K * 2 monopoly = 20K base)
+    2: { ownerId: 2, level: 0 }, // Teammate holds Sa Pa
+    3: { ownerId: 2, level: 0 }, // Teammate completes Brown monopoly!
+    5: { ownerId: 0, level: 0 }, // Light Blue non-monopoly (18K base)
+  });
+  assert.equal(
+    botPickChampionshipTarget(
+      teamPlayers[0],
+      teamChampProps,
+      createDefaultBoardModifiers(0),
+      true,
+      teamPlayers,
+      'TEAMS_2V2'
+    ),
+    1
+  );
+
+  const player = makeTestPlayer({ id: 0, cash: 2_000_000, laps: 2 });
+  const props = makeTestProps({ 1: { ownerId: 0, level: 1 } });
+
+  assert.equal(
+    canUpgradeProperty(player, 1, props, { isOnTileLanding: true, targetLevel: NaN }).allowed,
+    false
+  );
+  assert.equal(
+    canUpgradeProperty(player, 1, props, { isOnTileLanding: true, targetLevel: 2.5 }).allowed,
+    false
+  );
+  assert.equal(
+    canUpgradeProperty(player, 1, props, {
+      isOnTileLanding: true,
+      targetLevel: '3' as unknown as number,
+    }).allowed,
+    false
+  );
+  assert.equal(
+    canUpgradeProperty(player, -1, props, { isOnTileLanding: true, targetLevel: 2 }).allowed,
+    false
+  );
+
+  assert.equal(isValidWorldTourTarget(player, NaN, props), false);
+  assert.equal(isValidWorldTourTarget(player, 1.5, props), false);
+  assert.equal(isValidWorldTourTarget(player, '5' as unknown as number, props), false);
+  assert.equal(isValidWorldTourTarget(player, -1, props), false);
+  assert.equal(isValidWorldTourTarget(player, 32, props), false);
+
+  assert.equal(calculatePropertyInvestedValue(1, NaN), 0);
+  assert.equal(calculatePropertyInvestedValue(1, 1.5), 0);
+  assert.equal(calculateRent(NaN, props), 0);
+  assert.deepEqual(computePathToTile(0, '5' as unknown as number, true), {
+    path: [],
+    passedStart: false,
+  });
+  assert.deepEqual(computeForwardSteps(0, NaN), {
+    path: [],
+    finalTile: 0,
+    passedStart: false,
+  });
+});
+
+test('BUG-05 & BUG-18: formatTilePriceLabel displays 2x team monopoly, combined Resort tiers, and 0K outage in TEAMS_2V2', () => {
+  const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000, 'TEAMS_2V2');
+  const teamProps = makeTestProps({
+    1: { ownerId: 0, level: 0 }, // Hà Giang (Brown base 10K) held by P0 (Team 0)
+    2: { ownerId: 0, level: 0 }, // Sa Pa held by P0 (Team 0)
+    3: { ownerId: 2, level: 0 }, // Đà Lạt held by P2 (Team 0 teammate) -> full Brown monopoly!
+    4: { ownerId: 0, level: 0 }, // Vịnh Hạ Long (Resort 1) held by P0
+    14: { ownerId: 2, level: 0 }, // Đảo Lý Sơn (Resort 2) held by P2 -> 2 Resorts combined (150K)!
+  });
+
+  // In FFA, P0 only holds 2/3 Brown and 1/4 Resort
+  assert.equal(formatTilePriceLabel(BOARD_TILES[1], teamProps[1], teamProps, undefined, players, 'FFA'), '10K');
+  assert.equal(formatTilePriceLabel(BOARD_TILES[4], teamProps[4], teamProps, undefined, players, 'FFA'), '50K');
+
+  // In TEAMS_2V2, teammate-split Brown shows 2x monopoly rent (20K) and teammate-split Resorts show 150K
+  assert.equal(
+    formatTilePriceLabel(BOARD_TILES[1], teamProps[1], teamProps, undefined, players, 'TEAMS_2V2'),
+    '20K'
+  );
+  assert.equal(
+    formatTilePriceLabel(BOARD_TILES[4], teamProps[4], teamProps, undefined, players, 'TEAMS_2V2'),
+    '150K'
+  );
+
+  // Adding 3rd Resort by teammate P2 updates Resort label to 400K
+  const threeResortProps: Record<number, PropertyState> = {
+    ...teamProps,
+    18: { tileIndex: 18, ownerId: 2, level: 0 },
+  };
+  assert.equal(
+    formatTilePriceLabel(
+      BOARD_TILES[4],
+      threeResortProps[4],
+      threeResortProps,
+      undefined,
+      players,
+      'TEAMS_2V2'
+    ),
+    '400K'
+  );
+
+  // POWER_OUTAGE overrides team monopoly / Resort tier to '0K' even in TEAMS_2V2
+  const outageMods: MatchBoardModifiers = {
+    ...createDefaultBoardModifiers(0),
+    outageTileIndices: [1, 4],
+  };
+  assert.equal(
+    formatTilePriceLabel(BOARD_TILES[1], teamProps[1], teamProps, outageMods, players, 'TEAMS_2V2'),
+    '0K'
+  );
+  assert.equal(
+    formatTilePriceLabel(BOARD_TILES[4], teamProps[4], teamProps, outageMods, players, 'TEAMS_2V2'),
+    '0K'
+  );
+});
+
+test('Festival x2 defaults to OFF (0 cities) unless explicitly enabled, and formatFestivalStartLog announces active Festival cities', () => {
+  const defaultMods = createDefaultBoardModifiers();
+  assert.deepEqual(defaultMods.festivalTileIndices, []);
+  assert.equal(formatFestivalStartLog(defaultMods), null);
+
+  assert.equal(DEFAULT_FESTIVAL_CITY_COUNT, 3);
+  const enabledMods = createDefaultBoardModifiers(DEFAULT_FESTIVAL_CITY_COUNT, () => 0.25);
+  assert.equal(enabledMods.festivalTileIndices.length, 3);
+
+  const customMods: MatchBoardModifiers = {
+    ...defaultMods,
+    festivalTileIndices: [1, 13, 29],
+  };
+  assert.equal(
+    formatFestivalStartLog(customMods),
+    '🎉 Lễ Hội Đầu Mùa (×2 tiền thuê suốt ván): Hà Giang, Vũng Tàu, Hà Nội!'
+  );
 });
 
 

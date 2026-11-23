@@ -1,28 +1,26 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { BOARD_TILES, COLOR_GROUP_META } from '../game/boardData';
 import {
   applyChampionshipHost,
   BOARD_SIDES,
   calculateBuyoutPrice,
   calculateRent,
-  canBuyoutProperty,
   canUpgradeProperty,
   CHAMPIONSHIP_FEE,
   formatBusinessTourCompact,
   formatBusinessTourSpaced,
-  getStartUpgradableTileIndices,
   getValidTacticalCardTargets,
   isValidWorldTourTarget,
   ownsFullColorGroup,
   RESORT_TILE_INDICES,
   resolveWorldTourMovement,
   START_SALARY,
-  WORLD_CHAMPIONSHIPS_TILE_INDEX,
   WORLD_TOUR_FEE,
   wouldOwnTileWinMatch,
 } from '../game/rules';
 import {
   MatchBoardModifiers,
+  MatchMode,
   PlayerState,
   PropertyState,
   TacticalCardActionKind,
@@ -31,17 +29,19 @@ import {
 import { resolveDeedGroupPalette } from '../three/textures';
 import { CityLandmarkBadge } from './CityLandmarkBadge';
 import { PlayerAvatar3D } from './PlayerAvatar3D';
+import { useDialogFocusTrap } from './TileModalAndDialogs';
 
 /* ============================================================================
- * 1. BUSINESS TOUR UPGRADE MODAL (On-Tile Revisit OR Remote from START Tile 0)
+ * 1. BUSINESS TOUR UPGRADE MODAL (On-Tile Revisit)
  * ============================================================================ */
 interface UpgradeDecisionModalProps {
   tileIndex: number;
   player: PlayerState;
   properties: Record<number, PropertyState>;
   boardModifiers: MatchBoardModifiers;
-  isFromStart?: boolean;
-  onBackToCitySelect?: () => void;
+  players?: PlayerState[];
+  matchMode?: MatchMode;
+  trapFocus?: boolean;
   onUpgradeToLevel: (targetLevel: number) => void;
   onSkip: () => void;
 }
@@ -51,11 +51,15 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
   player,
   properties,
   boardModifiers,
-  isFromStart = false,
-  onBackToCitySelect,
+  players = [],
+  matchMode = 'FFA',
+  trapFocus = true,
   onUpgradeToLevel,
   onSkip,
 }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef, trapFocus);
+
   const tile = BOARD_TILES[tileIndex];
   const prop = properties[tileIndex];
   const currentLevel = prop?.level ?? 0;
@@ -73,8 +77,7 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
 
     for (let lvl = currentLevel + 1; lvl <= 4; lvl++) {
       const check = canUpgradeProperty(player, tileIndex, properties, {
-        isOnTileLanding: !isFromStart,
-        allowRemoteFromStart: isFromStart,
+        isOnTileLanding: true,
         targetLevel: lvl,
       });
       const simProps: Record<number, PropertyState> = {
@@ -92,12 +95,12 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
         note: lvl === 4 ? 'Miễn mua đứt & chống Động đất' : undefined,
         lockReason: check.allowed ? undefined : check.reason,
         cost: check.cost,
-        rentAfter: calculateRent(tileIndex, simProps, boardModifiers),
+        rentAfter: calculateRent(tileIndex, simProps, boardModifiers, players, matchMode),
         allowed: check.allowed,
       });
     }
     return list;
-  }, [boardModifiers, currentLevel, isFromStart, player, prop, properties, tileIndex]);
+  }, [boardModifiers, currentLevel, matchMode, player, players, prop, properties, tileIndex]);
 
   const defaultTarget = useMemo(() => {
     const allowed = options.filter((o) => o.allowed);
@@ -116,11 +119,16 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="upgrade-modal-title"
       data-testid="upgrade-decision-modal"
-      className="fixed left-1/2 top-[48%] -translate-x-1/2 -translate-y-1/2 z-25 w-[min(460px,93vw)] bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-25 w-[min(460px,93vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
     >
       <div
-        className="px-5 py-3.5 text-white border-b-2 border-white/50 flex items-center justify-between gap-2.5"
+        className="shrink-0 px-5 py-3.5 text-white border-b-2 border-white/50 flex items-center justify-between gap-2.5"
         style={{
           background: `linear-gradient(to bottom var(--in-oklab), ${upgPal.topHex} 0%, ${upgPal.bottomHex} 100%)`,
           textShadow: '0 1.5px 2px rgba(15, 23, 42, 0.45)',
@@ -130,11 +138,12 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
           <CityLandmarkBadge tileIndex={tileIndex} size={48} />
           <div className="min-w-0">
             <div className="text-[10px] font-black uppercase tracking-wider text-white/90">
-              {isFromStart
-                ? `Đặc Quyền Ô Bắt Đầu · Vòng ${player.laps + 1}`
-                : `Ghé Thăm Đô Thị Sở Hữu · Vòng ${player.laps + 1}`}
+              {`Ghé Thăm Đô Thị Sở Hữu · Vòng ${player.laps + 1}`}
             </div>
-            <h3 className="font-display text-xl sm:text-2xl font-black uppercase leading-tight text-white">
+            <h3
+              id="upgrade-modal-title"
+              className="font-display text-xl sm:text-2xl font-black uppercase leading-tight text-white"
+            >
               {tile.name}
             </h3>
           </div>
@@ -144,23 +153,14 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
         </div>
       </div>
 
-      <div className="p-4 sm:p-5 space-y-3.5">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-xs text-slate-700 leading-relaxed">
-            {player.laps === 0
-              ? 'Vòng đầu tiên cho phép xây tối đa 2 Nhà. Đi qua ô BẮT ĐẦU để mở khóa Cấp 3 & Khách sạn ★!'
-              : 'Từ Vòng 2 trở đi, bạn có thể bù tiền chênh lệch để nâng thẳng lên Khách sạn Biểu tượng (★) ngay!'}
-          </p>
-          {isFromStart && onBackToCitySelect && (
-            <button
-              type="button"
-              onClick={onBackToCitySelect}
-              className="bt-btn-cyan px-2.5 py-1.5 rounded-xl text-[11px] font-black shrink-0 cursor-pointer whitespace-nowrap"
-            >
-              ← Đổi Đô Thị
-            </button>
-          )}
-        </div>
+      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 sm:p-5 space-y-3.5">
+        <p className="text-xs text-slate-700 leading-relaxed">
+          {player.laps === 0
+            ? 'Vòng đầu tiên cho phép xây tối đa 2 Nhà. Đi qua ô BẮT ĐẦU để mở khóa Cấp 3!'
+            : currentLevel < 3
+              ? 'Từ Vòng 2 trở đi, bạn có thể nâng tối đa lên 3 Nhà. Ghé lại thành phố đã có 3 Nhà để mở khóa Khách sạn Biểu tượng (★)!'
+              : 'Thành phố đã đạt 3 Nhà — đủ điều kiện nâng cấp lên Khách sạn Biểu tượng (★) miễn mua đứt!'}
+        </p>
 
         <div className="space-y-1.5">
           {options.map((opt) => {
@@ -207,26 +207,27 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
             );
           })}
         </div>
+      </div>
 
-        <div className="grid grid-cols-2 gap-2.5 pt-1">
-          <button
-            type="button"
-            disabled={!selectedOpt?.allowed}
-            onClick={() => selectedOpt?.allowed && onUpgradeToLevel(selectedOpt.level)}
-            className="bt-btn-green py-2.5 px-4 rounded-2xl disabled:opacity-40 font-black text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
-          >
-            {selectedOpt?.allowed
-              ? `Nâng Cấp (-${formatBusinessTourCompact(selectedOpt.cost)})`
-              : 'Chưa Đủ Điều Kiện'}
-          </button>
-          <button
-            type="button"
-            onClick={onSkip}
-            className="bt-btn-white py-2.5 px-4 rounded-2xl font-black text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
-          >
-            Giữ Nguyên
-          </button>
-        </div>
+      <div className="shrink-0 px-4 sm:px-5 py-3 bg-sky-50/95 border-t border-sky-200 grid grid-cols-2 gap-2.5">
+        <button
+          type="button"
+          data-testid="bt-confirm-upgrade-btn"
+          disabled={!selectedOpt?.allowed}
+          onClick={() => selectedOpt?.allowed && onUpgradeToLevel(selectedOpt.level)}
+          className="bt-btn-green py-2.5 px-2.5 sm:px-4 rounded-2xl disabled:opacity-40 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+        >
+          {selectedOpt?.allowed
+            ? `Nâng Cấp (-${formatBusinessTourCompact(selectedOpt.cost)})`
+            : 'Chưa Đủ Điều Kiện'}
+        </button>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="bt-btn-white py-2.5 px-2.5 sm:px-4 rounded-2xl font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+        >
+          Giữ Nguyên
+        </button>
       </div>
     </div>
   );
@@ -239,9 +240,12 @@ interface BuyoutDecisionModalProps {
   tileIndex: number;
   buyer: PlayerState;
   owner: PlayerState;
+  players?: PlayerState[];
   properties: Record<number, PropertyState>;
   boardModifiers: MatchBoardModifiers;
+  matchMode?: MatchMode;
   rentPaid: number;
+  trapFocus?: boolean;
   onConfirmBuyout: () => void;
   onSkipBuyout: () => void;
 }
@@ -250,12 +254,18 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
   tileIndex,
   buyer,
   owner,
+  players = [],
   properties,
   boardModifiers,
+  matchMode = 'FFA',
   rentPaid,
+  trapFocus = true,
   onConfirmBuyout,
   onSkipBuyout,
 }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef, trapFocus);
+
   const tile = BOARD_TILES[tileIndex];
   const prop = properties[tileIndex];
   const level = prop?.level ?? 0;
@@ -266,11 +276,11 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
       ...properties,
       [tileIndex]: { tileIndex, ownerId: buyer.id, level },
     };
-    return calculateRent(tileIndex, simProps, boardModifiers);
-  }, [boardModifiers, buyer.id, level, properties, tileIndex]);
+    return calculateRent(tileIndex, simProps, boardModifiers, players, matchMode);
+  }, [boardModifiers, buyer.id, level, matchMode, players, properties, tileIndex]);
 
   const strategicBonus = useMemo(() => {
-    const instantWin = wouldOwnTileWinMatch(buyer.id, tileIndex, [], properties);
+    const instantWin = wouldOwnTileWinMatch(buyer.id, tileIndex, players, properties, matchMode);
     if (instantWin) {
       return `🏆 Mua đứt thành công sẽ THẮNG NGAY (${
         instantWin.condition === 'TRIPLE_MONOPOLY'
@@ -280,40 +290,61 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
             : 'Chiến thắng đặc biệt'
       })!`;
     }
+    const buyerTeamIds =
+      matchMode === 'TEAMS_2V2' && buyer.teamId !== undefined && players.length > 0
+        ? new Set(
+            players.filter((p) => !p.bankrupt && p.teamId === buyer.teamId).map((p) => p.id)
+          )
+        : new Set([buyer.id]);
+
     if (tile.group) {
       const groupIndices = COLOR_GROUP_META[tile.group].tileIndices;
-      const completesMono = groupIndices.every(
-        (idx) => idx === tileIndex || properties[idx]?.ownerId === buyer.id
-      );
+      const completesMono = groupIndices.every((idx) => {
+        if (idx === tileIndex) return true;
+        const oid = properties[idx]?.ownerId;
+        return oid !== null && oid !== undefined && buyerTeamIds.has(oid);
+      });
       if (completesMono) {
         return `Hoàn tất trọn bộ màu ${COLOR_GROUP_META[tile.group].label} (×2 tiền thuê)!`;
       }
-      if (ownsFullColorGroup(owner.id, tile.group, properties)) {
+      if (ownsFullColorGroup(owner.id, tile.group, properties, players, matchMode)) {
         return `Phá vỡ thế Độc quyền màu của ${owner.name}!`;
       }
     }
     const completesSide = BOARD_SIDES.find(
       (side) =>
         side.tileIndices.includes(tileIndex) &&
-        side.tileIndices.every((idx) => idx === tileIndex || properties[idx]?.ownerId === buyer.id)
+        side.tileIndices.every((idx) => {
+          if (idx === tileIndex) return true;
+          const oid = properties[idx]?.ownerId;
+          return oid !== null && oid !== undefined && buyerTeamIds.has(oid);
+        })
     );
     if (completesSide) {
       return `Mua thành công sẽ THẮNG NGAY (${completesSide.label})!`;
     }
     return null;
-  }, [buyer.id, owner.id, owner.name, properties, tile.group, tileIndex]);
+  }, [buyer.id, buyer.teamId, matchMode, owner.id, owner.name, players, properties, tile.group, tileIndex]);
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="buyout-modal-title"
       data-testid="buyout-decision-modal"
-      className="fixed left-1/2 top-[48%] -translate-x-1/2 -translate-y-1/2 z-25 w-[min(450px,93vw)] bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-25 w-[min(450px,93vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
     >
-      <div className="bt-header-sky px-5 py-3.5 flex items-center justify-between gap-2">
+      <div className="shrink-0 bt-header-sky px-5 py-3.5 flex items-center justify-between gap-2">
         <div>
           <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
             Quyền Thâu Tóm Đô Thị (Giá 2×)
           </div>
-          <h3 className="font-display text-xl sm:text-2xl font-black uppercase leading-tight text-white">
+          <h3
+            id="buyout-modal-title"
+            className="font-display text-xl sm:text-2xl font-black uppercase leading-tight text-white"
+          >
             Mua Lại {tile.name}?
           </h3>
         </div>
@@ -325,7 +356,7 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
         </div>
       </div>
 
-      <div className="p-4 sm:p-5 space-y-3.5">
+      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 sm:p-5 space-y-3.5">
         <div className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-sky-50 border border-sky-200">
           <div className="flex items-center gap-2.5 min-w-0">
             <PlayerAvatar3D
@@ -369,24 +400,24 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
             Lợi thế chiến thuật: {strategicBonus}
           </div>
         )}
+      </div>
 
-        <div className="grid grid-cols-2 gap-2.5 pt-1">
-          <button
-            type="button"
-            disabled={buyer.cash < buyoutCost}
-            onClick={onConfirmBuyout}
-            className="bt-btn-gold py-2.5 px-4 rounded-2xl disabled:opacity-40 font-black text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
-          >
-            Thâu Tóm (-{formatBusinessTourCompact(buyoutCost)})
-          </button>
-          <button
-            type="button"
-            onClick={onSkipBuyout}
-            className="bt-btn-white py-2.5 px-4 rounded-2xl font-black text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
-          >
-            Bỏ Qua
-          </button>
-        </div>
+      <div className="shrink-0 px-4 sm:px-5 py-3 bg-sky-50/95 border-t border-sky-200 grid grid-cols-2 gap-2.5">
+        <button
+          type="button"
+          disabled={buyer.cash < buyoutCost}
+          onClick={onConfirmBuyout}
+          className="bt-btn-gold text-slate-950 py-2.5 px-2.5 sm:px-4 rounded-2xl disabled:opacity-40 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+        >
+          Thâu Tóm (-{formatBusinessTourCompact(buyoutCost)})
+        </button>
+        <button
+          type="button"
+          onClick={onSkipBuyout}
+          className="bt-btn-white py-2.5 px-2.5 sm:px-4 rounded-2xl font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+        >
+          Bỏ Qua
+        </button>
       </div>
     </div>
   );
@@ -397,8 +428,10 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
  * ============================================================================ */
 interface ChampionshipDecisionModalProps {
   player: PlayerState;
+  players?: PlayerState[];
   properties: Record<number, PropertyState>;
   boardModifiers: MatchBoardModifiers;
+  matchMode?: MatchMode;
   isFree: boolean;
   onSelectCity: (tileIndex: number) => void;
   onSkip: () => void;
@@ -406,8 +439,10 @@ interface ChampionshipDecisionModalProps {
 
 export const ChampionshipDecisionModal: React.FC<ChampionshipDecisionModalProps> = ({
   player,
+  players = [],
   properties,
   boardModifiers,
+  matchMode = 'FFA',
   isFree,
   onSelectCity,
   onSkip,
@@ -426,7 +461,7 @@ export const ChampionshipDecisionModal: React.FC<ChampionshipDecisionModalProps>
       .map((pr) => {
         const tile = BOARD_TILES[pr.tileIndex];
         const nextMods = applyChampionshipHost(boardModifiers, pr.tileIndex);
-        const projectedRent = calculateRent(pr.tileIndex, properties, nextMods);
+        const projectedRent = calculateRent(pr.tileIndex, properties, nextMods, players, matchMode);
         return {
           tileIndex: pr.tileIndex,
           name: tile.name,
@@ -438,14 +473,16 @@ export const ChampionshipDecisionModal: React.FC<ChampionshipDecisionModalProps>
         };
       })
       .sort((a, b) => b.projectedRent - a.projectedRent);
-  }, [boardModifiers, player.color, player.id, properties]);
+  }, [boardModifiers, matchMode, player.color, player.id, players, properties]);
 
   return (
     <div
       data-testid="championship-decision-modal"
-      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(560px,94vw)] bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      role="region"
+      aria-label="Chọn thành phố đặt Cúp Quốc Gia"
+      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(560px,94vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
     >
-      <div className="bt-header-sky px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2">
+      <div className="shrink-0 bt-header-sky px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
             {fee === 0
@@ -465,7 +502,7 @@ export const ChampionshipDecisionModal: React.FC<ChampionshipDecisionModalProps>
         </button>
       </div>
 
-      <div className="p-3 sm:p-3.5 space-y-2">
+      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3 sm:p-3.5 space-y-2">
         <p className="text-[11px] sm:text-xs text-slate-700 leading-snug">
           Nhấn trực tiếp vào <strong className="font-bold text-[#0284C7]">thành phố của bạn trên bàn cờ 3D</strong> hoặc chọn nhanh bên dưới để nhân <strong className="font-black text-[#D97706]">×{nextMult}</strong> tiền thuê:
         </p>
@@ -514,16 +551,20 @@ export const ChampionshipDecisionModal: React.FC<ChampionshipDecisionModalProps>
  * ============================================================================ */
 interface WorldTourPromptProps {
   player: PlayerState;
+  players?: PlayerState[];
   properties: Record<number, PropertyState>;
   boardModifiers?: MatchBoardModifiers;
+  matchMode?: MatchMode;
   onSelectTargetTile: (targetTileIndex: number) => void;
   onSkipWorldTour: () => void;
 }
 
 export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
   player,
+  players = [],
   properties,
-  boardModifiers,
+  boardModifiers: _boardModifiers,
+  matchMode = 'FFA',
   onSelectTargetTile,
   onSkipWorldTour,
 }) => {
@@ -535,7 +576,14 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
       isValidWorldTourTarget(player, t.index, properties)
     );
 
-    // 1. Unowned tiles completing Resort, Color Group, or Side Monopoly (accounting for Start salary along flight)
+    const teamOwnerIds =
+      matchMode === 'TEAMS_2V2' && player.teamId !== undefined && players.length > 0
+        ? new Set(
+            players.filter((p) => !p.bankrupt && p.teamId === player.teamId).map((p) => p.id)
+          )
+        : new Set([player.id]);
+
+    // 1. Unowned purchasable tiles completing Resort, Color Group, or Side Monopoly (accounting for Start salary along flight)
     for (const t of validTiles) {
       if (!isPurchasableTileSafe(t.kind)) continue;
       if (properties[t.index]?.ownerId !== null || !t.price) continue;
@@ -543,7 +591,7 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
       const budget = player.cash + (move.passedStart ? START_SALARY : 0) - WORLD_TOUR_FEE;
       if (budget < t.price) continue;
 
-      const instantWin = wouldOwnTileWinMatch(player.id, t.index, [], properties);
+      const instantWin = wouldOwnTileWinMatch(player.id, t.index, players, properties, matchMode);
       if (instantWin && !seen.has(t.index)) {
         const winTag =
           instantWin.condition === 'RESORT_MONOPOLY'
@@ -558,9 +606,10 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
 
       if (t.group && !seen.has(t.index)) {
         const grp = COLOR_GROUP_META[t.group];
-        const owned = grp.tileIndices.filter(
-          (i) => properties[i]?.ownerId === player.id
-        ).length;
+        const owned = grp.tileIndices.filter((i) => {
+          const oid = properties[i]?.ownerId;
+          return oid !== null && oid !== undefined && teamOwnerIds.has(oid);
+        }).length;
         if (owned === grp.tileIndices.length - 1) {
           picks.push({ tileIndex: t.index, tag: `Đủ bộ ${grp.label}` });
           seen.add(t.index);
@@ -568,44 +617,7 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
       }
     }
 
-    // 2. Opponent unprotected cities eligible for 2x Buyout monopoly/side steal!
-    for (const t of validTiles) {
-      if (picks.length >= 6) break;
-      const pr = properties[t.index];
-      if (!pr || pr.ownerId === null || pr.ownerId === player.id || t.kind !== TileKind.PROPERTY) {
-        continue;
-      }
-      const move = resolveWorldTourMovement(player.position, t.index);
-      const wasOutage = Boolean(boardModifiers?.outageTileIndices?.includes(t.index));
-      const rent = wasOutage ? 0 : calculateRent(t.index, properties, boardModifiers);
-      const cashAfterRent = player.cash + (move.passedStart ? START_SALARY : 0) - WORLD_TOUR_FEE - rent;
-      if (cashAfterRent < 0) continue;
-      const buyoutCheck = canBuyoutProperty(
-        { ...player, cash: cashAfterRent },
-        t.index,
-        properties,
-        boardModifiers
-      );
-      if (!buyoutCheck.allowed) continue;
-
-      const instantWin = wouldOwnTileWinMatch(player.id, t.index, [], properties);
-      const completesMono =
-        Boolean(t.group) &&
-        COLOR_GROUP_META[t.group!].tileIndices.every(
-          (i) => i === t.index || properties[i]?.ownerId === player.id
-        );
-      if ((instantWin || completesMono) && !seen.has(t.index)) {
-        picks.push({
-          tileIndex: t.index,
-          tag: instantWin
-            ? `Thâu tóm 2× (${formatBusinessTourCompact(buyoutCheck.cost)}) · THẮNG NGAY!`
-            : `Thâu tóm 2× (${formatBusinessTourCompact(buyoutCheck.cost)}) · Đủ bộ!`,
-        });
-        seen.add(t.index);
-      }
-    }
-
-    // 3. Own PROPERTY cities genuinely upgradable upon arrival (respecting post-flight lap & cash!)
+    // 2. Own PROPERTY cities genuinely upgradable upon arrival (respecting post-flight lap, Lv3 cap & Lv3->Lv4 Hotel rule!)
     for (const pr of Object.values(properties)) {
       if (picks.length >= 6) break;
       if (
@@ -647,37 +659,7 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
       }
     }
 
-    // 4. World Championships (16) or Start (0)
-    if (
-      picks.length < 6 &&
-      isValidWorldTourTarget(player, WORLD_CHAMPIONSHIPS_TILE_INDEX, properties) &&
-      !seen.has(WORLD_CHAMPIONSHIPS_TILE_INDEX)
-    ) {
-      picks.push({
-        tileIndex: WORLD_CHAMPIONSHIPS_TILE_INDEX,
-        tag: 'Đăng cai Cúp Quốc Gia (0K)',
-      });
-      seen.add(WORLD_CHAMPIONSHIPS_TILE_INDEX);
-    }
-
-    if (picks.length < 6 && !seen.has(0)) {
-      const startSimPlayer: PlayerState = {
-        ...player,
-        laps: player.laps + 1,
-        cash: player.cash + START_SALARY - WORLD_TOUR_FEE,
-      };
-      const canRemoteUpgradeAtStart =
-        getStartUpgradableTileIndices(startSimPlayer, properties).length > 0;
-      picks.push({
-        tileIndex: 0,
-        tag: canRemoteUpgradeAtStart
-          ? `+${formatBusinessTourCompact(START_SALARY)} & Nâng cấp nhà`
-          : `Nhận lương +${formatBusinessTourCompact(START_SALARY)}`,
-      });
-      seen.add(0);
-    }
-
-    // 5. Prime unowned Resorts / Cities
+    // 3. Prime unowned Resorts / Cities
     for (const t of [...validTiles].reverse()) {
       if (picks.length >= 6) break;
       const move = resolveWorldTourMovement(player.position, t.index);
@@ -700,14 +682,16 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
     }
 
     return picks.slice(0, 6);
-  }, [boardModifiers, player, properties]);
+  }, [matchMode, player, players, properties]);
 
   return (
     <div
       data-testid="world-tour-modal"
-      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(580px,94vw)] bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      role="region"
+      aria-label="Chọn điểm đến Du Lịch Xuyên Việt"
+      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(580px,94vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
     >
-      <div className="bt-header-green px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2">
+      <div className="shrink-0 bt-header-green px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
             Chuyến Bay Đầu Lượt · Vé Bay {formatBusinessTourCompact(WORLD_TOUR_FEE)}
@@ -725,9 +709,9 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
         </button>
       </div>
 
-      <div className="p-3 sm:p-3.5 space-y-2">
+      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3 sm:p-3.5 space-y-2">
         <p className="text-[11px] sm:text-xs text-slate-700 leading-snug">
-          Nhấn trực tiếp vào <strong className="font-bold text-[#0284C7]">bất kỳ ô sáng trên bàn cờ 3D</strong> (đất trống, đất bạn, đất đối thủ để Mua đứt 2×, Cúp Quốc Gia hoặc Ô Bắt Đầu; qua Bắt Đầu nhận{' '}
+          Nhấn trực tiếp vào <strong className="font-bold text-[#0284C7]">bất kỳ ô đất/khu nghỉ dưỡng trống hoặc tài sản của bạn trên bàn cờ 3D</strong> (qua Bắt Đầu nhận{' '}
           <span className="font-mono-num font-black text-[#16A34A]">
             +{formatBusinessTourSpaced(START_SALARY)}
           </span>
@@ -764,104 +748,7 @@ function isPurchasableTileSafe(kind: TileKind): boolean {
 }
 
 /* ============================================================================
- * 5. COMPACT DOCKED START TILE UPGRADE CITY SELECTOR (Tile 0 Bonus!)
- * ============================================================================ */
-interface StartUpgradeModalProps {
-  player: PlayerState;
-  properties: Record<number, PropertyState>;
-  boardModifiers: MatchBoardModifiers;
-  onSelectCity: (tileIndex: number) => void;
-  onSkip: () => void;
-}
-
-export const StartUpgradeModal: React.FC<StartUpgradeModalProps> = ({
-  player,
-  properties,
-  boardModifiers,
-  onSelectCity,
-  onSkip,
-}) => {
-  const cities = useMemo(() => {
-    const indices = getStartUpgradableTileIndices(player, properties);
-    return indices
-      .map((idx) => {
-        const tile = BOARD_TILES[idx];
-        const pr = properties[idx];
-        return {
-          tileIndex: idx,
-          name: tile.name,
-          color: tile.groupColor || player.color,
-          level: pr?.level ?? 0,
-          houseCost: tile.houseCost ?? 0,
-          currentRent: calculateRent(idx, properties, boardModifiers),
-        };
-      })
-      .sort((a, b) => b.currentRent - a.currentRent);
-  }, [boardModifiers, player, properties]);
-
-  return (
-    <div
-      data-testid="start-upgrade-modal"
-      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(560px,94vw)] bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
-    >
-      <div className="bt-header-green px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
-            Đặc Quyền Dừng Tại Ô Bắt Đầu · Vòng {player.laps + 1}
-          </div>
-          <h3 className="font-display text-base sm:text-lg font-black uppercase leading-tight text-white truncate">
-            🏗️ Chọn Thành Phố Của Bạn Để Nâng Cấp
-          </h3>
-        </div>
-        <button
-          type="button"
-          onClick={onSkip}
-          className="px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-xs font-extrabold text-white cursor-pointer whitespace-nowrap shrink-0"
-        >
-          Bỏ Qua
-        </button>
-      </div>
-
-      <div className="p-3 sm:p-3.5 space-y-2">
-        <p className="text-[11px] sm:text-xs text-slate-700 leading-snug">
-          Nhấn trực tiếp vào <strong className="font-bold text-[#16A34A]">thành phố của bạn trên bàn cờ 3D</strong> hoặc chọn bên dưới để xây thêm nhà / lên Khách sạn ★:
-        </p>
-
-        <div className="max-h-36 overflow-y-auto slim-scroll grid grid-cols-1 sm:grid-cols-2 gap-1.5 pr-1">
-          {cities.map((c) => (
-            <button
-              key={c.tileIndex}
-              type="button"
-              onClick={() => onSelectCity(c.tileIndex)}
-              className="px-3 py-2 rounded-2xl bg-emerald-50/80 hover:bg-emerald-100 border-2 border-emerald-200 hover:border-[#16A34A] flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className="h-5 w-2 rounded-full shrink-0"
-                  style={{ backgroundColor: c.color }}
-                />
-                <div className="min-w-0">
-                  <div className="font-display text-xs font-black text-slate-900 truncate">
-                    {c.name}
-                  </div>
-                  <div className="text-[10px] font-semibold text-slate-600">
-                    {c.level === 0 ? 'Đất trống' : `Nhà Cấp ${c.level}`} · +{formatBusinessTourCompact(c.houseCost)}/cấp
-                  </div>
-                </div>
-              </div>
-              <div className="font-mono-num text-xs font-black text-[#16A34A] shrink-0">
-                Thuê {formatBusinessTourCompact(c.currentRent)}
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-/* ============================================================================
- * 6. COMPACT DOCKED TACTICAL CHANCE CARD TARGET SELECTOR
+ * 5. COMPACT DOCKED TACTICAL CHANCE CARD TARGET SELECTOR
  *    (EARTHQUAKE 🌋 · POWER_OUTAGE ⚡ · SHIELD_CITY 🛡️)
  * ============================================================================ */
 interface TacticalCardTargetModalProps {
@@ -870,6 +757,7 @@ interface TacticalCardTargetModalProps {
   players: PlayerState[];
   properties: Record<number, PropertyState>;
   boardModifiers: MatchBoardModifiers;
+  matchMode?: MatchMode;
   onSelectTarget: (tileIndex: number) => void;
   onSkip: () => void;
 }
@@ -880,6 +768,7 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
   players,
   properties,
   boardModifiers,
+  matchMode = 'FFA',
   onSelectTarget,
   onSkip,
 }) => {
@@ -906,7 +795,14 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
           };
 
   const candidates = useMemo(() => {
-    const valid = getValidTacticalCardTargets(kind, player.id, properties, boardModifiers);
+    const valid = getValidTacticalCardTargets(
+      kind,
+      player.id,
+      properties,
+      boardModifiers,
+      players,
+      matchMode
+    );
     const shieldSet = new Set(boardModifiers.shieldedTileIndices ?? []);
     return valid
       .map((idx) => {
@@ -921,19 +817,21 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
           level: pr?.level ?? 0,
           isResort: tile.kind === TileKind.RESORT,
           isShielded: shieldSet.has(idx),
-          rent: calculateRent(idx, properties, boardModifiers),
+          rent: calculateRent(idx, properties, boardModifiers, players, matchMode),
         };
       })
       .filter((c) => c.ownerName.length > 0)
       .sort((a, b) => b.rent - a.rent);
-  }, [boardModifiers, kind, player.id, players, properties]);
+  }, [boardModifiers, kind, matchMode, player.id, players, properties]);
 
   return (
     <div
       data-testid="tactical-card-target-modal"
-      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(560px,94vw)] bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      role="region"
+      aria-label={meta.title}
+      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(560px,94vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
     >
-      <div className={`${meta.headerClass} px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2`}>
+      <div className={`shrink-0 ${meta.headerClass} px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2`}>
         <div className="min-w-0">
           <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
             {meta.badge}
@@ -951,7 +849,7 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
         </button>
       </div>
 
-      <div className="p-3 sm:p-3.5 space-y-2">
+      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3 sm:p-3.5 space-y-2">
         <p className="text-[11px] sm:text-xs text-slate-700 leading-snug">{meta.hint}</p>
 
         <div className="max-h-36 overflow-y-auto slim-scroll grid grid-cols-1 sm:grid-cols-2 gap-1.5 pr-1">
@@ -995,25 +893,38 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
 };
 
 /* ============================================================================
- * 7. PURE BUSINESS TOUR 32-TILE RULEBOOK MODAL
+ * 6. PURE BUSINESS TOUR 32-TILE RULEBOOK MODAL
  * ============================================================================ */
 interface RulebookModalProps {
   onClose: () => void;
 }
 
 export const RulebookModal: React.FC<RulebookModalProps> = ({ onClose }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef, true);
+
   return (
     <div
       data-testid="rulebook-modal"
-      className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5 bg-slate-950/45 pointer-events-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/45 pointer-events-auto"
     >
-      <div className="w-full max-w-2xl bt-casual-modal rounded-3xl overflow-hidden animate-pop-in flex flex-col max-h-[88vh]">
-        <div className="bt-header-sky px-5 sm:px-6 py-4 flex items-center justify-between gap-3">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rulebook-modal-title"
+        className="w-full max-w-2xl bt-casual-modal rounded-3xl overflow-hidden animate-pop-in flex flex-col max-h-[calc(100dvh-1.5rem)]"
+      >
+        <div className="shrink-0 bt-header-sky px-5 sm:px-6 py-4 flex items-center justify-between gap-3">
           <div>
             <div className="text-xs font-extrabold text-[#FEF08A]">
               Cẩm Nang Quy Tắc Business Tour 32 Ô Chuẩn Hóa
             </div>
-            <h2 className="font-display text-xl sm:text-2xl font-black uppercase text-white">
+            <h2
+              id="rulebook-modal-title"
+              className="font-display text-xl sm:text-2xl font-black uppercase text-white"
+            >
               Sổ Tay Luật Cờ Tỷ Phú 3D
             </h2>
           </div>
@@ -1021,62 +932,65 @@ export const RulebookModal: React.FC<RulebookModalProps> = ({ onClose }) => {
             type="button"
             onClick={onClose}
             aria-label="Đóng sổ tay luật chơi"
-            className="h-8 w-8 rounded-full bg-white/20 hover:bg-white/35 flex items-center justify-center text-white font-black cursor-pointer"
+            className="icon-hit-target h-8 w-8 rounded-full bg-white/20 hover:bg-white/35 flex items-center justify-center text-white font-black cursor-pointer shrink-0"
           >
             ✕
           </button>
         </div>
 
-        <div className="p-5 sm:p-6 overflow-y-auto slim-scroll divide-y divide-sky-100 text-xs sm:text-sm text-slate-700 flex-1">
+        <div className="flex-1 min-h-0 p-5 sm:p-6 overflow-y-auto slim-scroll divide-y divide-sky-100 text-xs sm:text-sm text-slate-700">
           <div className="pb-3.5 space-y-1">
             <div className="font-display font-black text-slate-900">
-              01. Xây Công Trình · Lên Khách Sạn ★ &amp; Đặc Quyền Ô Bắt Đầu
+              01. Xây Công Trình · Lên Khách Sạn ★ &amp; Ô Bắt Đầu
             </div>
             <p className="text-xs leading-relaxed">
-              Vòng 1 mua đất trống xây tối đa <strong className="font-bold text-[#16A34A]">2 Nhà</strong>; từ Vòng 2 trở đi mua đất trống xây tối đa <strong className="font-bold text-[#16A34A]">3 Nhà</strong>. Khi ghé lại thành phố của mình từ Vòng 2+ (hoặc <strong className="font-bold text-[#0284C7]">dừng trực tiếp tại Ô Bắt Đầu</strong>), bạn có thể bù tiền nâng thẳng lên <strong className="font-bold text-rose-700">Khách sạn Biểu tượng (★)</strong> ngay lập tức!
+              Đi qua hoặc dừng tại <strong className="font-bold text-[#16A34A]">Ô Bắt Đầu (Ô 0)</strong> nhận lương <strong className="font-mono-num text-[#16A34A]">+300K</strong> và mở khóa Vòng mới. Vòng 1 xây tối đa <strong className="font-bold text-[#16A34A]">2 Nhà</strong>; từ Vòng 2 trở đi xây tối đa <strong className="font-bold text-[#16A34A]">3 Nhà</strong>. Chỉ nâng cấp lên <strong className="font-bold text-rose-700">Khách sạn Biểu tượng (★)</strong> khi ghé lại thành phố đã có sẵn <strong className="font-bold text-slate-900">3 Nhà</strong>!
             </p>
           </div>
 
           <div className="py-3.5 space-y-1">
             <div className="font-display font-black text-slate-900">
-              02. Thâu Tóm Đô Thị (Mua Lại 2×) &amp; Khiên Bảo Hộ
+              02. Thâu Tóm Đô Thị (Mua Lại 2×) · Khu Nghỉ Dưỡng &amp; Khiên Bảo Hộ
             </div>
             <p className="text-xs leading-relaxed">
-              Sau khi trả đủ tiền thuê tại thành phố Cấp 0–3 của đối thủ, bạn được quyền chi <strong className="font-bold text-[#D97706]">2× tổng vốn đầu tư</strong> để mua đứt thành phố đó. <strong className="font-bold text-slate-900">Khách sạn ★, 4 Khu nghỉ dưỡng và thành phố có Khiên Bảo Hộ 🛡️</strong> miễn nhiễm mua lại.
+              Sau khi trả đủ tiền thuê tại thành phố Cấp 0–3 của đối thủ, bạn có thể chi <strong className="font-bold text-[#D97706]">2× tổng vốn đầu tư</strong> để mua đứt. <strong className="font-bold text-slate-900">Khách sạn ★, Khu nghỉ dưỡng và thành phố có Khiên Bảo Hộ 🛡️</strong> miễn nhiễm mua lại. 4 Khu nghỉ dưỡng có bảng thuê lũy tiến: <strong className="font-mono-num font-bold text-[#0284C7]">50K / 150K / 400K / 1M</strong>.
             </p>
           </div>
 
           <div className="py-3.5 space-y-1">
             <div className="font-display font-black text-slate-900">
-              03. Cúp Quốc Gia (0K) · Du Lịch (50K) &amp; Thẻ Cơ Hội Chiến Thuật
+              03. Cúp Quốc Gia (0K) · Lễ Hội Đầu Mùa (×2) · Du Lịch (50K) · Đảo Hoang &amp; Thuế
             </div>
             <p className="text-xs leading-relaxed">
-              <strong className="font-bold text-[#D97706]">Cúp Quốc Gia (Ô 16)</strong>: Chọn miễn phí 1 thành phố của bạn đăng cai nhân tiền thuê lũy tiến 2× → 3× → 4×...{' '}
-              <strong className="font-bold text-[#16A34A]">Du Lịch (Ô 24)</strong>: Đầu lượt kế tiếp trả 50K bay tới bất kỳ ô chiến thuật nào (đất trống, đất bạn, đất đối thủ để Mua đứt 2×, Cúp Quốc Gia hoặc Ô Bắt Đầu).{' '}
-              <strong className="font-bold text-rose-700">Thẻ Cơ Hội (?)</strong>: Có thêm Địa Chấn 🌋 (hạ cấp nhà / san phẳng đất trống), Mất Điện ⚡ (tắt tiền thuê về 0K) và Khiên Bảo Hộ 🛡️!
+              <strong className="font-bold text-[#D97706]">Cúp Quốc Gia (Ô 16, 0K)</strong>: Chỉ <strong className="font-bold text-slate-900">1 thành phố duy nhất</strong> giữ Cúp tại một thời điểm — người dừng được chọn miễn phí 1 thành phố của mình đăng cai (dời Cúp về đó và tăng hệ số toàn giải <strong className="font-bold text-[#D97706]">2× → 3× → 4×...</strong>).{' '}
+              <strong className="font-bold text-[#EA580C]">Lễ Hội Đầu Mùa 🎉 (×2, tùy chọn sảnh)</strong>: Khi bật ở Phòng chờ, đầu ván chọn ngẫu nhiên <strong className="font-bold text-slate-900">3 thành phố cố định suốt trận</strong> được nhân <strong className="font-bold text-[#EA580C]">×2</strong> tiền thuê (nhân chồng với Độc quyền màu và Cúp Quốc Gia).{' '}
+              <strong className="font-bold text-[#16A34A]">Du Lịch (Ô 24, 50K)</strong>: Đầu lượt kế tiếp bay tới bất kỳ <strong className="font-bold text-slate-900">ô đất/khu nghỉ dưỡng trống hoặc tài sản của chính bạn</strong>.{' '}
+              <strong className="font-bold text-[#0284C7]">Đảo Hoang (Ô 8)</strong>: Đổ ra Đôi, dùng Thẻ Thoát Đảo hoặc nộp 200K; sang lượt thứ 3 tự giải cứu miễn phí <strong className="font-mono-num">0K</strong>.{' '}
+              <strong className="font-bold text-rose-700">Cơ Quan Thuế (Ô 30)</strong>: Nộp <strong className="font-bold">Thuế 10%</strong> tổng vốn bất động sản.{' '}
+              <strong className="font-bold text-rose-700">Thẻ Cơ Hội (?)</strong>: Gồm Tiệc Sinh Nhật thu đủ 25K từ mỗi đối thủ, Địa Chấn 🌋, Mất Điện ⚡ và Khiên Bảo Hộ 🛡️!
             </p>
           </div>
 
           <div className="py-3.5 space-y-1">
             <div className="font-display font-black text-slate-900">
-              04. Tự Động Qua Lượt · Bán Trả Nợ Hoàn 100% &amp; Phá Sản
+              04. Tự Động Qua Lượt · Bán Trả Nợ 100% &amp; Tùy Chọn Phòng Chờ
             </div>
             <p className="text-xs leading-relaxed">
-              Hoàn thành hành động trên ô sẽ <strong className="font-bold text-[#0284C7]">tự động chuyển lượt</strong> mượt mà (ra Đôi lần 1–2 được đổ tiếp ngay). Khi thiếu tiền mặt trả nợ, bán thành phố về Ngân hàng được hoàn <strong className="font-bold text-[#16A34A]">100% vốn</strong>. Nếu phá sản trước đối thủ, chủ nợ nhận đủ tiền mặt + 100% giá trị thanh lý tài sản của người phá sản, còn các ô đất trả về Ngân hàng.
+              Hoàn thành hành động sẽ <strong className="font-bold text-[#0284C7]">tự động chuyển lượt</strong> (ra Đôi lần 1–2 được đổ tiếp ngay). Khi thiếu tiền trả nợ, bán thành phố về Ngân hàng hoàn <strong className="font-bold text-[#16A34A]">100% vốn</strong>. Trong Phòng chờ (mặc định tắt), bạn có thể bật <strong className="font-bold text-slate-900">Xúc xắc chiến thuật</strong> (<strong className="font-bold">Chẵn / Lẻ</strong> 3 lượt, <strong className="font-bold">Đổ lại</strong> 2 lượt) hoặc <strong className="font-bold text-slate-900">Lễ Hội Đầu Mùa (3 thành phố ×2 thuê)</strong>.
             </p>
           </div>
 
           <div className="pt-3.5 space-y-1">
             <div className="font-display font-black text-[#D97706]">
-              05. Bốn Điều Kiện Chiến Thắng Tức Thì
+              05. Chiến Thắng Tức Thì · Đồng Hồ 20 Phút &amp; Đấu Đội 2v2
             </div>
             <p className="text-xs leading-relaxed">
-              Thắng ngay khi đạt <strong className="font-bold text-slate-900">Độc Quyền 3 Bộ Màu</strong>, sở hữu <strong className="font-bold text-slate-900">Trọn 1 Cạnh Bàn Cờ</strong>, gom đủ <strong className="font-bold text-slate-900">4 Khu Nghỉ Dưỡng</strong> (Vịnh Hạ Long, Lý Sơn, Côn Đảo, Phú Quốc), hoặc là người cuối cùng trụ vững!
+              Thắng ngay khi đạt <strong className="font-bold text-slate-900">Độc Quyền 3 Bộ Màu</strong>, sở hữu <strong className="font-bold text-slate-900">Trọn 1 Cạnh Bàn Cờ</strong>, gom đủ <strong className="font-bold text-slate-900">4 Khu Nghỉ Dưỡng</strong>, hoặc người cuối cùng trụ vững. Hết <strong className="font-mono-num text-slate-900">20 phút (20:00)</strong> phân định theo Tổng Tài Sản Ròng! Chế độ <strong className="font-bold text-[#0284C7]">Đấu Đội 2v2</strong> miễn tiền thuê giữa đồng đội và gộp tài sản để xét bộ độc quyền.
             </p>
           </div>
         </div>
 
-        <div className="px-5 py-3 bg-sky-50 border-t border-sky-200 flex justify-end">
+        <div className="shrink-0 px-5 py-3 bg-sky-50 border-t border-sky-200 flex justify-end">
           <button
             type="button"
             onClick={onClose}

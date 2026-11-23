@@ -190,13 +190,15 @@ export function createNightLightingPalette(maxAnisotropy = 4): NightLightingPale
       emissive: 0xf59e0b,
       emissiveIntensity: 0,
     }),
-    tokenHeadlightMat: new THREE.MeshStandardMaterial({
-      color: 0xfef08a,
-      roughness: 0.45,
-      metalness: 0.15,
-      emissive: 0xfde047,
-      emissiveIntensity: 0,
-    }),
+    tokenHeadlightMat: markSharedMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xfef08a,
+        roughness: 0.45,
+        metalness: 0.15,
+        emissive: 0xfde047,
+        emissiveIntensity: 0,
+      })
+    ),
     oceanMat: new THREE.MeshStandardMaterial({
       color: 0xdcf0ff,
       roughness: 0.85,

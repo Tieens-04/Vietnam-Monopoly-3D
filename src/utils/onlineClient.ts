@@ -7,6 +7,7 @@ import {
   ServerToClientMessage,
   TokenArchetype,
 } from '../game/onlineTypes';
+import type { MatchMode } from '../game/types';
 
 const SESSION_STORAGE_KEY = 'bt_online_session_v1';
 const PLAYER_NAME_STORAGE_KEY = 'bt_player_name_v1';
@@ -72,9 +73,15 @@ function syncRoomQueryParam(roomCode: string | null): void {
   }
 }
 
+export interface UseOnlineMultiplayerOptions {
+  skipInitialAutoReconnect?: boolean;
+}
+
 export function useOnlineMultiplayer(
-  onVisualEvent?: (event: OnlineVisualEvent) => void
+  onVisualEvent?: (event: OnlineVisualEvent) => void,
+  options?: UseOnlineMultiplayerOptions
 ) {
+  const skipInitialAutoReconnect = Boolean(options?.skipInitialAutoReconnect);
   const [initialInviteCode] = useState<string | null>(() => readInitialInviteCode());
   const [savedPlayerName, setSavedPlayerName] = useState<string>(() => {
     try {
@@ -89,6 +96,8 @@ export function useOnlineMultiplayer(
   const [yourSeatIndex, setYourSeatIndex] = useState<number | null>(null);
   const [yourPlayerId, setYourPlayerId] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorSeq, setErrorSeq] = useState<number>(0);
+  const [snapshotSeq, setSnapshotSeq] = useState<number>(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pendingQueueRef = useRef<ClientToServerMessage[]>([]);
@@ -173,6 +182,7 @@ export function useOnlineMultiplayer(
         setYourSeatIndex(msg.yourSeatIndex);
         setYourPlayerId(msg.yourPlayerId);
         setRoomSnapshot(msg.snapshot);
+        setSnapshotSeq((prev) => prev + 1);
         setErrorMessage(null);
         return;
       }
@@ -181,6 +191,7 @@ export function useOnlineMultiplayer(
         setYourSeatIndex(msg.yourSeatIndex);
         setYourPlayerId(msg.yourPlayerId);
         setRoomSnapshot(msg.snapshot);
+        setSnapshotSeq((prev) => prev + 1);
         return;
       }
 
@@ -204,15 +215,23 @@ export function useOnlineMultiplayer(
       }
 
       if (msg.type === 'ERROR') {
-        if (msg.code === 'ROOM_NOT_FOUND' || msg.code === 'SESSION_EXPIRED') {
+        if (
+          msg.code === 'ROOM_NOT_FOUND' ||
+          msg.code === 'SESSION_EXPIRED' ||
+          msg.code === 'NOT_IN_ROOM' ||
+          msg.code === 'SESSION_REPLACED'
+        ) {
           sessionRef.current = null;
-          writeStoredSession(null);
+          if (msg.code !== 'SESSION_REPLACED') {
+            writeStoredSession(null);
+          }
           syncRoomQueryParam(null);
           setRoomSnapshot(null);
           setYourSeatIndex(null);
           setYourPlayerId(null);
         }
         setErrorMessage(msg.message);
+        setErrorSeq((prev) => prev + 1);
       }
     };
 
@@ -256,10 +275,14 @@ export function useOnlineMultiplayer(
     [openSocket]
   );
 
-  // Auto-reconnect on mount if there is a stored session matching the URL (or no room param)
+  // Auto-reconnect on mount if there is a stored session matching the URL (and not in explicit offline autostart/demo mode)
   useEffect(() => {
     const stored = sessionRef.current;
-    if (stored && (!initialInviteCode || initialInviteCode === stored.roomCode)) {
+    if (stored && skipInitialAutoReconnect && !initialInviteCode) {
+      sessionRef.current = null;
+    } else if (stored && initialInviteCode && initialInviteCode !== stored.roomCode) {
+      sessionRef.current = null;
+    } else if (stored && (!initialInviteCode || initialInviteCode === stored.roomCode)) {
       openSocket(true);
     }
 
@@ -279,7 +302,7 @@ export function useOnlineMultiplayer(
         wsRef.current = null;
       }
     };
-  }, [initialInviteCode, openSocket]);
+  }, [initialInviteCode, openSocket, skipInitialAutoReconnect]);
 
   const ensureConnected = useCallback(() => {
     openSocket(false);
@@ -292,6 +315,9 @@ export function useOnlineMultiplayer(
       maxPlayers: 2 | 3 | 4;
       startingCash: number;
       fillBots: boolean;
+      matchMode?: MatchMode;
+      tacticalDiceEnabled?: boolean;
+      festivalEnabled?: boolean;
     }) => {
       rememberPlayerName(opts.playerName);
       setErrorMessage(null);
@@ -302,6 +328,9 @@ export function useOnlineMultiplayer(
         maxPlayers: opts.maxPlayers,
         startingCash: opts.startingCash,
         fillBots: opts.fillBots,
+        matchMode: opts.matchMode,
+        tacticalDiceEnabled: opts.tacticalDiceEnabled,
+        festivalEnabled: opts.festivalEnabled,
       });
     },
     [rememberPlayerName, sendMessage]
@@ -322,13 +351,15 @@ export function useOnlineMultiplayer(
   );
 
   const leaveRoom = useCallback(() => {
+    const hadSession = Boolean(sessionRef.current);
     sessionRef.current = null;
+    pendingQueueRef.current = [];
     writeStoredSession(null);
     syncRoomQueryParam(null);
     window.clearTimeout(reconnectTimerRef.current);
 
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (hadSession && ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'LEAVE_ROOM' } satisfies ClientToServerMessage));
     }
     setRoomSnapshot(null);
@@ -338,7 +369,14 @@ export function useOnlineMultiplayer(
   }, []);
 
   const updateLobbySettings = useCallback(
-    (patch: { maxPlayers?: 2 | 3 | 4; startingCash?: number; fillBots?: boolean }) => {
+    (patch: {
+      maxPlayers?: 2 | 3 | 4;
+      startingCash?: number;
+      fillBots?: boolean;
+      matchMode?: MatchMode;
+      tacticalDiceEnabled?: boolean;
+      festivalEnabled?: boolean;
+    }) => {
       sendMessage({ type: 'UPDATE_LOBBY_SETTINGS', ...patch });
     },
     [sendMessage]
@@ -360,6 +398,11 @@ export function useOnlineMultiplayer(
   const returnToLobby = useCallback(() => {
     setErrorMessage(null);
     sendMessage({ type: 'RETURN_TO_LOBBY' });
+  }, [sendMessage]);
+
+  const reclaimControl = useCallback(() => {
+    setErrorMessage(null);
+    sendMessage({ type: 'RECLAIM_CONTROL' });
   }, [sendMessage]);
 
   const sendGameAction = useCallback(
@@ -391,6 +434,8 @@ export function useOnlineMultiplayer(
     yourSeatIndex,
     yourPlayerId,
     errorMessage,
+    errorSeq,
+    snapshotSeq,
     initialInviteCode,
     savedPlayerName,
     ensureConnected,
@@ -401,6 +446,7 @@ export function useOnlineMultiplayer(
     updateMyProfile,
     startMatch,
     returnToLobby,
+    reclaimControl,
     sendGameAction,
     sendEmote,
     clearError,

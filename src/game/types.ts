@@ -59,6 +59,12 @@ export interface AutoSalePlan {
   cashAfterDebt: number;
 }
 
+export type MatchMode = 'FFA' | 'TEAMS_2V2';
+
+export type TeamId = 0 | 1;
+
+export type TacticalDiceChoice = 'NORMAL' | 'EVEN' | 'ODD';
+
 export interface PlayerSetupConfig {
   id: number;
   name: string;
@@ -67,6 +73,7 @@ export interface PlayerSetupConfig {
   color: string;
   colorName: string;
   tokenType: 'car' | 'yacht' | 'jet' | 'crown';
+  teamId?: TeamId;
 }
 
 export interface PlayerState {
@@ -85,6 +92,9 @@ export interface PlayerState {
   doublesStreak: number;
   pendingWorldTour: boolean;
   bankrupt: boolean;
+  teamId?: TeamId;
+  evenOddCharges?: number;
+  rerollCharges?: number;
   onlineConnected?: boolean;
   onlineBotTakeover?: boolean;
 }
@@ -117,29 +127,30 @@ export type GameScreenState = 'title' | 'playing' | 'paused' | 'gameover';
 export type TurnPhase =
   | 'AWAIT_ROLL'
   | 'ROLLING_DICE'
+  | 'REROLL_DECISION'
   | 'MOVING_TOKEN'
   | 'BUY_DECISION'
   | 'UPGRADE_DECISION'
-  | 'START_UPGRADE_SELECTION'
   | 'BUYOUT_DECISION'
   | 'CHAMPIONSHIP_SELECTION'
   | 'WORLD_TOUR'
   | 'CARD_REVEAL'
   | 'CARD_TARGET_SELECTION'
   | 'DEBT_RESOLUTION'
-  | 'AWAIT_END_TURN'
   | 'GAME_OVER';
 
 export type VictoryConditionKind =
   | 'LAST_STANDING'
   | 'TRIPLE_MONOPOLY'
   | 'SIDE_MONOPOLY'
-  | 'RESORT_MONOPOLY';
+  | 'RESORT_MONOPOLY'
+  | 'TIME_LIMIT';
 
 export interface MatchWinnerResult {
   winner: PlayerState;
   condition: VictoryConditionKind;
   label: string;
+  winningTeamId?: TeamId;
 }
 
 export interface GameLogEntry {
@@ -154,6 +165,8 @@ export interface PendingDebt {
   amount: number;
   creditorId: number | null; // null = bank
   reason: string;
+  /** Optional explicit debtor id (used by multi-debtor Birthday ch-10 queue) */
+  debtorId?: number;
   /** Tile index where rent was incurred so post-debt excess cash can still offer 2x Buyout */
   originTileIndex?: number;
 }

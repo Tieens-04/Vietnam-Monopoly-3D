@@ -1080,9 +1080,10 @@ export function createOuterPriceTabTexture(
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(`🏆 ×${modifiers.cupMultiplier}`, badgeX + badgeW / 2, 32);
-  } else if (modifiers.isShielded) {
+  }
+  if (modifiers.isShielded) {
     const badgeW = 86;
-    const badgeX = W - 24 - badgeW;
+    const badgeX = hasCup ? W - 24 - 128 - 8 - badgeW : W - 24 - badgeW;
     ctx.fillStyle = '#0284C7';
     roundRect(ctx, badgeX, 12, badgeW, 38, 14);
     ctx.fill();

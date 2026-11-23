@@ -1,82 +1,74 @@
-import { expect, Page, test } from '@playwright/test';
-
-function attachZeroErrorGuard(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('pageerror', (err) => {
-    errors.push(`PageError: ${err.message}`);
-  });
-  page.on('console', (msg) => {
-    if (msg.type() === 'error') {
-      errors.push(`ConsoleError: ${msg.text()}`);
-    }
-  });
-  return errors;
-}
-
-async function enable2xSpeed(page: Page): Promise<void> {
-  await page.getByTestId('bt-btn-settings').click();
-  await expect(page.getByTestId('bt-settings-popover')).toBeVisible();
-  await page.getByRole('button', { name: /Tốc độ lượt chơi/i }).click();
-  await page.getByRole('button', { name: 'Đóng cài đặt' }).click();
-}
+import { expect, test } from '@playwright/test';
+import {
+  attachZeroErrorGuard,
+  enable2xSpeed,
+  getTileScreenPoint,
+} from './helpers';
 
 test.describe('Business Tour Vietnam 3D — Full Headed Pre-Deploy Verification', () => {
-  test('1. Auto-turn advance, Lap 1 cap -> Lap 2+ direct Hotel ★ upgrade, START remote upgrade & 3D Hotel raycast', async ({
+  test('1. Auto-turn advance, Lap 1 cap -> Lv3 revisit unlocks Hotel ★, Tile 0 salary-only & 3D Hotel raycast', async ({
     page,
   }) => {
     const errors = attachZeroErrorGuard(page);
 
-    // Deterministic roll sequence for 2-player Hotseat:
-    // Roll 1 (P1): 1+2=3 -> Đà Lạt (buy Lv1) -> auto-advance to P2
+    // Deterministic roll sequence for 2-player Hotseat (BUG-01 & BUG-02):
+    // Roll 1 (P1): 1+2=3 -> Đà Lạt (Lap 1 cap: 3 Nhà absent; buy 2 Nhà = 170K) -> auto-advance to P2
     // Roll 2 (P2): 1+3=4 -> Vịnh Hạ Long (buy Resort) -> auto-advance to P1
-    // Roll 3 (P1): 6+6=12 (doubles #1) -> 3+12=15 Nha Trang (skip) -> bonus roll
-    // Roll 4 (P1): 6+6=12 (doubles #2) -> 15+12=27 Đà Nẵng (buy Lv0) -> bonus roll
-    // Roll 5 (P1): 3+5=8 -> 27+8=35 ≡ 3 Đà Lạt (passed START -> Lap 2 +300K, upgrade Lv1 straight to Hotel ★ Lv4!)
+    // Roll 3 (P1): 6+6=12 (doubles #1) -> 3+12=15 Nha Trang (buy Lv0 = 200K) -> bonus roll
+    // Roll 4 (P1): 6+6=12 (doubles #2) -> 15+12=27 Đà Nẵng (skip) -> bonus roll
+    // Roll 5 (P1): 3+5=8 -> 27+8=35 ≡ 3 Đà Lạt (passes START +300K, Lap 2; Lv2 -> Hotel ★ DISABLED, upgrade to Lv3!)
     // Roll 6 (P2): 1+2=3 -> 4+3=7 Hội An (skip) -> auto-advance to P1
-    // Roll 7 (P1): 6+6=12 (doubles #1) -> 3+12=15 Nha Trang (skip) -> bonus roll
-    // Roll 8 (P1): 5+5=10 (doubles #2) -> 15+10=25 Phú Quốc (skip) -> bonus roll
-    // Roll 9 (P1): 3+4=7 -> 25+7=32 ≡ 0 BẮT ĐẦU (direct landing -> START_UPGRADE_SELECTION -> upgrade Đà Nẵng straight to Hotel ★!)
+    // Roll 7 (P1): 6+6=12 (doubles #1) -> 3+12=15 Nha Trang (skip upgrade) -> bonus roll
+    // Roll 8 (P1): 6+6=12 (doubles #2) -> 15+12=27 Đà Nẵng (skip) -> bonus roll
+    // Roll 9 (P1): 3+5=8 -> 27+8=35 ≡ 3 Đà Lạt (passes START +300K, Lap 3; Lv3 -> Hotel ★ NOW ENABLED, upgrade to Cấp 4 ★!)
+    // Roll 10 (P2): 1+2=3 -> 7+3=10 Tuy Hòa (skip) -> auto-advance to P1
+    // Roll 11 (P1): 6+6=12 (doubles #1) -> 3+12=15 Nha Trang (skip upgrade) -> bonus roll
+    // Roll 12 (P1): 5+5=10 (doubles #2) -> 15+10=25 Phú Quốc (skip) -> bonus roll
+    // Roll 13 (P1): 3+4=7 -> 25+7=32 ≡ 0 BẮT ĐẦU (BUG-01: NO start-upgrade-modal; +300K salary, Vòng 4, auto-advance to P2!)
     await page.goto(
-      '/?autostart=1&players=2&hotseat=1&dice=1-2,1-3,6-6,6-6,3-5,1-2,6-6,5-5,3-4'
+      '/?autostart=1&players=2&hotseat=1&dice=1-2,1-3,6-6,6-6,3-5,1-2,6-6,6-6,3-5,1-2,6-6,5-5,3-4'
     );
     await expect(page.locator('body')).toHaveAttribute('data-state', 'playing');
     await enable2xSpeed(page);
 
-    // P1 Turn 1 -> Đà Lạt (Tile 3)
+    // Roll 1 (P1) -> Đà Lạt (Tile 3)
     await page.getByTestId('bt-roll-dice-btn').click();
     const buyModal = page.getByTestId('buy-decision-modal');
     await expect(buyModal).toBeVisible();
     await expect(buyModal).toContainText('Đà Lạt');
 
-    // Lap 1 cap check: 3 Nhà option is not available on Lap 1, while 1 Nhà & 2 Nhà are enabled
+    // Lap 1 cap check: 3 Nhà option is not available on Lap 1; buy 2 Nhà!
     await expect(buyModal.getByRole('button', { name: /3 Nhà/i })).toHaveCount(0);
-    await buyModal.getByRole('button', { name: /1 Nhà/i }).click();
+    await buyModal.getByRole('button', { name: /2 Nhà/i }).click();
     await buyModal.getByRole('button', { name: /Mua Ngay/i }).click();
 
     // Auto-advance check: NO manual End Turn button; P2 can roll immediately
     await expect(page.getByTestId('bt-end-turn-btn')).toHaveCount(0);
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
 
-    // P2 Turn 2 -> Vịnh Hạ Long (Tile 4 Resort)
+    // Roll 2 (P2) -> Vịnh Hạ Long (Tile 4 Resort)
     await page.getByTestId('bt-roll-dice-btn').click();
     await expect(buyModal).toBeVisible();
     await expect(buyModal).toContainText('Vịnh Hạ Long');
     await buyModal.getByRole('button', { name: /Mua Ngay/i }).click();
 
-    // P1 Turn 3: Doubles #1 -> Nha Trang (skip) -> Doubles #2 -> Đà Nẵng (buy Lv0) -> 3+5 -> Đà Lạt (Lap 2!)
+    // Roll 3 (P1): Doubles #1 -> Nha Trang (buy Lv0)
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
     await expect(buyModal).toBeVisible();
     await expect(buyModal).toContainText('Nha Trang');
-    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
+    await buyModal.getByRole('button', { name: /Đất trống/i }).click();
+    await buyModal.getByRole('button', { name: /Mua Ngay/i }).click();
 
-    // Immediate doubles bonus roll #1 without manual End Turn!
+    // Roll 4 (P1): Doubles #2 -> Đà Nẵng (skip)
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
     await expect(buyModal).toBeVisible();
     await expect(buyModal).toContainText('Đà Nẵng');
-    await buyModal.getByRole('button', { name: /Mua Ngay/i }).click();
+    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
 
-    // Immediate doubles bonus roll #2 -> passes START (+300K, Lap 2) & lands on Đà Lạt!
+    // Roll 5 (P1): passes START (+300K, Lap 2) & revisits Đà Lạt (Lv2):
+    // BUG-02 Part A: Hotel ★ (Cấp 4) MUST be disabled at Lv2; upgrade to Nhà Cấp 3!
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
 
@@ -84,67 +76,75 @@ test.describe('Business Tour Vietnam 3D — Full Headed Pre-Deploy Verification'
     await expect(upgModal).toBeVisible();
     await expect(upgModal).toContainText('Đà Lạt');
 
-    // Verify direct upgrade from Nhà Cấp 1 straight to Khách Sạn Biểu Tượng (Cấp 4 ★) for -150K!
     const hotelBtn = upgModal.getByRole('button', {
       name: /Khách Sạn Biểu Tượng \(Cấp 4 ★\)/i,
     });
+    const lv3Btn = upgModal.getByRole('button', { name: /Nhà Cấp 3/i });
+    await expect(hotelBtn).toBeDisabled();
+    await expect(lv3Btn).toBeEnabled();
+    await lv3Btn.click();
+    await upgModal.getByTestId('bt-confirm-upgrade-btn').click();
+
+    // Roll 6 (P2) -> Hội An (skip)
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+    await expect(buyModal).toBeVisible();
+    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
+
+    // Roll 7 (P1) -> Nha Trang (skip upgrade)
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+    await expect(upgModal).toBeVisible();
+    await expect(upgModal).toContainText('Nha Trang');
+    await upgModal.getByRole('button', { name: 'Giữ Nguyên' }).click();
+
+    // Roll 8 (P1) -> Đà Nẵng (skip)
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+    await expect(buyModal).toBeVisible();
+    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
+
+    // Roll 9 (P1) -> revisits Đà Lạt at Lv3:
+    // BUG-02 Part B: Hotel ★ (Cấp 4) is NOW ENABLED! Upgrade to Cấp 4 ★!
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+    await expect(upgModal).toBeVisible();
+    await expect(upgModal).toContainText('Đà Lạt');
     await expect(hotelBtn).toBeEnabled();
     await hotelBtn.click();
-    await upgModal.getByRole('button', { name: /Nâng Cấp \(-150K\)/i }).click();
+    await upgModal.getByTestId('bt-confirm-upgrade-btn').click();
 
-    // P2 Turn 4 -> Hội An (skip)
+    // Roll 10 (P2) -> Tuy Hòa (skip)
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
     await expect(buyModal).toBeVisible();
     await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
 
-    // P1 Turn 5 -> 6-6 (15, skip) -> 5-5 (25, skip) -> 3-4 (0 BẮT ĐẦU!)
+    // Roll 11 (P1) -> Nha Trang (skip upgrade)
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
-    await expect(buyModal).toBeVisible();
-    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
-
-    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
-    await page.getByTestId('bt-roll-dice-btn').click();
-    await expect(buyModal).toBeVisible();
-    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
-
-    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
-    await page.getByTestId('bt-roll-dice-btn').click();
-
-    // Direct landing on START (Ô 0) opens compact bottom-docked StartUpgradeModal!
-    const startUpgModal = page.getByTestId('start-upgrade-modal');
-    await expect(startUpgModal).toBeVisible();
-    const startBox = await startUpgModal.boundingBox();
-    expect(startBox).not.toBeNull();
-    expect(startBox!.y).toBeGreaterThan(520); // Docked at bottom, center board unobstructed!
-
-    await startUpgModal.getByRole('button', { name: /Đà Nẵng/i }).click();
     await expect(upgModal).toBeVisible();
-    await expect(upgModal).toContainText('Đặc Quyền Ô Bắt Đầu');
-    // Verify ← Đổi Đô Thị back navigation returns cleanly to StartUpgradeModal
-    await upgModal.getByRole('button', { name: /Đổi Đô Thị/i }).click();
-    await expect(startUpgModal).toBeVisible();
-    await startUpgModal.getByRole('button', { name: /Đà Nẵng/i }).click();
-    await expect(upgModal).toBeVisible();
-    await upgModal
-      .getByRole('button', { name: /Khách Sạn Biểu Tượng \(Cấp 4 ★\)/i })
-      .click();
-    await upgModal.getByRole('button', { name: /Nâng Cấp/i }).click();
+    await upgModal.getByRole('button', { name: 'Giữ Nguyên' }).click();
+
+    // Roll 12 (P1) -> Phú Quốc (skip)
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+    await expect(buyModal).toBeVisible();
+    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
+
+    // Roll 13 (P1) -> lands directly on Tile 0 (BẮT ĐẦU)!
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+
+    // BUG-01: StartUpgradeModal MUST NOT open; P1 receives +300K (2 430 000) and Vòng 4, turn auto-advances to P2!
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await expect(page.getByTestId('start-upgrade-modal')).toHaveCount(0);
+    const p1Card = page.getByTestId('player-card-0');
+    await expect(p1Card).toContainText('Vòng 4');
+    await expect(p1Card).toContainText('2 430 000');
 
     // Now on P2's AWAIT_ROLL: click directly on the TOP of Đà Lạt's tall 3D Hotel ★ mesh!
-    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
-    const hotelTopPt = await page.evaluate(() => {
-      const fn = (
-        window as unknown as {
-          __btGetTileScreenPoint?: (
-            idx: number,
-            mode?: 'tile' | 'buildingTop'
-          ) => { x: number; y: number } | null;
-        }
-      ).__btGetTileScreenPoint;
-      return fn ? fn(3, 'buildingTop') : null;
-    });
+    const hotelTopPt = await getTileScreenPoint(page, 3, 'buildingTop');
     expect(hotelTopPt).not.toBeNull();
     await page.mouse.click(hotelTopPt!.x, hotelTopPt!.y);
 
@@ -157,36 +157,45 @@ test.describe('Business Tour Vietnam 3D — Full Headed Pre-Deploy Verification'
     expect(errors).toEqual([]);
   });
 
-  test('2. Free 0K World Championships, unobstructed World Tour flight to opponent city + 2x Buyout & Pause stability', async ({
+  test('2. Free 0K World Championships, restricted World Tour flight (unowned/own only) + 2x Buyout & Pause stability', async ({
     page,
   }) => {
     const errors = attachZeroErrorGuard(page);
 
-    // Roll 1 (P1): 2+3=5 -> Ninh Bình (buy Lv1)
-    // Roll 2 (P2): 4+5=9 -> Quy Nhơn (skip)
-    // Roll 3 (P1): 5+6=11 -> 5+11=16 CÚP QUỐC GIA (0K fee! Host on Ninh Bình -> 2x rent)
-    // Roll 4 (P2): 5+5=10 (doubles #1) -> 9+10=19 Cần Thơ (skip) -> bonus roll
-    // Roll 5 (P2): 2+3=5 -> 19+5=24 Du Lịch Xuyên Việt (arms World Tour for next turn)
-    // Roll 6 (P1): 1+2=3 -> 16+3=19 Cần Thơ (skip)
-    // P2 Next Turn: WORLD_TOUR opens -> fly directly to opponent's Ninh Bình (Tile 5, passes START +300K, -50K flight, pays 2x rent 108K) -> BUYOUT_DECISION opens -> execute 2x Buyout!
+    // Deterministic roll sequence (BUG-03):
+    // Roll 1 (P1): 1+2=3 -> Đà Lạt (buy Lv0 = 70K)
+    // Roll 2 (P2): 2+3=5 -> Ninh Bình (buy Lv1 = 165K)
+    // Pause / Resume check via Escape
+    // Roll 3 (P1): 3+3=6 (doubles #1) -> 3+6=9 Quy Nhơn (skip) -> bonus roll
+    // Roll 4 (P1): 3+4=7 -> 9+7=16 CÚP QUỐC GIA (0K fee! Host on Đà Lạt)
+    // Roll 5 (P2): 1+3=4 -> 5+4=9 Quy Nhơn (skip)
+    // Roll 6 (P1): 3+5=8 -> 16+8=24 Du Lịch Xuyên Việt (arms World Tour for next turn)
+    // Roll 7 (P2): 1+3=4 -> 9+4=13 Vũng Tàu (skip)
+    // P1 Next Turn: WORLD_TOUR opens -> opponent/special tiles blocked; fly to own Đà Lạt (Tile 3, +300K -50K) -> UpgradeDecisionModal (skip)
+    // Roll 8 (P2): 1+3=4 -> 13+4=17 Buôn Ma Thuột (skip)
+    // Roll 9 (P1): 1+1=2 -> 3+2=5 Ninh Bình (P2 Lv1) -> BuyoutDecisionModal (330K) -> Thâu Tóm!
     await page.goto(
-      '/?autostart=1&players=2&hotseat=1&dice=2-3,4-5,5-6,5-5,2-3,1-2'
+      '/?autostart=1&players=2&hotseat=1&dice=1-2,2-3,3-3,3-4,1-3,3-5,1-3,1-3,1-1'
     );
     await expect(page.locator('body')).toHaveAttribute('data-state', 'playing');
     await enable2xSpeed(page);
 
-    // P1 buys Ninh Bình (Lv1 = 90K + 75K = 165K)
-    await page.getByTestId('bt-roll-dice-btn').click();
     const buyModal = page.getByTestId('buy-decision-modal');
+
+    // Roll 1 (P1) buys Đà Lạt (Lv0 = 70K)
+    await page.getByTestId('bt-roll-dice-btn').click();
     await expect(buyModal).toBeVisible();
-    await buyModal.getByRole('button', { name: /1 Nhà/i }).click();
+    await expect(buyModal).toContainText('Đà Lạt');
+    await buyModal.getByRole('button', { name: /Đất trống/i }).click();
     await buyModal.getByRole('button', { name: /Mua Ngay/i }).click();
 
-    // P2 skips Quy Nhơn
+    // Roll 2 (P2) buys Ninh Bình (Lv1 = 90K + 75K = 165K)
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
     await expect(buyModal).toBeVisible();
-    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
+    await expect(buyModal).toContainText('Ninh Bình');
+    await buyModal.getByRole('button', { name: /1 Nhà/i }).click();
+    await buyModal.getByRole('button', { name: /Mua Ngay/i }).click();
 
     // Pause / Resume check mid-match
     await page.keyboard.press('Escape');
@@ -194,57 +203,118 @@ test.describe('Business Tour Vietnam 3D — Full Headed Pre-Deploy Verification'
     await page.keyboard.press('Escape');
     await expect(page.locator('body')).toHaveAttribute('data-state', 'playing');
 
-    // P1 lands on CÚP QUỐC GIA (Tile 16) -> 0K Free Championship!
+    // Roll 3 (P1): Doubles #1 -> Quy Nhơn (skip)
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+    await expect(buyModal).toBeVisible();
+    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
+
+    // Roll 4 (P1): lands on CÚP QUỐC GIA (Tile 16) -> 0K Free Championship!
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
     const champModal = page.getByTestId('championship-decision-modal');
     await expect(champModal).toBeVisible();
     await expect(champModal).toContainText('Miễn Phí 0K');
     const champBox = await champModal.boundingBox();
     expect(champBox!.y).toBeGreaterThan(520); // Compact bottom dock!
-    await champModal.getByRole('button', { name: /Ninh Bình/i }).click();
+    await champModal.getByRole('button', { name: /Đà Lạt/i }).click();
 
-    // P2 rolls 5-5 -> 19 (skip) -> bonus roll 2-3 -> 24 (World Tour armed!)
+    // Roll 5 (P2) -> Quy Nhơn (skip)
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
     await expect(buyModal).toBeVisible();
     await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
 
+    // Roll 6 (P1) -> 24 Du Lịch Xuyên Việt (arms World Tour!)
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
 
-    // P1 rolls 1-2 -> 19 (skip)
+    // Roll 7 (P2) -> Vũng Tàu (skip)
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     await page.getByTestId('bt-roll-dice-btn').click();
     await expect(buyModal).toBeVisible();
     await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
 
-    // P2 enters WORLD_TOUR at start of turn!
+    // P1 enters WORLD_TOUR at start of turn!
     const worldTourModal = page.getByTestId('world-tour-modal');
     await expect(worldTourModal).toBeVisible();
     const wtBox = await worldTourModal.boundingBox();
     expect(wtBox!.y).toBeGreaterThan(500); // Unobstructed 3D board!
 
-    // Click opponent's Ninh Bình directly on the 3D board canvas!
-    const ninhBinhPt = await page.evaluate(() => {
-      const fn = (
-        window as unknown as {
-          __btGetTileScreenPoint?: (idx: number) => { x: number; y: number } | null;
-        }
-      ).__btGetTileScreenPoint;
-      return fn ? fn(5) : null;
-    });
-    expect(ninhBinhPt).not.toBeNull();
-    await page.mouse.click(ninhBinhPt!.x, ninhBinhPt!.y);
+    // BUG-03 & BUG-36: WorldTourPrompt copy & recommended buttons MUST NOT reference opponent buyout or special tiles
+    await expect(worldTourModal).not.toContainText(/đất đối thủ|Mua đứt|Cúp Quốc Gia/i);
+    await expect(worldTourModal.getByRole('button', { name: /Ninh Bình/i })).toHaveCount(0);
+    await expect(worldTourModal.getByRole('button', { name: /BẮT ĐẦU/i })).toHaveCount(0);
+    await expect(worldTourModal.getByRole('button', { name: /CÚP QUỐC GIA/i })).toHaveCount(0);
+    await expect(worldTourModal.getByRole('button', { name: /Cơ Hội/i })).toHaveCount(0);
 
-    // P2 lands on Ninh Bình, pays Championship-boosted rent (108K, or 216K if Ninh Bình also rolled Festival 🎉), and gets BuyoutDecisionModal (330K)!
+    // Clicking invalid targets directly on the 3D board must keep World Tour open (rejected)
+    const clickUnobstructedCanvasTile = async (tileIdx: number) => {
+      const pt = await getTileScreenPoint(page, tileIdx);
+      expect(pt).not.toBeNull();
+      const hitsCanvas = await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y)?.tagName === 'CANVAS',
+        pt!
+      );
+      expect(hitsCanvas, `Tile ${tileIdx} screen point (${pt!.x}, ${pt!.y}) must hit <canvas>`).toBe(
+        true
+      );
+      await page.mouse.click(pt!.x, pt!.y);
+    };
+
+    for (const invalidTileIdx of [5, 16, 12, 8]) {
+      await clickUnobstructedCanvasTile(invalidTileIdx);
+      await expect(worldTourModal).toBeVisible();
+    }
+
+    // Orbit 3D camera horizontally so corner Tile 0 (BẮT ĐẦU) moves clear of bottom-docked WorldTourPrompt
+    await page.mouse.move(720, 260);
+    await page.mouse.down();
+    await page.mouse.move(480, 260, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(350);
+
+    await clickUnobstructedCanvasTile(0);
+    await expect(worldTourModal).toBeVisible();
+
+    // Ensure P1's own Đà Lạt (Tile 3) is unobstructed on canvas, then click it -> flies past START (+300K, -50K) -> opens UpgradeDecisionModal!
+    const daLatPt = await getTileScreenPoint(page, 3);
+    expect(daLatPt).not.toBeNull();
+    const daLatClear = await page.evaluate(
+      ({ x, y }) => document.elementFromPoint(x, y)?.tagName === 'CANVAS',
+      daLatPt!
+    );
+    if (!daLatClear) {
+      await page.mouse.move(480, 260);
+      await page.mouse.down();
+      await page.mouse.move(720, 260, { steps: 10 });
+      await page.mouse.up();
+      await page.waitForTimeout(350);
+    }
+    await clickUnobstructedCanvasTile(3);
+
+    const upgModal = page.getByTestId('upgrade-decision-modal');
+    await expect(upgModal).toBeVisible();
+    await expect(upgModal).toContainText('Đà Lạt');
+    await upgModal.getByRole('button', { name: 'Giữ Nguyên' }).click();
+
+    // Roll 8 (P2) -> Buôn Ma Thuột (skip)
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+    await expect(buyModal).toBeVisible();
+    await buyModal.getByRole('button', { name: 'Bỏ Qua' }).click();
+
+    // Roll 9 (P1): 1+1=2 from Tile 3 -> lands on opponent P2's Ninh Bình (Tile 5, Lv1) -> pays rent & gets 2x Buyout (330K)!
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+
     const buyoutModal = page.getByTestId('buyout-decision-modal');
     await expect(buyoutModal).toBeVisible();
     await expect(buyoutModal).toContainText('Ninh Bình');
-    await expect(buyoutModal).toContainText(/108K|216K/);
+    await expect(buyoutModal).toContainText(/54K|108K/);
     await expect(buyoutModal).toContainText('330K');
     await buyoutModal.getByRole('button', { name: /Thâu Tóm/i }).click();
 
-    // Auto-advances back to P1!
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
     expect(errors).toEqual([]);
   });
@@ -324,14 +394,7 @@ test.describe('Business Tour Vietnam 3D — Full Headed Pre-Deploy Verification'
 
     // Inspect Ninh Bình & Đà Lạt via 3D board to verify Outage (0K) and Earthquake downgrade (Lv0)!
     await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
-    const ninhBinhPt = await page.evaluate(() => {
-      const fn = (
-        window as unknown as {
-          __btGetTileScreenPoint?: (idx: number) => { x: number; y: number } | null;
-        }
-      ).__btGetTileScreenPoint;
-      return fn ? fn(5) : null;
-    });
+    const ninhBinhPt = await getTileScreenPoint(page, 5);
     await page.mouse.click(ninhBinhPt!.x, ninhBinhPt!.y);
     const inspector = page.getByTestId('tile-inspector-card');
     await expect(inspector).toBeVisible();
@@ -339,15 +402,8 @@ test.describe('Business Tour Vietnam 3D — Full Headed Pre-Deploy Verification'
     await expect(inspector).toContainText('0K');
 
     // Also inspect Đà Lạt (Tile 3) to confirm EARTHQUAKE downgraded it from Nhà Cấp 1 to Đất khởi điểm!
-    await inspector.getByRole('button').first().click();
-    const daLatPt = await page.evaluate(() => {
-      const fn = (
-        window as unknown as {
-          __btGetTileScreenPoint?: (idx: number) => { x: number; y: number } | null;
-        }
-      ).__btGetTileScreenPoint;
-      return fn ? fn(3) : null;
-    });
+    await inspector.getByRole('button', { name: 'Đóng thông tin ô đất' }).click();
+    const daLatPt = await getTileScreenPoint(page, 3);
     await page.mouse.click(daLatPt!.x, daLatPt!.y);
     await expect(inspector).toBeVisible();
     await expect(inspector).toContainText('Đà Lạt');

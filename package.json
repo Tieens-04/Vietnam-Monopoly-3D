@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "clean": "node -e \"const fs=require('node:fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('server.js',{force:true})\"",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/game/*.test.ts src/three/*.test.ts src/server/*.test.ts",
+    "test": "tsx --test src/game/*.test.ts src/three/*.test.ts src/server/*.test.ts src/utils/*.test.ts",
     "test:e2e": "playwright test --headed"
   },
   "dependencies": {

@@ -35,6 +35,7 @@ import {
   CurrencyStyleId,
   GraphicsQualityTier,
   MatchBoardModifiers,
+  MatchMode,
   PlayerState,
   PropertyState,
   TileKind,
@@ -83,6 +84,7 @@ export interface MonopolyCanvasHandle {
     speedMultiplier: number,
     onStep?: (stepIdx: number, tileIdx: number) => void
   ) => Promise<void>;
+  cancelPendingAnimations: () => void;
   resetCamera: () => void;
 }
 
@@ -93,12 +95,14 @@ interface MonopolyCanvasProps {
   selectableTileIndices?: number[];
   activePlayerId: number | null;
   boardModifiers: MatchBoardModifiers;
+  matchMode?: MatchMode;
   turnTimeLeft: number;
   turnCount?: number;
   activeSpeechText?: string | null;
   currencyStyle?: CurrencyStyleId;
   graphicsQualityTier?: GraphicsQualityTier;
   isBoardOccluded?: boolean;
+  isPaused?: boolean;
   cinematicCamera: boolean;
   nightMode: boolean;
   onSelectTile: (tileIndex: number) => void;
@@ -188,6 +192,30 @@ function springPopScale(progress: number): number {
   );
 }
 
+export function detectCashSnapshotChanges(
+  prevPlayers: ReadonlyArray<Pick<PlayerState, 'id' | 'cash' | 'bankrupt'>>,
+  currentPlayers: ReadonlyArray<Pick<PlayerState, 'id' | 'cash' | 'bankrupt'>>
+): { playerRosterChanged: boolean; cashStateChanged: boolean } {
+  let playerRosterChanged = prevPlayers.length !== currentPlayers.length;
+  let cashStateChanged = playerRosterChanged;
+  if (!playerRosterChanged) {
+    for (let i = 0; i < currentPlayers.length; i++) {
+      if (prevPlayers[i].id !== currentPlayers[i].id) {
+        playerRosterChanged = true;
+        cashStateChanged = true;
+        break;
+      }
+      if (
+        prevPlayers[i].cash !== currentPlayers[i].cash ||
+        prevPlayers[i].bankrupt !== currentPlayers[i].bankrupt
+      ) {
+        cashStateChanged = true;
+      }
+    }
+  }
+  return { playerRosterChanged, cashStateChanged };
+}
+
 export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCanvasProps>(
   (
     {
@@ -197,12 +225,14 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       selectableTileIndices = [],
       activePlayerId,
       boardModifiers,
+      matchMode = 'FFA',
       turnTimeLeft,
       turnCount = 1,
       activeSpeechText = null,
       currencyStyle = 'mixed',
       graphicsQualityTier = 'low',
       isBoardOccluded = false,
+      isPaused = false,
       cinematicCamera,
       nightMode,
       onSelectTile,
@@ -235,6 +265,9 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
     const boardModifiersRef = useRef(boardModifiers);
     boardModifiersRef.current = boardModifiers;
 
+    const matchModeRef = useRef<MatchMode>(matchMode);
+    matchModeRef.current = matchMode;
+
     const turnTimeLeftRef = useRef(turnTimeLeft);
     turnTimeLeftRef.current = turnTimeLeft;
 
@@ -252,6 +285,9 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
     const isBoardOccludedRef = useRef<boolean>(isBoardOccluded);
     isBoardOccludedRef.current = isBoardOccluded;
+
+    const isPausedRef = useRef<boolean>(isPaused);
+    isPausedRef.current = isPaused;
 
     const prevCinematicRef = useRef(cinematicCamera);
     const cinematicCameraRef = useRef(cinematicCamera);
@@ -272,6 +308,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
     const wakeRenderRef = useRef<((markBackdropDirty?: boolean) => void) | null>(
       null
     );
+    const clearHoverOnOccludeRef = useRef<(() => void) | null>(null);
     const applyQualityTierRef = useRef<((tier: GraphicsQualityTier) => void) | null>(
       null
     );
@@ -293,15 +330,20 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
     }, [graphicsQualityTier]);
 
     useEffect(() => {
+      if (isBoardOccluded) {
+        clearHoverOnOccludeRef.current?.();
+      }
       // Always wake 1 frame when occlusion or core board state changes (e.g. entering/leaving Lobby or Pause)
       wakeRenderRef.current?.(true);
     }, [
       isBoardOccluded,
+      isPaused,
       nightMode,
       currencyStyle,
       players,
       properties,
       boardModifiers,
+      matchMode,
     ]);
 
     useEffect(() => {
@@ -354,6 +396,33 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         manualOrbitOverrideRef.current = false;
         wakeRenderRef.current?.();
       },
+      cancelPendingAnimations: () => {
+        if (activeDiceAnimRef.current) {
+          const prevAnim = activeDiceAnimRef.current;
+          activeDiceAnimRef.current = null;
+          const dice = diceMeshesRef.current;
+          if (dice) {
+            const finalPose = sampleDiceTrajectoryAt(prevAnim.trajectory, 1);
+            dice[0].position.copy(finalPose.pos1);
+            dice[0].quaternion.copy(finalPose.quat1);
+            dice[1].position.copy(finalPose.pos2);
+            dice[1].quaternion.copy(finalPose.quat2);
+          }
+          prevAnim.resolve();
+        }
+        if (activeHopAnimRef.current) {
+          const hopPlayerId = activeHopAnimRef.current.playerId;
+          const prevResolve = activeHopAnimRef.current.resolve;
+          activeHopAnimRef.current = null;
+          const tok = tokenGroupsRef.current.get(hopPlayerId);
+          if (tok) {
+            tok.scale.set(1, 1, 1);
+            tok.position.y = TILE_SURFACE_Y;
+          }
+          prevResolve();
+        }
+        wakeRenderRef.current?.(true);
+      },
       animateDiceRoll: (die1: number, die2: number, speedMultiplier: number) => {
         manualOrbitOverrideRef.current = false;
         return new Promise<void>((resolve) => {
@@ -398,11 +467,29 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             return;
           }
 
-          const firstTargetTf = getTileTransform(tilePath[0]);
+          const targetTileIdx = tilePath[0];
           const { stepDurationSec } = computeTokenHopTiming(
             tilePath.length,
             speedMultiplier
           );
+          let toVec: THREE.Vector3;
+          if (tilePath.length === 1) {
+            const simulatedPlayers = playersRef.current.map((pl) =>
+              pl.id === playerId ? { ...pl, position: targetTileIdx } : pl
+            );
+            toVec = computeTokenRestWorldPos(
+              playerId,
+              targetTileIdx,
+              simulatedPlayers
+            );
+          } else {
+            const firstTargetTf = getTileTransform(targetTileIdx);
+            toVec = new THREE.Vector3(
+              firstTargetTf.x,
+              TILE_SURFACE_Y,
+              firstTargetTf.z
+            );
+          }
           activeHopAnimRef.current = {
             playerId,
             path: tilePath,
@@ -410,7 +497,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             stepElapsed: 0,
             stepDuration: stepDurationSec,
             fromVec: token.position.clone(),
-            toVec: new THREE.Vector3(firstTargetTf.x, TILE_SURFACE_Y, firstTargetTf.z),
+            toVec,
             onStep,
             resolve,
           };
@@ -541,6 +628,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           samples: 4,
         });
         composer = new EffectComposer(renderer, composerRT);
+        composer.setSize(w, h);
+        composer.setPixelRatio(pxRatio);
         composerPixelRatio = pxRatio;
         composerWidth = w;
         composerHeight = h;
@@ -650,7 +739,9 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       const ensureEnvironmentMap = (): THREE.Texture => {
         if (!envRT) {
           const pmremGenerator = new THREE.PMREMGenerator(renderer);
-          envRT = pmremGenerator.fromScene(new RoomEnvironment(), 0.04);
+          const roomEnv = new RoomEnvironment();
+          envRT = pmremGenerator.fromScene(roomEnv, 0.04);
+          roomEnv.dispose();
           pmremGenerator.dispose();
         }
         return envRT.texture;
@@ -1094,8 +1185,17 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       const pointerNDC = new THREE.Vector2();
       let downX = 0;
       let downY = 0;
+      let pointerDownOnCanvas = false;
       let hoveredTileIdx: number | null = null;
       let lastMoveCheck = 0;
+
+      clearHoverOnOccludeRef.current = () => {
+        pointerDownOnCanvas = false;
+        if (hoveredTileIdx !== null) {
+          hoveredTileIdx = null;
+        }
+        renderer.domElement.style.cursor = 'grab';
+      };
 
       const updateNDC = (clientX: number, clientY: number) => {
         const rect = renderer.domElement.getBoundingClientRect();
@@ -1104,6 +1204,11 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       };
 
       const onPointerDown = (e: PointerEvent) => {
+        if (isBoardOccludedRef.current) {
+          pointerDownOnCanvas = false;
+          return;
+        }
+        pointerDownOnCanvas = true;
         downX = e.clientX;
         downY = e.clientY;
       };
@@ -1140,6 +1245,9 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       };
 
       const onPointerUp = (e: PointerEvent) => {
+        const wasDown = pointerDownOnCanvas;
+        pointerDownOnCanvas = false;
+        if (!wasDown || isBoardOccludedRef.current) return;
         const dist = Math.hypot(e.clientX - downX, e.clientY - downY);
         if (dist > 6 || e.button !== 0) return;
 
@@ -1168,6 +1276,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       };
 
       const onPointerLeave = () => {
+        pointerDownOnCanvas = false;
         if (hoveredTileIdx !== null) {
           hoveredTileIdx = null;
           renderer.domElement.style.cursor = 'grab';
@@ -1175,10 +1284,15 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         }
       };
 
+      const onPointerCancel = () => {
+        pointerDownOnCanvas = false;
+      };
+
       renderer.domElement.addEventListener('pointerdown', onPointerDown);
       renderer.domElement.addEventListener('pointerup', onPointerUp);
       renderer.domElement.addEventListener('pointermove', onPointerMove);
       renderer.domElement.addEventListener('pointerleave', onPointerLeave);
+      renderer.domElement.addEventListener('pointercancel', onPointerCancel);
 
       controls.addEventListener('change', () => {
         controlsChangedThisFrame = true;
@@ -1391,10 +1505,30 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         }
 
         // 1. Sync Stylized 3D Character Pawns
+        const disposeTokenGroup = (tokGroup: THREE.Group) => {
+          scene.remove(tokGroup);
+          tokGroup.traverse((obj) => {
+            if (obj instanceof THREE.Mesh) {
+              if (obj.geometry && !obj.geometry.userData?.sharedStatic) {
+                obj.geometry.dispose();
+              }
+              const disposeTokMat = (m: THREE.Material) => {
+                if (m.userData?.sharedStatic) return;
+                m.dispose();
+              };
+              if (Array.isArray(obj.material)) {
+                obj.material.forEach(disposeTokMat);
+              } else if (obj.material) {
+                disposeTokMat(obj.material);
+              }
+            }
+          });
+        };
+
         const validIds = new Set(currentPlayers.map((p) => p.id));
         for (const [id, mesh] of tokenGroupsRef.current.entries()) {
           if (!validIds.has(id)) {
-            scene.remove(mesh);
+            disposeTokenGroup(mesh);
             tokenGroupsRef.current.delete(id);
             transparentListDirty = true;
             sceneShadowCastersMoved = true;
@@ -1407,23 +1541,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             token &&
             (token.userData.tokenType !== p.tokenType || token.userData.color !== p.color)
           ) {
-            scene.remove(token);
-            token.traverse((obj) => {
-              if (obj instanceof THREE.Mesh) {
-                if (obj.geometry && !obj.geometry.userData?.sharedStatic) {
-                  obj.geometry.dispose();
-                }
-                const disposeTokMat = (m: THREE.Material) => {
-                  if (m.userData?.sharedStatic) return;
-                  m.dispose();
-                };
-                if (Array.isArray(obj.material)) {
-                  obj.material.forEach(disposeTokMat);
-                } else if (obj.material) {
-                  disposeTokMat(obj.material);
-                }
-              }
-            });
+            disposeTokenGroup(token);
             tokenGroupsRef.current.delete(p.id);
             token = undefined;
             transparentListDirty = true;
@@ -1449,11 +1567,13 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           if (!hop || hop.playerId !== p.id) {
             const targetPos = computeTokenRestWorldPos(p.id, p.position, currentPlayers);
             token.userData.tileIndex = p.position;
-            const alpha = 1 - Math.exp(-12 * simDt);
+            const alpha = simDt > 0 ? 1 - Math.exp(-12 * simDt) : 0;
             if (token.position.distanceToSquared(targetPos) > 0.00002) {
-              token.position.lerp(targetPos, alpha);
-              hasActiveMotion = true;
-              sceneShadowCastersMoved = true;
+              if (simDt > 0 && !isPausedRef.current) {
+                token.position.lerp(targetPos, alpha);
+                hasActiveMotion = true;
+                sceneShadowCastersMoved = true;
+              }
             } else {
               token.position.copy(targetPos);
             }
@@ -1549,14 +1669,21 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           // Sync Protruding 3D Outer Price / Live Rent Tab
           if (entry.priceTab && tileDef) {
             const liveLabel =
-              formatTilePriceLabel(tileDef, propState, currentProps, currentMods) || '';
+              formatTilePriceLabel(
+                tileDef,
+                propState,
+                currentProps,
+                currentMods,
+                currentPlayers,
+                matchModeRef.current
+              ) || '';
             const ownerHex = owner ? owner.color : null;
             const isFestival = currentMods.festivalTileIndices.includes(entry.index);
             const cupMultiplier =
               currentMods.championshipTileIndex === entry.index
                 ? Math.max(2, currentMods.championshipMultiplier)
                 : null;
-            const sig = `${liveLabel}|${ownerHex}|${isFestival}|${cupMultiplier}|${isOutage}|${isShielded}`;
+            const sig = `${liveLabel}|${ownerHex}|${isFestival}|${cupMultiplier}|${isOutage}|${isShielded}|${matchModeRef.current}`;
             if (sig !== entry.lastTabSignature) {
               entry.lastTabSignature = sig;
               const prevMap = entry.priceTab.topMat.map;
@@ -1741,13 +1868,15 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
           entry.targetLift = isSel ? 0.14 : isSelectable ? 0.09 : isHov ? 0.06 : 0;
           if (Math.abs(entry.group.position.y - entry.targetLift) > 0.0015) {
-            entry.group.position.y = THREE.MathUtils.lerp(
-              entry.group.position.y,
-              entry.targetLift,
-              1 - Math.exp(-14 * simDt)
-            );
-            hasActiveMotion = true;
-            sceneShadowCastersMoved = true;
+            if (simDt > 0 && !isPausedRef.current) {
+              entry.group.position.y = THREE.MathUtils.lerp(
+                entry.group.position.y,
+                entry.targetLift,
+                1 - Math.exp(-14 * simDt)
+              );
+              hasActiveMotion = true;
+              sceneShadowCastersMoved = true;
+            }
           } else if (entry.group.position.y !== entry.targetLift) {
             entry.group.position.y = entry.targetLift;
             sceneShadowCastersMoved = true;
@@ -1757,21 +1886,26 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         // 3. Advance cannon-es Rigid-Body 3D Dice trajectory & synchronized collision SFX
         const diceAnim = activeDiceAnimRef.current;
         const diceMeshes = diceMeshesRef.current;
-        if (diceAnim && diceMeshes) {
+        const isDocHiddenNow = typeof document !== 'undefined' && document.hidden;
+        if (diceAnim && diceMeshes && !isPausedRef.current) {
           hasActiveMotion = true;
           sceneShadowCastersMoved = true;
           diceAnim.elapsed += animDt;
           const t = Math.min(1, diceAnim.elapsed / diceAnim.duration);
 
+          let playedCollisionSfx = false;
           while (
             diceAnim.nextCollisionIdx < diceAnim.trajectory.collisionTimes.length &&
             t >= diceAnim.trajectory.collisionTimes[diceAnim.nextCollisionIdx]
           ) {
-            const impactIntensity = Math.max(
-              0.22,
-              1.0 - diceAnim.nextCollisionIdx * 0.2
-            );
-            soundEngine.playPhysicsDiceHit(impactIntensity);
+            if (!isDocHiddenNow && !playedCollisionSfx) {
+              const impactIntensity = Math.max(
+                0.22,
+                1.0 - diceAnim.nextCollisionIdx * 0.2
+              );
+              soundEngine.playPhysicsDiceHit(impactIntensity);
+              playedCollisionSfx = true;
+            }
             diceAnim.nextCollisionIdx++;
           }
 
@@ -1791,7 +1925,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
         // 4. Advance parabolic step-by-step 3D Pawn Hop animation
         const hopAnim = activeHopAnimRef.current;
-        if (hopAnim) {
+        if (hopAnim && !isPausedRef.current) {
           hasActiveMotion = true;
           sceneShadowCastersMoved = true;
           const token = tokenGroupsRef.current.get(hopAnim.playerId);
@@ -1800,44 +1934,53 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             activeHopAnimRef.current = null;
             done();
           } else {
-            hopAnim.stepElapsed += animDt;
-            const u = Math.min(1, hopAnim.stepElapsed / hopAnim.stepDuration);
+            let remainingHopDt = animDt;
+            while (remainingHopDt > 0 && activeHopAnimRef.current === hopAnim) {
+              const needed = Math.max(0, hopAnim.stepDuration - hopAnim.stepElapsed);
+              const consume = Math.min(remainingHopDt, needed);
+              hopAnim.stepElapsed += consume;
+              remainingHopDt -= consume;
+              const u = Math.min(1, hopAnim.stepElapsed / hopAnim.stepDuration);
 
-            token.position.lerpVectors(hopAnim.fromVec, hopAnim.toVec, u);
-            token.position.y = TILE_SURFACE_Y + Math.sin(u * Math.PI) * 0.85;
+              token.position.lerpVectors(hopAnim.fromVec, hopAnim.toVec, u);
+              token.position.y = TILE_SURFACE_Y + Math.sin(u * Math.PI) * 0.85;
 
-            const stretch = 1 + Math.sin(u * Math.PI) * 0.16;
-            const squash = 1 / Math.sqrt(stretch);
-            token.scale.set(squash, stretch, squash);
+              const stretch = 1 + Math.sin(u * Math.PI) * 0.16;
+              const squash = 1 / Math.sqrt(stretch);
+              token.scale.set(squash, stretch, squash);
 
-            const targetTileIdx = hopAnim.path[hopAnim.stepIndex];
-            token.rotation.y = Math.PI / 4;
+              const targetTileIdx = hopAnim.path[hopAnim.stepIndex];
+              token.rotation.y = Math.PI / 4;
 
-            if (u >= 1) {
-              hopAnim.onStep?.(hopAnim.stepIndex, targetTileIdx);
-              hopAnim.stepIndex += 1;
+              if (u >= 1) {
+                hopAnim.onStep?.(hopAnim.stepIndex, targetTileIdx);
+                hopAnim.stepIndex += 1;
 
-              if (hopAnim.stepIndex >= hopAnim.path.length) {
-                token.scale.set(1, 1, 1);
-                token.position.y = TILE_SURFACE_Y;
-                const done = hopAnim.resolve;
-                activeHopAnimRef.current = null;
-                done();
-              } else {
-                hopAnim.stepElapsed = 0;
-                hopAnim.fromVec.copy(hopAnim.toVec);
-                const nextTileIdx = hopAnim.path[hopAnim.stepIndex];
-                if (hopAnim.stepIndex === hopAnim.path.length - 1) {
-                  const simulatedPlayers = currentPlayers.map((pl) =>
-                    pl.id === hopAnim.playerId ? { ...pl, position: nextTileIdx } : pl
-                  );
-                  hopAnim.toVec.copy(
-                    computeTokenRestWorldPos(hopAnim.playerId, nextTileIdx, simulatedPlayers)
-                  );
+                if (hopAnim.stepIndex >= hopAnim.path.length) {
+                  token.scale.set(1, 1, 1);
+                  token.position.y = TILE_SURFACE_Y;
+                  const done = hopAnim.resolve;
+                  activeHopAnimRef.current = null;
+                  done();
+                  break;
                 } else {
-                  const nextTf = getTileTransform(nextTileIdx);
-                  hopAnim.toVec.set(nextTf.x, TILE_SURFACE_Y, nextTf.z);
+                  hopAnim.stepElapsed = 0;
+                  hopAnim.fromVec.copy(hopAnim.toVec);
+                  const nextTileIdx = hopAnim.path[hopAnim.stepIndex];
+                  if (hopAnim.stepIndex === hopAnim.path.length - 1) {
+                    const simulatedPlayers = currentPlayers.map((pl) =>
+                      pl.id === hopAnim.playerId ? { ...pl, position: nextTileIdx } : pl
+                    );
+                    hopAnim.toVec.copy(
+                      computeTokenRestWorldPos(hopAnim.playerId, nextTileIdx, simulatedPlayers)
+                    );
+                  } else {
+                    const nextTf = getTileTransform(nextTileIdx);
+                    hopAnim.toVec.set(nextTf.x, TILE_SURFACE_Y, nextTf.z);
+                  }
                 }
+              } else {
+                break;
               }
             }
           }
@@ -1852,26 +1995,19 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         }
 
         // 5a. Live Per-Player 3D Treasury Vaults & Physical Incoming/Outgoing Cash-Flow Arcs!
-        let cashStateChanged =
-          prevCashPlayersSnapshot.length !== currentPlayers.length;
-        if (!cashStateChanged) {
-          for (let i = 0; i < currentPlayers.length; i++) {
-            if (
-              prevCashPlayersSnapshot[i].cash !== currentPlayers[i].cash ||
-              prevCashPlayersSnapshot[i].bankrupt !== currentPlayers[i].bankrupt
-            ) {
-              cashStateChanged = true;
-              break;
-            }
-          }
-        }
+        const { playerRosterChanged, cashStateChanged } = detectCashSnapshotChanges(
+          prevCashPlayersSnapshot,
+          currentPlayers
+        );
         if (cashStateChanged) {
-          const transfers = detectCashFlowTransfers(
-            prevCashPlayersSnapshot,
-            currentPlayers,
-            prevCashPropsSnapshot,
-            currentProps
-          );
+          const transfers = playerRosterChanged
+            ? []
+            : detectCashFlowTransfers(
+                prevCashPlayersSnapshot,
+                currentPlayers,
+                prevCashPropsSnapshot,
+                currentProps
+              );
           if (transfers.length > 0) {
             treasury.enqueueTransfers(
               transfers,
@@ -2102,13 +2238,14 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           }
         }
 
-        return hasActiveMotion;
+        return isPausedRef.current ? false : hasActiveMotion;
       };
 
       const frameScheduler = createBoardFrameScheduler({
         isSoftwareGl,
         isDocumentHidden: () => typeof document !== 'undefined' && document.hidden,
         hasPendingGameplayPromises: () =>
+          !isPausedRef.current &&
           Boolean(activeDiceAnimRef.current || activeHopAnimRef.current),
         onMarkBackdropDirty: () => {
           occludedBackdropDirty = true;
@@ -2143,13 +2280,20 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           };
         },
         onFrame: (rawDt) => {
-          const simDt = Math.min(rawDt, 0.08);
-          const animDt = Math.min(rawDt, isSoftwareGl ? 0.35 : 0.06);
+          const docHidden = typeof document !== 'undefined' && document.hidden;
+          const pausedNow = isPausedRef.current;
+          const simDt = pausedNow ? 0 : Math.min(rawDt, 0.08);
+          const animDt = pausedNow
+            ? 0
+            : docHidden
+              ? Math.min(rawDt, 2.0)
+              : Math.min(rawDt, isSoftwareGl ? 0.35 : 0.06);
           elapsedSec += simDt;
 
           controlsChangedThisFrame = false;
-          if (isOrbitDragging && hoveredTileIdx !== null) {
+          if ((isOrbitDragging || isBoardOccludedRef.current) && hoveredTileIdx !== null) {
             hoveredTileIdx = null;
+            renderer.domElement.style.cursor = 'grab';
           }
           prevFrameCamPos.copy(camera.position);
           const sceneMoving = syncSceneFromState(simDt, animDt, elapsedSec);
@@ -2159,7 +2303,6 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           setAvatarOrbitSuspended(isOrbitDragging || controlsChangedThisFrame);
           const hasActiveMotion = sceneMoving || controlsChangedThisFrame;
 
-          const docHidden = typeof document !== 'undefined' && document.hidden;
           const occludedNow = isBoardOccludedRef.current;
           if (!occludedNow) {
             occludedBackdropDirty = true;
@@ -2190,9 +2333,9 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             renderer.domElement.dataset.renderedFrames = String(renderedFrames);
           }
 
-          const hasPendingGameplayPromises = Boolean(
-            activeDiceAnimRef.current || activeHopAnimRef.current
-          );
+          const hasPendingGameplayPromises =
+            !pausedNow &&
+            Boolean(activeDiceAnimRef.current || activeHopAnimRef.current);
           return shouldKeepBoardAnimating({
             isDocumentHidden: docHidden,
             isBoardOccluded: occludedNow,
@@ -2245,6 +2388,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         setAvatarOrbitSuspended(false);
         delete winHook.__btGetTileScreenPoint;
         wakeRenderRef.current = null;
+        clearHoverOnOccludeRef.current = null;
         applyQualityTierRef.current = null;
         frameScheduler.dispose();
         if (activeDiceAnimRef.current) {
@@ -2264,6 +2408,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         renderer.domElement.removeEventListener('pointerup', onPointerUp);
         renderer.domElement.removeEventListener('pointermove', onPointerMove);
         renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
+        renderer.domElement.removeEventListener('pointercancel', onPointerCancel);
         renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
         controls.dispose();
         courtyardAnim.disposeDynamicTextures();
@@ -2301,6 +2446,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         sharedBoxGeoCache.clear();
         woodBump.dispose();
         tilePaperBump.dispose();
+        nightPalette.tokenHeadlightMat.dispose();
         envRT?.dispose();
         renderer.dispose();
         tokenGroupsRef.current.clear();
