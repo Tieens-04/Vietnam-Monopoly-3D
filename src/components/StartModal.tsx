@@ -363,8 +363,8 @@ export const StartModal: React.FC<StartModalProps> = ({
               <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-2.5 sm:px-4 sm:py-2.5">
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-stretch">
                   {/* LEFT COLUMN: Casual Match Rules & Starting Pot */}
-                  <div className="lg:col-span-4 rounded-2xl bg-sky-50/90 border-2 border-sky-200 flex flex-col justify-between p-2.5 sm:p-3 space-y-2">
-                    <div className="space-y-2">
+                  <div className="lg:col-span-4 rounded-2xl bg-sky-50/90 border-2 border-sky-200 flex flex-col justify-between p-2.5 sm:p-3 space-y-1.5">
+                    <div className="space-y-1.5">
                       <div className="pb-1.5 border-b border-sky-200 flex items-center justify-between">
                         <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
                           Thiết Lập Bàn Đấu
@@ -468,7 +468,7 @@ export const StartModal: React.FC<StartModalProps> = ({
                         data-testid="bt-tactical-dice-toggle"
                         aria-pressed={tacticalDiceEnabled}
                         onClick={() => setTacticalDiceEnabled((v) => !v)}
-                        className="w-full px-3 py-2 rounded-xl bg-white border border-sky-200 flex items-center justify-between gap-2 text-xs font-extrabold text-slate-800 cursor-pointer hover:border-sky-300"
+                        className="w-full px-2.5 py-1.5 rounded-xl bg-white border border-sky-200 flex items-center justify-between gap-2 text-xs font-extrabold text-slate-800 cursor-pointer hover:border-sky-300"
                       >
                         <span className="text-left leading-tight">
                           Xúc xắc chiến thuật (Chẵn/Lẻ/Đổ lại)
@@ -489,7 +489,7 @@ export const StartModal: React.FC<StartModalProps> = ({
                         data-testid="bt-festival-toggle"
                         aria-pressed={festivalEnabled}
                         onClick={() => setFestivalEnabled((v) => !v)}
-                        className="w-full px-3 py-2 rounded-xl bg-white border border-sky-200 flex items-center justify-between gap-2 text-xs font-extrabold text-slate-800 cursor-pointer hover:border-sky-300"
+                        className="w-full px-2.5 py-1.5 rounded-xl bg-white border border-sky-200 flex items-center justify-between gap-2 text-xs font-extrabold text-slate-800 cursor-pointer hover:border-sky-300"
                       >
                         <span className="text-left leading-tight">
                           🎉 Lễ Hội đầu mùa (3 thành phố ×2 thuê)
@@ -506,30 +506,23 @@ export const StartModal: React.FC<StartModalProps> = ({
                       </button>
                     </div>
 
-                    <div className="pt-2 border-t border-sky-200 space-y-1 text-[11px] leading-snug">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-slate-600 font-semibold shrink-0">Bàn cờ</span>
-                        <span className="font-extrabold text-slate-900 text-right">
-                          32 ô VN · 8 Bộ Màu · 4 Đảo
-                        </span>
+                    <div className="pt-1.5 border-t border-sky-200 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10.5px] leading-snug">
+                      <div className="truncate">
+                        <span className="text-slate-600 font-semibold">Bàn: </span>
+                        <span className="font-extrabold text-slate-900">32 ô · 8 Bộ · 4 Đảo</span>
                       </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-slate-600 font-semibold shrink-0">Công trình</span>
-                        <span className="font-extrabold text-slate-900 text-right">
-                          Vòng 2 mở Cấp 3 · Khách sạn ★
-                        </span>
+                      <div className="truncate text-right">
+                        <span className="text-slate-600 font-semibold">Xây: </span>
+                        <span className="font-extrabold text-slate-900">Vòng 2 Cấp 3 · ★</span>
                       </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-slate-600 font-semibold shrink-0">Đặc quyền</span>
-                        <span className="font-extrabold text-[#16A34A] text-right">
-                          Cúp 0K lũy tiến · Bán hoàn 100%
-                        </span>
+                      <div className="truncate">
+                        <span className="text-slate-600 font-semibold">Cúp: </span>
+                        <span className="font-extrabold text-[#16A34A]">0K · Bán hoàn 100%</span>
                       </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-slate-600 font-semibold shrink-0">Qua Bắt Đầu</span>
-                        <span className="font-black text-[#16A34A] text-right">
-                          <span className="font-mono-num">+{formatBusinessTourSpaced(START_SALARY)}</span>{' '}
-                          (Bay <span className="font-mono-num">{formatBusinessTourCompact(WORLD_TOUR_FEE)}</span>)
+                      <div className="truncate text-right">
+                        <span className="text-slate-600 font-semibold">Qua BĐ: </span>
+                        <span className="font-black text-[#16A34A] font-mono-num">
+                          +{formatBusinessTourCompact(START_SALARY)} (Bay {formatBusinessTourCompact(WORLD_TOUR_FEE)})
                         </span>
                       </div>
                     </div>
