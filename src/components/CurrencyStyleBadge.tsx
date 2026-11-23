@@ -146,8 +146,8 @@ export const CurrencyStylePicker: React.FC<{
     CURRENCY_STYLE_OPTIONS.find((opt) => opt.id === value) ?? CURRENCY_STYLE_OPTIONS[0];
 
   return (
-    <div data-testid="bt-currency-style-picker" className="space-y-1.5">
-      <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+    <div data-testid="bt-currency-style-picker" className="bt-currency-picker-wrap space-y-1.5">
+      <div className="bt-currency-grid grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
         {CURRENCY_STYLE_OPTIONS.map((opt) => {
           const active = opt.id === value;
           return (
@@ -158,7 +158,7 @@ export const CurrencyStylePicker: React.FC<{
               aria-pressed={active}
               onClick={() => onChange(opt.id)}
               title={`${opt.title}: ${opt.subtitle}`}
-              className={`py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 text-[11px] font-black transition-all cursor-pointer whitespace-nowrap ${
+              className={`bt-currency-opt-btn py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 text-[11px] font-black leading-tight text-center transition-all cursor-pointer whitespace-nowrap ${
                 active
                   ? 'bt-btn-gold text-slate-950 shadow-xs'
                   : 'text-sky-900 hover:bg-white/70'

@@ -11,6 +11,7 @@ import {
   BotQuipEventKind,
   CurrencyStyleId,
   MatchBoardModifiers,
+  MatchMode,
   PlayerState,
   PropertyState,
   TileKind,
@@ -23,6 +24,7 @@ interface PlayerHUDProps {
   activePlayerIndex: number;
   properties: Record<number, PropertyState>;
   boardModifiers: MatchBoardModifiers;
+  matchMode?: MatchMode;
   currencyStyle?: CurrencyStyleId;
   botBubbles: Record<number, BotChatBubbleState>;
   localPlayerId?: number | null;
@@ -212,6 +214,7 @@ interface PlayerCornerCardProps {
   corner: CornerPositionSpec;
   isActive: boolean;
   isLocalHuman: boolean;
+  matchMode: MatchMode;
   emoteText?: string;
   ownedProps: PropertyState[];
   netWorth: number;
@@ -228,6 +231,7 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
   corner,
   isActive,
   isLocalHuman,
+  matchMode,
   emoteText,
   ownedProps,
   netWorth,
@@ -263,7 +267,9 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
 
   return (
     <div
-      className={`fixed ${corner.containerClass} w-[46.5vw] max-w-[266px] sm:w-[266px]`}
+      className={`fixed ${corner.containerClass} w-[46.5vw] max-w-[266px] sm:w-[266px] bt-hud-corner ${
+        corner.isRight ? 'bt-hud-corner-right' : ''
+      }`}
     >
       <div
         data-testid={`player-card-${player.id}`}
@@ -333,6 +339,19 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
                     BẠN
                   </span>
                 )}
+                {(matchMode === 'TEAMS_2V2' || player.teamId !== undefined) &&
+                  player.teamId !== undefined && (
+                    <span
+                      title={player.teamId === 0 ? 'Đội A (Xanh)' : 'Đội B (Đỏ)'}
+                      className={`px-1.5 py-[1px] rounded-full text-[9px] font-black uppercase shrink-0 shadow-2xs ${
+                        player.teamId === 0
+                          ? 'bg-sky-950/85 text-sky-200 border border-sky-300/70'
+                          : 'bg-rose-950/85 text-rose-200 border border-rose-300/70'
+                      }`}
+                    >
+                      {player.teamId === 0 ? 'Đội A' : 'Đội B'}
+                    </span>
+                  )}
               </div>
 
               {!player.bankrupt && player.onlineConnected === false && !player.isBot ? (
@@ -407,7 +426,7 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
                   onClick={() => onSelectTile(pr.tileIndex)}
                   title={`${tile.name}${isResort ? ' (Khu nghỉ dưỡng)' : pr.level > 0 ? ` (Cấp ${pr.level})` : ''}${isFestival ? ' · 🎉 Lễ Hội ×2' : ''}${isCup ? ' · 🏆 Cúp Quốc Gia' : ''}${isShielded ? ' · 🛡️ Khiên Bảo Hộ' : ''}${isOutage ? ' · ⚡ Mất điện' : ''}`}
                   aria-label={`Xem ô ${tile.name}`}
-                  className={`h-5 w-4.5 rounded-[4px] bg-white border shadow-sm overflow-hidden flex flex-col items-center justify-between cursor-pointer hover:-translate-y-0.5 transition-transform ${
+                  className={`icon-hit-target-y h-5 w-4.5 rounded-[4px] bg-white border shadow-sm flex flex-col items-center justify-between cursor-pointer hover:-translate-y-0.5 transition-transform ${
                     isOutage
                       ? 'border-slate-500 ring-1 ring-slate-400 opacity-75'
                       : isCup
@@ -420,7 +439,7 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
                   }`}
                 >
                   <span
-                    className="w-full h-1.5 shrink-0"
+                    className="w-full h-1.5 shrink-0 rounded-t-[3px]"
                     style={{ backgroundColor: headerColor }}
                   />
                   <span className="font-mono-num text-[8px] leading-none font-extrabold text-slate-800 pb-[1px]">
@@ -510,6 +529,7 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
   activePlayerIndex,
   properties,
   boardModifiers,
+  matchMode = 'FFA',
   currencyStyle = 'mixed',
   botBubbles,
   localPlayerId,
@@ -536,6 +556,7 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
             corner={corner}
             isActive={isActive}
             isLocalHuman={localPlayerId !== null && localPlayerId !== undefined && player.id === localPlayerId}
+            matchMode={matchMode}
             emoteText={playerEmotes?.[player.id]}
             ownedProps={ownedProps}
             netWorth={netWorth}

@@ -128,9 +128,11 @@ function applyPoseStateToRig(
  */
 class SharedAvatarRenderEngine {
   private renderer: THREE.WebGLRenderer | null = null;
+  private envRT: THREE.WebGLRenderTarget | null = null;
   private envTexture: THREE.Texture | null = null;
   private isSoftwareGl = false;
   private webglFailed = false;
+  private contextLost = false;
   private qualityTier: GraphicsQualityTier = 'low';
   private tierInitialized = false;
   private renderPixelSize = 160;
@@ -182,6 +184,27 @@ class SharedAvatarRenderEngine {
 
       renderer.domElement.addEventListener('webglcontextlost', (e) => {
         e.preventDefault();
+        this.contextLost = true;
+        this.stopLoop();
+        for (const sub of this.subscribers) {
+          drawFallback2DPortrait(sub);
+        }
+      });
+      renderer.domElement.addEventListener('webglcontextrestored', () => {
+        this.contextLost = false;
+        this.snapshotCache.clear();
+        this.envRT?.dispose();
+        this.envRT = null;
+        this.envTexture = null;
+        this.syncRendererAndRigsToProfile();
+        const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
+        if (profile.avatarFps <= 0 || this.orbitSuspended) {
+          for (const sub of this.subscribers) {
+            this.renderStaticSnapshotToSubscriber(sub);
+          }
+        } else {
+          this.syncSchedule();
+        }
       });
 
       this.renderer = renderer;
@@ -208,9 +231,12 @@ class SharedAvatarRenderEngine {
 
   private ensureEnvTexture(): THREE.Texture | null {
     if (this.envTexture) return this.envTexture;
-    if (!this.renderer) return null;
+    if (!this.renderer || this.contextLost) return null;
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
+    const roomEnv = new RoomEnvironment();
+    const envRT = pmrem.fromScene(roomEnv, 0.04);
+    roomEnv.dispose();
+    this.envRT = envRT;
     this.envTexture = envRT.texture;
     pmrem.dispose();
     return this.envTexture;
@@ -259,7 +285,7 @@ class SharedAvatarRenderEngine {
 
   private renderStaticSnapshotToSubscriber(sub: AvatarSubscriber): void {
     const renderer = this.renderer;
-    if (!renderer) {
+    if (!renderer || this.contextLost) {
       drawFallback2DPortrait(sub);
       return;
     }
@@ -313,7 +339,7 @@ class SharedAvatarRenderEngine {
     const ok = this.ensureInitialized();
     this.subscribers.add(sub);
 
-    if (!ok) {
+    if (!ok || this.contextLost) {
       drawFallback2DPortrait(sub);
     } else {
       const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
@@ -334,7 +360,7 @@ class SharedAvatarRenderEngine {
 
   public refreshSubscriber(sub: AvatarSubscriber): void {
     if (!this.subscribers.has(sub)) return;
-    if (this.webglFailed || !this.renderer) {
+    if (this.webglFailed || !this.renderer || this.contextLost) {
       drawFallback2DPortrait(sub);
       return;
     }
@@ -357,11 +383,19 @@ class SharedAvatarRenderEngine {
   private syncSchedule(): void {
     const profile = resolveGraphicsProfile(this.qualityTier, this.isSoftwareGl);
     if (
+      this.contextLost ||
+      this.webglFailed ||
+      !this.renderer ||
       this.subscribers.size === 0 ||
       this.orbitSuspended ||
       (typeof document !== 'undefined' && document.hidden)
     ) {
       this.stopLoop();
+      if (this.contextLost || this.webglFailed) {
+        for (const sub of this.subscribers) {
+          drawFallback2DPortrait(sub);
+        }
+      }
       return;
     }
 
@@ -419,7 +453,10 @@ class SharedAvatarRenderEngine {
   }
 
   private tick = (): void => {
-    if (!this.running || this.subscribers.size === 0) return;
+    if (!this.running || this.subscribers.size === 0 || this.contextLost) {
+      if (this.contextLost) this.stopLoop();
+      return;
+    }
     if (typeof document !== 'undefined' && document.hidden) {
       this.stopLoop();
       return;
@@ -1503,7 +1540,7 @@ export const PlayerAvatar3D: React.FC<PlayerAvatar3DProps> = ({
     if (subscriberRef.current) {
       sharedAvatarEngine.refreshSubscriber(subscriberRef.current);
     }
-  }, [mood, isActive]);
+  }, [mood, isActive, sizeSpec.pixel]);
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (sharedAvatarEngine.getQualityTier() === 'low') return;
