@@ -1950,43 +1950,112 @@ export function createCornerDiorama(
 }
 
 /**
- * Builds the 3D Stack of Question-Mark Cards resting outside the top-left board edge.
+ * Builds the sleek low-profile inlaid 'CƠ HỘI' ('?') Card Deck Tray resting directly ON TOP OF THE BOARD
+ * in the left wing of the sunken courtyard (symmetric with the Central Bank Reserve Vault on the right wing).
  */
-function createOuterQuestionCardStack(maxAnisotropy: number): THREE.Group {
-  const g = new THREE.Group();
+function createInlaidCourtyardChanceDeck(maxAnisotropy: number): THREE.Group {
+  const root = new THREE.Group();
 
+  const trayBaseMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.48,
+    metalness: 0.32,
+  });
+  const goldRimMat = new THREE.MeshStandardMaterial({
+    color: 0xfbbf24,
+    roughness: 0.28,
+    metalness: 0.6,
+  });
+  const feltMat = new THREE.MeshStandardMaterial({
+    color: 0x7c2d12,
+    roughness: 0.78,
+    metalness: 0.06,
+  });
+  const accentBarMat = new THREE.MeshStandardMaterial({
+    color: 0xf97316,
+    emissive: 0xea580c,
+    emissiveIntensity: 0.32,
+    roughness: 0.32,
+    metalness: 0.38,
+  });
+
+  root.add(createContactShadow(1.02, 0.24));
+
+  // Low-profile slate & brushed-gold deck tray matching the Central Bank Vault aesthetic
+  const trayW = 1.62;
+  const trayD = 0.94;
+  const trayFrame = new THREE.Group();
+
+  const baseBox = new THREE.Mesh(new THREE.BoxGeometry(trayW, 0.072, trayD), trayBaseMat);
+  baseBox.position.y = 0.036;
+  baseBox.castShadow = true;
+  baseBox.receiveShadow = true;
+  trayFrame.add(baseBox);
+
+  const feltBed = new THREE.Mesh(
+    new THREE.BoxGeometry(trayW - 0.14, 0.018, trayD - 0.14),
+    feltMat
+  );
+  feltBed.position.y = 0.076;
+  feltBed.receiveShadow = true;
+  trayFrame.add(feltBed);
+
+  const rimThick = 0.064;
+  const rimH = 0.104;
+  const wallSpecs: Array<[number, number, number, number]> = [
+    [0, -trayD / 2 + rimThick / 2, trayW, rimThick],
+    [0, trayD / 2 - rimThick / 2, trayW, rimThick],
+    [-trayW / 2 + rimThick / 2, 0, rimThick, trayD - rimThick * 2],
+    [trayW / 2 - rimThick / 2, 0, rimThick, trayD - rimThick * 2],
+  ];
+  for (const [wx, wz, ww, wd] of wallSpecs) {
+    const rim = new THREE.Mesh(new THREE.BoxGeometry(ww, rimH, wd), goldRimMat);
+    rim.position.set(wx, rimH / 2 + 0.016, wz);
+    rim.castShadow = true;
+    rim.receiveShadow = true;
+    trayFrame.add(rim);
+  }
+
+  const accentBar = new THREE.Mesh(
+    new THREE.BoxGeometry(trayW * 0.66, 0.044, 0.042),
+    accentBarMat
+  );
+  accentBar.position.set(0, 0.068, trayD / 2 + 0.015);
+  trayFrame.add(accentBar);
+
+  mergeGroupMeshesByMaterial(trayFrame);
+  root.add(trayFrame);
+
+  // Neat 3-card 'CƠ HỘI' ('?') deck stack nestled inside the recessed tray
   const cardSideMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
-    roughness: 0.65,
+    roughness: 0.62,
     metalness: 0.06,
   });
   const topTex = createCardDeckTopTexture('CHANCE', maxAnisotropy);
   const topMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     map: topTex,
-    roughness: 0.58,
+    roughness: 0.54,
     metalness: 0.08,
   });
 
-  g.add(createContactShadow(1.35, 0.26));
-
-  // Fan of 4 thick 3D question-mark cards stacked organically (2 groups instead of 6!)
-  const cardGeo = createTopCappedBoxGeometry(1.78, 0.12, 1.16);
+  const cardGeo = createTopCappedBoxGeometry(1.28, 0.055, 0.72);
   const mats = [cardSideMat, topMat];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 3; i++) {
     const slice = new THREE.Mesh(cardGeo, mats);
     slice.position.set(
-      Math.sin(i * 1.4) * 0.06,
-      0.06 + i * 0.125,
-      Math.cos(i * 1.7) * 0.05
+      (i - 1) * 0.018,
+      0.112 + i * 0.058,
+      (1 - i) * 0.014
     );
-    slice.rotation.y = (i - 1.5) * 0.065;
+    slice.rotation.y = (i - 1) * 0.032;
     slice.castShadow = true;
     slice.receiveShadow = true;
-    g.add(slice);
+    root.add(slice);
   }
 
-  return g;
+  return root;
 }
 
 export interface CourtyardAnimatedRefs {
@@ -2025,12 +2094,24 @@ export function createCourtyardDiorama(
   lawn.receiveShadow = true;
   group.add(lawn);
 
-  // 2. Crisp #E2E8F0 Sunken Retaining Step Walls around [-5.68, +5.68] up to y = 0.42
+  // 2. Crisp #E2E8F0 Sunken Retaining Step Walls around [-5.68, +5.68] + Golden Coping & 4 Inner Corner Bollard Lights
+  const innerStepGroup = new THREE.Group();
   const innerStepMat = new THREE.MeshStandardMaterial({
     color: 0xe2e8f0,
-    roughness: 0.7,
+    roughness: 0.66,
     metalness: 0.1,
   });
+  const copingTrimMat = new THREE.MeshStandardMaterial({
+    color: 0xfacc15,
+    roughness: 0.34,
+    metalness: 0.52,
+  });
+  const bollardSlateMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.45,
+    metalness: 0.5,
+  });
+
   const stepWallThickness = 0.14;
   const stepWallSpan = 11.36;
   const stepEdge = 5.61;
@@ -2047,12 +2128,63 @@ export function createCourtyardDiorama(
     wall.position.set(cx, GRASS_Y + 0.13, cz);
     wall.receiveShadow = true;
     wall.castShadow = true;
-    group.add(wall);
+    innerStepGroup.add(wall);
+
+    const goldLip = new THREE.Mesh(
+      new THREE.BoxGeometry(w, 0.026, d + 0.016),
+      copingTrimMat
+    );
+    goldLip.position.set(cx, GRASS_Y + 0.265, cz);
+    innerStepGroup.add(goldLip);
   }
+
+  // 4 Flush Recessed Inner-Corner Sconce Lights built into the sunken courtyard wall corners
+  // (Stays strictly below TILE_SURFACE_Y = 0.44 so zero geometry ever peeks behind the BẮT ĐẦU arch!)
+  const bollardHaloGeo = new THREE.PlaneGeometry(1.05, 1.05);
+  bollardHaloGeo.rotateX(-Math.PI / 2);
+  for (const [bx, bz] of [
+    [-5.46, -5.46],
+    [5.46, -5.46],
+    [5.46, 5.46],
+    [-5.46, 5.46],
+  ] as const) {
+    const sconceHousing = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 0.16, 0.22),
+      bollardSlateMat
+    );
+    sconceHousing.position.set(bx, GRASS_Y + 0.12, bz);
+    innerStepGroup.add(sconceHousing);
+
+    const lanternBulb = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 0.09, 0.16),
+      palette.streetLampBulbMat
+    );
+    lanternBulb.position.set(bx, GRASS_Y + 0.13, bz);
+    innerStepGroup.add(lanternBulb);
+
+    const sconceCap = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24, 0.025, 0.24),
+      copingTrimMat
+    );
+    sconceCap.position.set(bx, GRASS_Y + 0.21, bz);
+    innerStepGroup.add(sconceCap);
+
+    const halo = new THREE.Mesh(bollardHaloGeo, palette.streetLampHaloMat);
+    halo.position.set(bx * 0.9, GRASS_Y + 0.012, bz * 0.9);
+    innerStepGroup.add(halo);
+  }
+  mergeGroupMeshesByMaterial(innerStepGroup);
+  group.add(innerStepGroup);
+
+  // 2b. INLAID LEFT-WING 'CƠ HỘI' ('?') CARD DECK TRAY ON THE COURTYARD (Symmetric with Right-Wing Bank Reserve!)
+  const courtyardChanceDeck = createInlaidCourtyardChanceDeck(maxAnisotropy);
+  courtyardChanceDeck.position.set(-3.68, GRASS_Y, 1.06);
+  courtyardChanceDeck.rotation.y = Math.PI / 4;
+  group.add(courtyardChanceDeck);
 
   // 3. CENTER GRASS LARGE BOLD FLAT-SHADED WHITE 3D TOURNAMENT STATUS TEXT
   const taxGroup = new THREE.Group();
-  taxGroup.position.set(0.12, GRASS_Y + 0.005, 0.12);
+  taxGroup.position.set(0.08, GRASS_Y + 0.005, 0.08);
   taxGroup.rotation.y = Math.PI / 4; // Aligned horizontally to isometric diamond camera!
 
   let currentTaxStr = 'VIỆT NAM 3D';
@@ -2061,7 +2193,7 @@ export function createCourtyardDiorama(
   let taxExtrudeTex = create3DTaxGrassTexture(currentTaxStr, 'extrude', maxAnisotropy, currentSubStr);
   let taxCapTex = create3DTaxGrassTexture(currentTaxStr, 'cap', maxAnisotropy, currentSubStr);
 
-  const taxPlaneGeo = new THREE.PlaneGeometry(6.48, 2.43);
+  const taxPlaneGeo = new THREE.PlaneGeometry(6.32, 2.38);
   taxPlaneGeo.rotateX(-Math.PI / 2);
 
   const taxShadowMat = new THREE.MeshBasicMaterial({
@@ -2132,9 +2264,9 @@ export function createCourtyardDiorama(
   };
 
   // 4. INLAID LOW-PROFILE 3D DIGITAL TIMER / TURN COUNTER ON THE GRASS COURTYARD
-  // Positioned cleanly in the upper-center courtyard so it NEVER occludes tiles behind it.
+  // Positioned cleanly in the upper-center apex of the courtyard so it NEVER occludes tiles behind it.
   const clockBoardGroup = new THREE.Group();
-  clockBoardGroup.position.set(-2.55, GRASS_Y, -2.55);
+  clockBoardGroup.position.set(-2.9, GRASS_Y, -2.9);
   clockBoardGroup.rotation.y = Math.PI / 4;
 
   const darkGrayCasingMat = new THREE.MeshStandardMaterial({
@@ -2155,7 +2287,7 @@ export function createCourtyardDiorama(
   consoleGroup.rotation.x = 0.1; // Slight upward pitch toward isometric camera without rising above tile surface
 
   const basePlinth = new THREE.Mesh(
-    new THREE.BoxGeometry(3.48, 0.1, 1.68),
+    new THREE.BoxGeometry(3.38, 0.1, 1.62),
     darkSlateTrimMat
   );
   basePlinth.position.set(0, 0, 0);
@@ -2164,7 +2296,7 @@ export function createCourtyardDiorama(
   consoleGroup.add(basePlinth);
 
   const clockCasing = new THREE.Mesh(
-    new THREE.BoxGeometry(3.32, 0.1, 1.54),
+    new THREE.BoxGeometry(3.22, 0.1, 1.48),
     darkGrayCasingMat
   );
   clockCasing.position.set(0, 0.015, 0);
@@ -2175,11 +2307,11 @@ export function createCourtyardDiorama(
   // Subtle low-profile status indicator nodes (kept compatible with clockBellLeft / clockBellRight refs)
   const nodeGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.03, 12);
   const clockBellLeft = new THREE.Mesh(nodeGeo, darkSlateTrimMat);
-  clockBellLeft.position.set(-1.58, 0.058, -0.66);
+  clockBellLeft.position.set(-1.52, 0.058, -0.63);
   consoleGroup.add(clockBellLeft);
 
   const clockBellRight = new THREE.Mesh(nodeGeo, darkSlateTrimMat);
-  clockBellRight.position.set(1.58, 0.058, -0.66);
+  clockBellRight.position.set(1.52, 0.058, -0.63);
   consoleGroup.add(clockBellRight);
 
   let lastClockSec = 45;
@@ -2197,7 +2329,7 @@ export function createCourtyardDiorama(
     map: clockScreenTex,
   });
   const clockScreenMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.14, 1.38),
+    new THREE.PlaneGeometry(3.06, 1.34),
     clockScreenMat
   );
   clockScreenMesh.position.set(0, 0.068, 0);
@@ -2266,180 +2398,23 @@ export function createCourtyardDiorama(
   };
 }
 
-const SHARED_PASTEL_CLOUD_MAT = markSharedMat(
-  new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 0.88,
-    metalness: 0.0,
-    emissive: 0xffe4ec,
-    emissiveIntensity: 0.22,
-  })
-);
-
-function createSoftPastelCloud(scale = 1): THREE.Group {
-  const cloud = new THREE.Group();
-
-  for (const [x, y, z, r] of [
-    [0, 0.22, 0, 0.72],
-    [-0.58, 0.14, 0.12, 0.52],
-    [0.6, 0.16, -0.08, 0.54],
-    [0.12, 0.12, 0.44, 0.46],
-  ]) {
-    const puff = new THREE.Mesh(
-      new THREE.SphereGeometry(r, 14, 10),
-      SHARED_PASTEL_CLOUD_MAT
-    );
-    puff.scale.set(1.25, 0.58, 1.06);
-    puff.position.set(x, y, z);
-    cloud.add(puff);
-  }
-  mergeGroupMeshesByMaterial(cloud);
-  cloud.scale.setScalar(scale);
-  return cloud;
-}
-
 /**
- * Builds Festive Vietnamese Hoa Đào Thắm (Northern Peach Blossom) & Hoa Mai Vàng (Southern Golden Apricot)
- * Boughs with Suspended Glowing Hoi An Silk Lanterns!
- */
-function createVietnameseBlossomAndLanternAccent(
-  variant: 'dao_bac' | 'mai_nam',
-  palette: NightLightingPalette
-): THREE.Group {
-  const branch = new THREE.Group();
-  const sign = variant === 'mai_nam' ? -1 : 1;
-
-  const barkMat = new THREE.MeshStandardMaterial({
-    color: 0x5d4037,
-    roughness: 0.8,
-    metalness: 0.04,
-  });
-  const isMai = variant === 'mai_nam';
-  const petalPrimaryMat = new THREE.MeshStandardMaterial({
-    color: isMai ? 0xfacc15 : 0xff5c8a,
-    roughness: 0.55,
-    metalness: 0.04,
-    emissive: isMai ? 0xfbbf24 : 0xff85a1,
-    emissiveIntensity: 0.25,
-  });
-  const petalSecondaryMat = new THREE.MeshStandardMaterial({
-    color: isMai ? 0xfef08a : 0xffb3c6,
-    roughness: 0.55,
-    metalness: 0.04,
-    emissive: isMai ? 0xfde047 : 0xffccd5,
-    emissiveIntensity: 0.28,
-  });
-  const stamenMat = new THREE.MeshStandardMaterial({
-    color: isMai ? 0xd97706 : 0xfde047,
-    roughness: 0.45,
-  });
-  const goldTrimMat = new THREE.MeshStandardMaterial({
-    color: 0xfacc15,
-    roughness: 0.32,
-    metalness: 0.55,
-  });
-
-  const segments: Array<[number, number, number, number, number, number]> = [
-    [0, 0, 0, 1.45, 0.11, 0.35 * sign],
-    [sign * 1.05, -0.18, 0.22, 1.35, 0.085, 0.52 * sign],
-    [sign * 2.05, -0.44, 0.48, 1.15, 0.062, 0.68 * sign],
-    [sign * 1.35, 0.16, -0.25, 0.95, 0.058, 0.22 * sign],
-  ];
-
-  for (const [sx, sy, sz, len, rad, rotZ] of segments) {
-    const twig = new THREE.Mesh(
-      new THREE.CylinderGeometry(rad * 0.75, rad, len, 8),
-      barkMat
-    );
-    twig.position.set(sx, sy, sz);
-    twig.rotation.z = -Math.PI / 2 + rotZ * 0.35;
-    twig.rotation.y = sign * 0.24;
-    branch.add(twig);
-  }
-
-  const buildBlossomCluster = (bx: number, by: number, bz: number, sc: number) => {
-    const flower = new THREE.Group();
-    flower.position.set(bx, by, bz);
-    const pMat = (Math.abs(bx * 10) | 0) % 2 === 0 ? petalPrimaryMat : petalSecondaryMat;
-
-    for (let p = 0; p < 5; p++) {
-      const a = (p / 5) * Math.PI * 2;
-      const petal = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), pMat);
-      petal.scale.set(1.05, 0.32, 1.35);
-      petal.position.set(Math.cos(a) * 0.17, 0, Math.sin(a) * 0.17);
-      petal.rotation.y = -a;
-      flower.add(petal);
-    }
-
-    const center = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 8), stamenMat);
-    center.position.y = 0.03;
-    flower.add(center);
-
-    flower.scale.setScalar(sc);
-    flower.rotation.x = 0.35;
-    return flower;
-  };
-
-  for (const [fx, fy, fz, fsc] of [
-    [sign * 0.65, 0.08, 0.14, 1.15],
-    [sign * 1.25, -0.1, 0.32, 1.3],
-    [sign * 1.88, -0.34, 0.52, 1.2],
-    [sign * 2.45, -0.52, 0.62, 1.05],
-    [sign * 1.62, 0.24, -0.22, 1.1],
-    [sign * 0.95, -0.28, -0.12, 0.95],
-  ]) {
-    branch.add(buildBlossomCluster(fx, fy, fz, fsc));
-  }
-
-  // Suspended Hoi An Silk Lantern with golden caps & tassel!
-  const lanternGroup = new THREE.Group();
-  lanternGroup.position.set(sign * 1.55, -0.68, 0.38);
-
-  const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.34, 6), goldTrimMat);
-  cord.position.y = 0.28;
-  lanternGroup.add(cord);
-
-  const silkBody = new THREE.Mesh(
-    new THREE.SphereGeometry(0.24, 14, 12),
-    palette.lanternSilkMat
-  );
-  silkBody.scale.set(0.95, 1.18, 0.95);
-  lanternGroup.add(silkBody);
-
-  for (const cy of [-0.26, 0.26]) {
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.05, 10), goldTrimMat);
-    cap.position.y = cy;
-    lanternGroup.add(cap);
-  }
-
-  const tassel = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.22, 6), goldTrimMat);
-  tassel.rotation.z = Math.PI;
-  tassel.position.y = -0.4;
-  lanternGroup.add(tassel);
-
-  branch.add(lanternGroup);
-  mergeGroupMeshesByMaterial(branch);
-  return branch;
-}
-
-/**
- * Business Tour Environment Backdrop & Outer Props:
- * - Soft pastel sky gradient backdrop (pastel blue -> warm peach/pink clouds) with subtle cherry blossom branch accents.
- * - Left & Top outer sides of the board: 3D stacks of green cash bills + 3D stack of '?' question-mark cards.
- * - Bottom-Right outer side of the board: 3D stacks of Gold, Silver, and Bronze coins.
+ * Clean, Distraction-Free Board Backdrop & Integrated Structural Tabletop Chassis:
+ * - Zero floating objects outside the board (no loose branches, clouds, street lamps, or off-board trays).
+ * - Smooth, serene studio/sky gradient backdrop (day & night) that keeps 100% visual focus on the 3D board.
+ * - Beveled multi-tier stone & brushed-gold structural plinth hugging the exact 32-tile board footprint.
  */
 export function createSurroundingVista(
   _woodBumpMap: THREE.Texture,
   palette: NightLightingPalette,
-  maxAnisotropy = 4
+  _maxAnisotropy = 4
 ): {
   vista: THREE.Group;
   animatedCars: BoulevardCarAnim[];
 } {
   const vista = new THREE.Group();
-  const animatedProps: BoulevardCarAnim[] = [];
 
-  // 1. Pastel Sky Gradient Dome (Pastel Sky Blue -> Warm Peach/Pink Clouds)
+  // 1. Calm, Distraction-Free Studio Sky Gradient Dome (Day -> Night)
   const skyDomeGeo = new THREE.SphereGeometry(110, 40, 28);
   const skyDomeMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
@@ -2470,30 +2445,25 @@ export function createSurroundingVista(
       void main() {
         vec3 d = normalize(vWorldDir);
 
-        // Calibrated to low-FOV isometric view rays (d.y in [-0.78, -0.32])
+        // Smooth studio-grade isometric sky gradient with zero distracting cloud noise
         float viewVert = smoothstep(-0.78, -0.34, d.y);
         float viewCross = clamp((d.x - d.z) * 0.65 + 0.5, 0.0, 1.0);
-        float blendT = clamp(viewVert * 0.68 + (1.0 - viewCross) * 0.32, 0.0, 1.0);
+        float blendT = clamp(viewVert * 0.72 + (1.0 - viewCross) * 0.28, 0.0, 1.0);
 
         vec3 pastelSky;
         if (blendT > 0.72) {
           float k = (blendT - 0.72) / 0.28;
           pastelSky = mix(uDayBlueMid, uDayBlueTop, smoothstep(0.0, 1.0, k));
-        } else if (blendT > 0.46) {
-          float k = (blendT - 0.46) / 0.26;
+        } else if (blendT > 0.44) {
+          float k = (blendT - 0.44) / 0.28;
           pastelSky = mix(uDayHorizon, uDayBlueMid, smoothstep(0.0, 1.0, k));
-        } else if (blendT > 0.22) {
-          float k = (blendT - 0.22) / 0.24;
+        } else if (blendT > 0.2) {
+          float k = (blendT - 0.2) / 0.24;
           pastelSky = mix(uDayPinkMid, uDayHorizon, smoothstep(0.0, 1.0, k));
         } else {
-          float k = blendT / 0.22;
+          float k = blendT / 0.2;
           pastelSky = mix(uDayPinkWarm, uDayPinkMid, smoothstep(0.0, 1.0, k));
         }
-
-        // Dreamy soft peach/white cloud billows
-        float cloudWave = sin(d.x * 10.0 + d.z * 8.0) * cos(d.z * 9.0 - d.y * 7.0);
-        float wisp = smoothstep(0.22, 0.92, cloudWave) * 0.16;
-        pastelSky = mix(pastelSky, vec3(1.0, 0.96, 0.98), wisp);
 
         vec3 nightSky = mix(uNightBottom, uNightTop, clamp(viewVert, 0.0, 1.0));
         vec3 finalLinear = max(mix(pastelSky, nightSky, clamp(uNightFactor, 0.0, 1.0)), vec3(0.0));
@@ -2508,149 +2478,60 @@ export function createSurroundingVista(
   skyDome.renderOrder = -10;
   vista.add(skyDome);
 
-  // 2. Clean #DCE2EC Recessed Structural Under-Chassis beneath the #F4F5F7 Board
+  // 2. Unified Beveled Tabletop Chassis directly beneath the 32-Tile Board ([-8.36, +8.36])
+  const chassisGroup = new THREE.Group();
   const chassisUpperMat = new THREE.MeshStandardMaterial({
-    color: 0xdce2ec,
-    roughness: 0.7,
-    metalness: 0.1,
+    color: 0xdce4ee,
+    roughness: 0.64,
+    metalness: 0.12,
+  });
+  const chassisGoldTrimMat = new THREE.MeshStandardMaterial({
+    color: 0xeab308,
+    roughness: 0.34,
+    metalness: 0.55,
   });
   const chassisLowerMat = new THREE.MeshStandardMaterial({
     color: 0xbac4d4,
     roughness: 0.7,
-    metalness: 0.1,
+    metalness: 0.12,
   });
+
+  const chassisGoldRim = new THREE.Mesh(
+    new THREE.BoxGeometry(16.76, 0.055, 16.76),
+    chassisGoldTrimMat
+  );
+  chassisGoldRim.position.y = -0.145;
+  chassisGroup.add(chassisGoldRim);
 
   const chassisTop = new THREE.Mesh(
-    new THREE.BoxGeometry(16.44, 0.24, 16.44),
+    new THREE.BoxGeometry(16.68, 0.24, 16.68),
     chassisUpperMat
   );
-  chassisTop.position.y = -0.26;
+  chassisTop.position.y = -0.27;
   chassisTop.receiveShadow = true;
-  vista.add(chassisTop);
+  chassisGroup.add(chassisTop);
 
   const chassisBottom = new THREE.Mesh(
-    new THREE.BoxGeometry(15.9, 0.18, 15.9),
+    new THREE.BoxGeometry(16.08, 0.19, 16.08),
     chassisLowerMat
   );
-  chassisBottom.position.y = -0.45;
-  vista.add(chassisBottom);
+  chassisBottom.position.y = -0.465;
+  chassisGroup.add(chassisBottom);
 
-  const boardShadow = createContactShadow(10.9, 0.2);
-  boardShadow.position.y = -0.55;
+  mergeGroupMeshesByMaterial(chassisGroup);
+  vista.add(chassisGroup);
+
+  const boardShadow = createContactShadow(9.45, 0.22);
+  boardShadow.position.y = -0.57;
   vista.add(boardShadow);
 
-  // 3. 3D Stack of '?' Question-Mark Cards resting outside the South-West outer edge
-  // (Per-player dynamic 3D Vault Trays & Bank Reserve are managed live by treasurySystem.ts!)
-  const outerChanceStack = createOuterQuestionCardStack(maxAnisotropy);
-  outerChanceStack.position.set(-10.95, -0.24, 3.65);
-  outerChanceStack.rotation.y = Math.PI / 5;
-  vista.add(outerChanceStack);
-  animatedProps.push({
-    group: outerChanceStack,
-    baseY: -0.24,
-    phase: 1.9,
-  });
-
-  // 5. FESTIVE VIETNAMESE HOA ĐÀO THẮM & HOA MAI VÀNG + HOI AN SILK LANTERNS + PERIMETER LAMPS
-  const daoLeft = createVietnameseBlossomAndLanternAccent('dao_bac', palette);
-  daoLeft.position.set(-14.6, 1.15, -4.2);
-  daoLeft.rotation.y = 0.55;
-  vista.add(daoLeft);
-  animatedProps.push({ group: daoLeft, baseY: 1.15, phase: 0.3 });
-
-  const maiTopRight = createVietnameseBlossomAndLanternAccent('mai_nam', palette);
-  maiTopRight.position.set(5.4, 1.28, -14.6);
-  maiTopRight.rotation.y = -0.52;
-  vista.add(maiTopRight);
-  animatedProps.push({ group: maiTopRight, baseY: 1.28, phase: 1.6 });
-
-  // 5b. Ornate Perimeter Boulevard Lantern Posts Illuminating the 4 Outer Board Corners at Night!
-  const lampPostMat = new THREE.MeshStandardMaterial({
-    color: 0x334155,
-    roughness: 0.45,
-    metalness: 0.55,
-  });
-  const lampGoldMat = new THREE.MeshStandardMaterial({
-    color: 0xfacc15,
-    roughness: 0.3,
-    metalness: 0.65,
-  });
-  const haloPlaneGeo = new THREE.PlaneGeometry(1.9, 1.9);
-  haloPlaneGeo.rotateX(-Math.PI / 2);
-
-  const perimeterLampsGroup = new THREE.Group();
-  for (const [lx, lz] of [
-    [-8.65, 8.65],
-    [8.65, -8.65],
-    [-8.65, -8.65],
-    [8.65, 8.65],
-  ]) {
-    const postGroup = new THREE.Group();
-    postGroup.position.set(lx, -0.14, lz);
-
-    const plinth = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.14, 0.18, 0.14, 10),
-      lampGoldMat
-    );
-    plinth.position.y = 0.07;
-    postGroup.add(plinth);
-
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.042, 0.058, 1.18, 8),
-      lampPostMat
-    );
-    pole.position.y = 0.68;
-    pole.castShadow = true;
-    postGroup.add(pole);
-
-    const globe = new THREE.Mesh(
-      new THREE.SphereGeometry(0.15, 12, 10),
-      palette.streetLampBulbMat
-    );
-    globe.position.y = 1.34;
-    postGroup.add(globe);
-
-    const finialCap = new THREE.Mesh(
-      new THREE.ConeGeometry(0.16, 0.12, 8),
-      lampGoldMat
-    );
-    finialCap.position.y = 1.49;
-    postGroup.add(finialCap);
-
-    const groundHalo = new THREE.Mesh(haloPlaneGeo, palette.streetLampHaloMat);
-    groundHalo.position.y = 0.03;
-    postGroup.add(groundHalo);
-
-    perimeterLampsGroup.add(postGroup);
-  }
-  mergeGroupMeshesByMaterial(perimeterLampsGroup);
-  vista.add(perimeterLampsGroup);
-
-  const cloudSpots: Array<[number, number, number, number, number]> = [
-    [-13.8, -1.1, -9.8, 1.35, 0.4],
-    [9.4, -1.25, -13.6, 1.4, -0.3],
-    [14.2, -1.15, 6.4, 1.28, 0.8],
-    [-6.6, -1.35, 13.6, 1.25, -0.6],
-  ];
-  cloudSpots.forEach(([cx, cy, cz, sc, ry], idx) => {
-    const cloud = createSoftPastelCloud(sc);
-    cloud.position.set(cx, cy, cz);
-    cloud.rotation.y = ry;
-    vista.add(cloud);
-    animatedProps.push({
-      group: cloud,
-      baseY: cy,
-      phase: idx * 1.15 + 0.5,
-    });
-  });
-
-  // 6. Starry Night Sky Points
-  const starCount = 200;
+  // 3. Subtle Distant Starry Night Sky Points (visible only in Night Mode)
+  const starCount = 160;
   const starPositions = new Float32Array(starCount * 3);
   for (let i = 0; i < starCount; i++) {
     const theta = (i * 2.399963) % (Math.PI * 2);
     const elevation = -0.35 + ((i * 0.618034) % 1.15);
-    const radius = 76 + (i % 7) * 2.5;
+    const radius = 78 + (i % 7) * 2.5;
     const horiz = Math.cos(elevation * (Math.PI / 2)) * radius;
     starPositions[i * 3] = Math.cos(theta) * horiz;
     starPositions[i * 3 + 1] = Math.sin(elevation * (Math.PI / 2)) * 48;
@@ -2661,5 +2542,5 @@ export function createSurroundingVista(
   const stars = new THREE.Points(starGeo, palette.starMat);
   vista.add(stars);
 
-  return { vista, animatedCars: animatedProps };
+  return { vista, animatedCars: [] };
 }

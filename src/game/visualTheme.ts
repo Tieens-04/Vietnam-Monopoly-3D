@@ -145,17 +145,17 @@ export function computeSafeBoardCameraPose(
   const safeH = Math.max(320, viewportHeight || 800);
   const aspect = Math.max(0.34, safeW / safeH);
 
-  // Snug Business Tour framing: fills ~88-92% of safe viewport width without clipping corners
-  const requiredHalfWidthWorld = aspect < 0.85 ? 12.75 : 13.15;
-  const requiredHalfHeightWorld = aspect < 0.85 ? 9.85 : 9.45;
+  // Board-focused framing accommodating the 32-tile diamond board & 4 edge player money trays
+  const requiredHalfWidthWorld = aspect < 0.85 ? 12.35 : 12.85;
+  const requiredHalfHeightWorld = aspect < 0.85 ? 9.55 : 9.45;
 
   const distForWidth = requiredHalfWidthWorld / (TAN_HALF_FOV_26 * aspect);
   const distForHeight = requiredHalfHeightWorld / TAN_HALF_FOV_26;
   const distance = Math.max(distForWidth, distForHeight);
 
   const targetX = 0;
-  // On mobile portrait, shift target gently downward so the board sits centered between top HUD and bottom Roll Dock
-  const targetY = aspect < 0.8 ? -0.34 : -0.15;
+  // Center the diamond board cleanly between top HUD clock and bottom Roll Dock
+  const targetY = aspect < 0.8 ? -0.32 : -0.18;
   const targetZ = 0;
 
   return {

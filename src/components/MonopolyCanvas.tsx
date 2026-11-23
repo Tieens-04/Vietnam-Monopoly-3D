@@ -216,6 +216,108 @@ export function detectCashSnapshotChanges(
   return { playerRosterChanged, cashStateChanged };
 }
 
+export interface PendingTokenLandingLatch {
+  playerId: number;
+  stalePositions: Set<number>;
+  targetTile: number;
+  expiresAtMs: number;
+}
+
+export function upsertPendingTokenLandingLatch(
+  latches: Map<number, PendingTokenLandingLatch>,
+  playerId: number,
+  currentPosition: number,
+  tilePath: ReadonlyArray<number>,
+  expiresAtMs: number
+): void {
+  if (tilePath.length === 0) return;
+  const finalTile = tilePath[tilePath.length - 1];
+  const stalePositions = new Set<number>();
+  const prev = latches.get(playerId);
+  if (prev) {
+    for (const pos of prev.stalePositions) {
+      stalePositions.add(pos);
+    }
+    stalePositions.add(prev.targetTile);
+  }
+  stalePositions.add(currentPosition);
+  stalePositions.delete(finalTile);
+
+  if (stalePositions.size === 0) {
+    latches.delete(playerId);
+    return;
+  }
+
+  latches.set(playerId, {
+    playerId,
+    stalePositions,
+    targetTile: finalTile,
+    expiresAtMs,
+  });
+}
+
+export function resolveEffectiveTokenPlayers(
+  players: ReadonlyArray<PlayerState>,
+  latches: Map<number, PendingTokenLandingLatch>,
+  nowMs: number,
+  activeHop?: {
+    playerId: number;
+    path: ReadonlyArray<number>;
+    stepIndex: number;
+  } | null
+): PlayerState[] {
+  if (latches.size > 0) {
+    const validIds = new Set<number>();
+    for (const p of players) {
+      validIds.add(p.id);
+      const latch = latches.get(p.id);
+      if (!latch) continue;
+      if (
+        p.bankrupt ||
+        nowMs >= latch.expiresAtMs ||
+        !latch.stalePositions.has(p.position)
+      ) {
+        latches.delete(p.id);
+      }
+    }
+    for (const latchedId of Array.from(latches.keys())) {
+      if (!validIds.has(latchedId)) {
+        latches.delete(latchedId);
+      }
+    }
+  }
+
+  if (latches.size === 0 && !activeHop) {
+    return players as PlayerState[];
+  }
+
+  let changed = false;
+  const next = players.map((p) => {
+    if (activeHop && activeHop.playerId === p.id) {
+      if (
+        activeHop.path.length > 0 &&
+        activeHop.stepIndex >= activeHop.path.length - 1
+      ) {
+        const finalTile = activeHop.path[activeHop.path.length - 1];
+        if (p.position !== finalTile) {
+          changed = true;
+          return { ...p, position: finalTile };
+        }
+      }
+      return p;
+    }
+
+    const latch = latches.get(p.id);
+    if (latch && p.position !== latch.targetTile) {
+      changed = true;
+      return { ...p, position: latch.targetTile };
+    }
+    return p;
+  });
+
+  return changed ? next : (players as PlayerState[]);
+}
+
 export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCanvasProps>(
   (
     {
@@ -302,6 +404,9 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
     const diceMeshesRef = useRef<[THREE.Mesh, THREE.Mesh] | null>(null);
     const activeDiceAnimRef = useRef<ActiveDiceAnim | null>(null);
     const activeHopAnimRef = useRef<ActiveHopAnim | null>(null);
+    const pendingTileLatchesRef = useRef<Map<number, PendingTokenLandingLatch>>(
+      new Map()
+    );
     const cameraResetActiveRef = useRef<boolean>(false);
     const manualOrbitOverrideRef = useRef<boolean>(false);
     const activeRingRef = useRef<THREE.Mesh | null>(null);
@@ -397,6 +502,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         wakeRenderRef.current?.();
       },
       cancelPendingAnimations: () => {
+        pendingTileLatchesRef.current.clear();
         if (activeDiceAnimRef.current) {
           const prevAnim = activeDiceAnimRef.current;
           activeDiceAnimRef.current = null;
@@ -456,10 +562,31 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       ) => {
         manualOrbitOverrideRef.current = false;
         return new Promise<void>((resolve) => {
+          const nowMs =
+            typeof performance !== 'undefined' ? performance.now() : Date.now();
           if (activeHopAnimRef.current) {
-            const prevResolve = activeHopAnimRef.current.resolve;
+            const prevHop = activeHopAnimRef.current;
             activeHopAnimRef.current = null;
-            prevResolve();
+            const prevTok = tokenGroupsRef.current.get(prevHop.playerId);
+            if (prevTok && prevHop.path.length > 0) {
+              const prevFinalTile = prevHop.path[prevHop.path.length - 1];
+              const settledPlayers = resolveEffectiveTokenPlayers(
+                playersRef.current,
+                pendingTileLatchesRef.current,
+                nowMs,
+                null
+              );
+              prevTok.scale.set(1, 1, 1);
+              prevTok.position.copy(
+                computeTokenRestWorldPos(
+                  prevHop.playerId,
+                  prevFinalTile,
+                  settledPlayers
+                )
+              );
+              prevTok.userData.tileIndex = prevFinalTile;
+            }
+            prevHop.resolve();
           }
           const token = tokenGroupsRef.current.get(playerId);
           if (!token || tilePath.length === 0) {
@@ -468,14 +595,30 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           }
 
           const targetTileIdx = tilePath[0];
-          const { stepDurationSec } = computeTokenHopTiming(
+          const { stepDurationSec, totalWaitMs } = computeTokenHopTiming(
             tilePath.length,
             speedMultiplier
           );
+          const currentPlayerSnap = playersRef.current.find(
+            (pl) => pl.id === playerId
+          );
+          upsertPendingTokenLandingLatch(
+            pendingTileLatchesRef.current,
+            playerId,
+            currentPlayerSnap
+              ? currentPlayerSnap.position
+              : tilePath[tilePath.length - 1],
+            tilePath,
+            nowMs + totalWaitMs + 5_000
+          );
+
           let toVec: THREE.Vector3;
           if (tilePath.length === 1) {
-            const simulatedPlayers = playersRef.current.map((pl) =>
-              pl.id === playerId ? { ...pl, position: targetTileIdx } : pl
+            const simulatedPlayers = resolveEffectiveTokenPlayers(
+              playersRef.current,
+              pendingTileLatchesRef.current,
+              nowMs,
+              { playerId, path: tilePath, stepIndex: 0 }
             );
             toVec = computeTokenRestWorldPos(
               playerId,
@@ -730,10 +873,23 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         return true;
       };
 
+      let webglContextLost = false;
       const handleContextLost = (e: Event) => {
         e.preventDefault();
+        webglContextLost = true;
+      };
+      const handleContextRestored = () => {
+        if (disposed) return;
+        webglContextLost = false;
+        shadowMapDirty = true;
+        occludedBackdropDirty = true;
+        requestRender(true);
       };
       renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
+      renderer.domElement.addEventListener(
+        'webglcontextrestored',
+        handleContextRestored
+      );
 
       let envRT: THREE.WebGLRenderTarget | null = null;
       const ensureEnvironmentMap = (): THREE.Texture => {
@@ -765,7 +921,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         currentProfile.shadowMapSize > 0 ? currentProfile.shadowMapSize : 1024;
       sunLight.shadow.mapSize.width = initialShadowRes;
       sunLight.shadow.mapSize.height = initialShadowRes;
-      const shadowD = 14.5;
+      const shadowD = 16.0;
       sunLight.shadow.camera.left = -shadowD;
       sunLight.shadow.camera.right = shadowD;
       sunLight.shadow.camera.top = shadowD;
@@ -788,8 +944,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       controls.target.copy(_scratchDefaultCamTarget);
       controls.enableDamping = !isSoftwareGl;
       controls.dampingFactor = 0.07;
-      controls.minDistance = 14.0;
-      controls.maxDistance = Math.max(96, initialSafeDist * 1.35);
+      controls.minDistance = 13.5;
+      controls.maxDistance = Math.max(68, initialSafeDist * 1.24);
       controls.minPolarAngle = 0.38;
       controls.maxPolarAngle = Math.PI / 2.3;
       controls.mouseButtons = {
@@ -824,7 +980,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       const nightPalette = createNightLightingPalette(maxAniso);
       nightPalette.skyDomeUniforms.uLinearOutput.value = composer ? 1 : 0;
 
-      // Pastel Sky Gradient + Sakura Branches + Left/Top Cash & '?' Card Stack + Bottom-Right Gold/Silver/Bronze Coins
+      // Clean studio sky dome + beveled board chassis (zero floating off-board props)
       const { vista: vistaGroup, animatedCars } = createSurroundingVista(
         woodBump,
         nightPalette,
@@ -832,20 +988,20 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       );
       scene.add(vistaGroup);
 
-      // Sunken Bright Lime-Green Courtyard + Sleek Dark-Gray Digital Turn/Timer + Center Flat-Shaded White 3D Tax Text
+      // Sunken Bright Lime-Green Courtyard + Inlaid Digital Timer + Inlaid Chance Deck + Center 3D Crest
       const { group: courtyardGroup, animated: courtyardAnim } =
         createCourtyardDiorama(nightPalette, maxAniso);
       scene.add(courtyardGroup);
 
       const courtyardLampSpots: Array<[number, number, number]> = [
-        [-3.25, 1.9, -3.25],
-        [3.25, 2.25, -3.25],
-        [3.25, 1.95, 3.25],
-        [-3.25, 1.85, 3.25],
+        [-4.35, 2.35, -4.35],
+        [4.35, 2.35, -4.35],
+        [4.35, 2.35, 4.35],
+        [-4.35, 2.35, 4.35],
       ];
       const courtyardPointLights: THREE.PointLight[] = courtyardLampSpots.map(
         ([px, py, pz]) => {
-          const pl = new THREE.PointLight(0xffb347, 0, 14.0, 1.45);
+          const pl = new THREE.PointLight(0xffb347, 0, 14.5, 1.55);
           pl.position.set(px, py, pz);
           pl.visible = false;
           scene.add(pl);
@@ -1320,7 +1476,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           _scratchDefaultCamPos,
           _scratchDefaultCamTarget
         );
-        controls.maxDistance = Math.max(96, safeDist * 1.35);
+        controls.maxDistance = Math.max(68, safeDist * 1.24);
         if (!cinematicCameraRef.current && !manualOrbitOverrideRef.current) {
           camera.position.copy(_scratchDefaultCamPos);
           controls.target.copy(_scratchDefaultCamTarget);
@@ -1468,7 +1624,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           const lampsActive = currentNightFactor > 0.01;
           for (const pl of courtyardPointLights) {
             pl.visible = lampsActive;
-            pl.intensity = lightState.courtyardPointLightIntensity;
+            pl.intensity = lightState.courtyardPointLightIntensity * 0.72;
           }
           if (bloomPass) {
             bloomPass.strength = currentNightFactor * 0.36;
@@ -1535,7 +1691,16 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           }
         }
 
-        for (const p of currentPlayers) {
+        const nowMs =
+          typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const effectiveTokenPlayers = resolveEffectiveTokenPlayers(
+          currentPlayers,
+          pendingTileLatchesRef.current,
+          nowMs,
+          activeHopAnimRef.current
+        );
+
+        for (const p of effectiveTokenPlayers) {
           let token = tokenGroupsRef.current.get(p.id);
           if (
             token &&
@@ -1551,7 +1716,11 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             token = createPlayerTokenMesh(p.tokenType, p.color, nightPalette);
             token.userData.tokenType = p.tokenType;
             token.userData.color = p.color;
-            const startPos = computeTokenRestWorldPos(p.id, p.position, currentPlayers);
+            const startPos = computeTokenRestWorldPos(
+              p.id,
+              p.position,
+              effectiveTokenPlayers
+            );
             token.position.copy(startPos);
             scene.add(token);
             tokenGroupsRef.current.set(p.id, token);
@@ -1565,7 +1734,11 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
           const hop = activeHopAnimRef.current;
           if (!hop || hop.playerId !== p.id) {
-            const targetPos = computeTokenRestWorldPos(p.id, p.position, currentPlayers);
+            const targetPos = computeTokenRestWorldPos(
+              p.id,
+              p.position,
+              effectiveTokenPlayers
+            );
             token.userData.tileIndex = p.position;
             const alpha = simDt > 0 ? 1 - Math.exp(-12 * simDt) : 0;
             if (token.position.distanceToSquared(targetPos) > 0.00002) {
@@ -1950,6 +2123,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
               token.scale.set(squash, stretch, squash);
 
               const targetTileIdx = hopAnim.path[hopAnim.stepIndex];
+              token.userData.tileIndex = targetTileIdx;
               token.rotation.y = Math.PI / 4;
 
               if (u >= 1) {
@@ -1968,8 +2142,11 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
                   hopAnim.fromVec.copy(hopAnim.toVec);
                   const nextTileIdx = hopAnim.path[hopAnim.stepIndex];
                   if (hopAnim.stepIndex === hopAnim.path.length - 1) {
-                    const simulatedPlayers = currentPlayers.map((pl) =>
-                      pl.id === hopAnim.playerId ? { ...pl, position: nextTileIdx } : pl
+                    const simulatedPlayers = resolveEffectiveTokenPlayers(
+                      currentPlayers,
+                      pendingTileLatchesRef.current,
+                      nowMs,
+                      hopAnim
                     );
                     hopAnim.toVec.copy(
                       computeTokenRestWorldPos(hopAnim.playerId, nextTileIdx, simulatedPlayers)
@@ -2307,7 +2484,10 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           if (!occludedNow) {
             occludedBackdropDirty = true;
           }
-          const shouldDrawWebGl = !docHidden && (!occludedNow || occludedBackdropDirty);
+          const contextAlive =
+            !webglContextLost && !renderer.getContext()?.isContextLost?.();
+          const shouldDrawWebGl =
+            !docHidden && contextAlive && (!occludedNow || occludedBackdropDirty);
           if (shouldDrawWebGl) {
             if (shadowMapDirty || controlsChangedThisFrame) {
               aoCacheDirty = true;
@@ -2350,6 +2530,20 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       wakeRenderRef.current = requestRender;
       const handleVisibilityChange = () => frameScheduler.handleVisibilityChange();
       document.addEventListener('visibilitychange', handleVisibilityChange);
+      const handlePageHide = (e: PageTransitionEvent) => {
+        if (e.persisted || disposed) return;
+        webglContextLost = true;
+        frameScheduler.cancel();
+        try {
+          const gl = renderer.getContext();
+          disposePostProcessing();
+          renderer.dispose();
+          gl?.getExtension('WEBGL_lose_context')?.loseContext();
+        } catch {
+          // Ignore unload WebGL teardown errors
+        }
+      };
+      window.addEventListener('pagehide', handlePageHide);
 
       const winHook = window as unknown as {
         __btGetTileScreenPoint?: (
@@ -2403,6 +2597,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         }
         resizeObserver.disconnect();
         window.removeEventListener('resize', handleResize);
+        window.removeEventListener('pagehide', handlePageHide);
         document.removeEventListener('visibilitychange', handleVisibilityChange);
         renderer.domElement.removeEventListener('pointerdown', onPointerDown);
         renderer.domElement.removeEventListener('pointerup', onPointerUp);
@@ -2410,6 +2605,10 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
         renderer.domElement.removeEventListener('pointercancel', onPointerCancel);
         renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
+        renderer.domElement.removeEventListener(
+          'webglcontextrestored',
+          handleContextRestored
+        );
         controls.dispose();
         courtyardAnim.disposeDynamicTextures();
         treasury.dispose();
@@ -2448,7 +2647,15 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         tilePaperBump.dispose();
         nightPalette.tokenHeadlightMat.dispose();
         envRT?.dispose();
-        renderer.dispose();
+        webglContextLost = true;
+        try {
+          const gl = renderer.getContext();
+          renderer.dispose();
+          gl?.getExtension('WEBGL_lose_context')?.loseContext();
+        } catch {
+          // Ignore WebGL context teardown errors
+        }
+        pendingTileLatchesRef.current.clear();
         tokenGroupsRef.current.clear();
         tileEntriesRef.current = [];
         diceMeshesRef.current = null;

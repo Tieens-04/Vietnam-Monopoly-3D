@@ -55,18 +55,32 @@ test('decomposeCashToVisualUnits handles 0/bankrupt, odd amounts, and caps acros
   assert.ok(mixedUnits.some((u) => u.meshCategory === 'coin'));
 });
 
-test('getVaultWorldAnchor places all 4 player vaults in matching isometric screen quadrants', () => {
-  const p0 = getVaultWorldAnchor(0); // Top-Left: x - z < 0, x + z < 0
-  const p1 = getVaultWorldAnchor(1); // Top-Right: x - z > 0, x + z < 0
-  const p2 = getVaultWorldAnchor(2); // Bottom-Right: x - z > 0, x + z > 0
-  const p3 = getVaultWorldAnchor(3); // Bottom-Left: x - z < 0, x + z > 0
-  const bank = getVaultWorldAnchor(-1); // Central Bank
+test('getVaultWorldAnchor places 4 player trays symmetrically at the 4 board edges and Central Bank inside courtyard', () => {
+  const p0 = getVaultWorldAnchor(0); // Top-Left HUD edge: x - z < 0, x + z < 0
+  const p1 = getVaultWorldAnchor(1); // Top-Right HUD edge: x - z > 0, x + z < 0
+  const p2 = getVaultWorldAnchor(2); // Bottom-Right HUD edge: x - z > 0, x + z > 0
+  const p3 = getVaultWorldAnchor(3); // Bottom-Left HUD edge: x - z < 0, x + z > 0
+  const bank = getVaultWorldAnchor(-1); // Central Bank inlaid on right courtyard wing
 
-  assert.ok(p0.x - p0.z < -4 && p0.x + p0.z < -8);
-  assert.ok(p1.x - p1.z > 4 && p1.x + p1.z < -8);
-  assert.ok(p2.x - p2.z > 4 && p2.x + p2.z > 8);
-  assert.ok(p3.x - p3.z < -4 && p3.x + p3.z > 8);
-  assert.ok(Math.abs(bank.x) < 6 && Math.abs(bank.z) < 6);
+  assert.ok(p0.x - p0.z < -6 && p0.x + p0.z < -10);
+  assert.ok(p1.x - p1.z > 6 && p1.x + p1.z < -10);
+  assert.ok(p2.x - p2.z > 6 && p2.x + p2.z > 10);
+  assert.ok(p3.x - p3.z < -6 && p3.x + p3.z > 10);
+
+  for (const edgeAnchor of [p0, p1, p2, p3]) {
+    const outerSpan = Math.max(Math.abs(edgeAnchor.x), Math.abs(edgeAnchor.z));
+    const r = Math.hypot(edgeAnchor.x, edgeAnchor.z);
+    assert.ok(
+      outerSpan >= 12.2 && r <= 13.8,
+      `Expected player tray anchor well clear of 9.35 price tabs ([12.2, 13.8]), got outerSpan=${outerSpan.toFixed(2)}, r=${r.toFixed(2)}`
+    );
+  }
+
+  // Central Bank stays inlaid inside the sunken courtyard
+  assert.ok(
+    Math.abs(bank.x) <= 4.5 && Math.abs(bank.z) <= 4.5,
+    `Expected Central Bank anchor (${bank.x}, ${bank.z}) inside courtyard [-4.5, +4.5]`
+  );
 });
 
 test('detectCashFlowTransfers classifies rent, property investment, Start salary, Tax, Birthday multi-payer, and skips match reset', () => {
