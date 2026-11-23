@@ -12,10 +12,10 @@ Dự án chuyển đổi dứt điểm từ khung lai Cờ Tỷ Phú cổ điể
 
 | Giai đoạn | Mục tiêu trọng tâm | Trạng thái |
 | :--- | :--- | :--- |
-| **Giai đoạn 1 (Spec này)** | Bàn cờ **32 ô** Việt hóa (20 Thành phố / 8 nhóm màu + 4 Khu nghỉ dưỡng Đảo/Vịnh + 4 Góc chuẩn); tiền thật `2,000,000` (bỏ nhân ẩn `×3000`); đếm vòng `laps` khóa cấp nhà; Mua đứt `2×` chuẩn; Bán trả nợ `100%` + `Auto-Sale` + Phá sản trả đất về Ngân hàng; Cúp Thế Giới lũy tiến `2×→3×...` & Lễ Hội đầu trận; Sân bay Du Lịch bay ở **lượt kế tiếp**; Thuế `10%` bất động sản; bỏ `TradeModal` & `taxPool`; nhãn Tiền Thuê thực tế trên 3D; vá sạch bug 3D/Timer/Bot AI/Server. | **Thiết kế chi tiết bên dưới** |
-| **Giai đoạn 2** | Bộ Thẻ Cơ Hội (`?`) chiến thuật tương tác bàn cờ (*Mất điện, Động đất, Khiên bảo vệ, Đăng cai Cúp, Ép bán*), tùy chọn Xúc xắc chiến thuật (Chẵn/Lẻ/Đổ lại — mặc định TẮT ở Phòng chờ), mô hình 3D chi tiết cho 4 Đảo/Vịnh & hiệu ứng 3D Cúp/Lễ Hội/Khiên/Mất điện, HUD Tổng Tài Sản + Nhạc nền BGM bật/tắt riêng. | Giai đoạn kế tiếp |
-| **Giai đoạn 3** | Chế độ **Đấu Đội 2v2** (Xanh vs Đỏ: miễn tiền thuê đồng đội, nâng nhà hộ nhau, gộp chung điều kiện thắng Độc quyền), **Đồng hồ Trận Nhanh** (15–20 phút tính Tổng Tài Sản Ròng), nâng cấp Bot AI chiến thuật sâu (phối hợp 2v2, dùng thẻ tấn công/phòng thủ). | Giai đoạn 3 |
-| **Giai đoạn 4** | **Online Multiplayer** qua WebSocket trên `server.ts` (tạo phòng mã PIN / link mời, state authoritative chống gian lận, tự động thế Bot khi mất kết nối & vào lại phòng). | Giai đoạn 4 |
+| **Giai đoạn 1 (Spec này)** | Bàn cờ **32 ô** Việt hóa (20 Thành phố / 8 nhóm màu + 4 Khu nghỉ dưỡng Đảo/Vịnh + 4 Góc chuẩn); tiền thật `2,000,000` (bỏ nhân ẩn `×3000`); đếm vòng `laps` khóa cấp nhà (lên Cấp 3 rồi mới lên Khách sạn `4 ★` khi ghé lại); Mua đứt `2×` chuẩn; Bán trả nợ `100%` + `Auto-Sale` + Phá sản trả đất về Ngân hàng (chủ nợ nhận tiền mặt còn lại + `100%` giá trị thanh lý BĐS); **CÚP QUỐC GIA** miễn phí (`0K`) lũy tiến `2×→3×...` & Lễ Hội đầu trận; Sân bay Du Lịch bay ở **lượt kế tiếp** tới ô trống / đất mình; Thuế `10%` bất động sản; bỏ `TradeModal` & `taxPool`; nhãn Tiền Thuê thực tế trên 3D; vá sạch bug 3D/Timer/Bot AI/Server. | **Đã triển khai & đồng bộ R2/R3** |
+| **Giai đoạn 2** | Bộ Thẻ Cơ Hội (`?`) chiến thuật tương tác bàn cờ (*Mất điện, Động đất, Khiên bảo vệ, Đăng cai Cúp, Mừng sinh nhật cưỡng chế trả 25K*), tùy chọn **Xúc xắc chiến thuật** (Chẵn/Lẻ/Đổ lại — mặc định TẮT ở Phòng chờ), mô hình 3D chi tiết cho 4 Đảo/Vịnh & hiệu ứng 3D Cúp/Lễ Hội/Khiên/Mất điện, HUD Tổng Tài Sản + Nhạc nền BGM bật/tắt riêng. | **Đã tích hợp đầy đủ** |
+| **Giai đoạn 3** | Chế độ **Đấu Đội 2v2 (`Doubles`)** (Xanh vs Đỏ: miễn tiền thuê, miễn mua lại & miễn thẻ tấn công đồng đội, gộp chung tài sản xét điều kiện thắng Độc quyền), **Đồng hồ Trận Nhanh 20 phút (`1200s`)** phân định thắng thua theo Tổng Tài Sản Ròng (`Net Worth`), nâng cấp Bot AI chiến thuật sâu (phối hợp 2v2, dùng xúc xắc chiến thuật, thẻ tấn công/phòng thủ). | **Đã tích hợp đầy đủ** |
+| **Giai đoạn 4** | **Online Multiplayer** qua WebSocket trên `server.ts` (tạo phòng mã PIN / link mời, state authoritative chống gian lận, tự động thế Bot khi mất kết nối hoặc AFK & cho phép lấy lại quyền điều khiển `RECLAIM_CONTROL`). | **Đã tích hợp đầy đủ** |
 
 ---
 
@@ -61,7 +61,7 @@ Toàn bộ đơn vị tiền tệ lưu trữ và hiển thị bằng **số th�
 | **13** | Vũng Tàu | `PROPERTY` | `ORANGE` (2) | `180,000` | `125,000` | `[36K, 108K, 320K, 780K, 1,250K]` |
 | **14** | **Đảo Lý Sơn** | `RESORT` | — | `200,000` | — | Resort 2/4: `[50K, 150K, 400K, 1M]` |
 | **15** | Nha Trang | `PROPERTY` | `ORANGE` (2) | `200,000` | `125,000` | `[40K, 120K, 360K, 850K, 1,350K]` |
-| **16** | **CÚP THẾ GIỚI** | `WORLD_CHAMPIONSHIPS` | — | — | — | Trả `50,000` chọn 1 thành phố sở hữu đăng cai (`2× → 3× → 4×...`) |
+| **16** | **CÚP QUỐC GIA** | `WORLD_CHAMPIONSHIPS` | — | — | — | Chọn miễn phí (`0K`) 1 thành phố sở hữu đăng cai (`2× → 3× → 4×...`) |
 | **17** | Buôn Ma Thuột | `PROPERTY` | `AMBER` (2) | `220,000` | `150,000` | `[44K, 132K, 390K, 920K, 1,500K]` |
 | **18** | **Côn Đảo** | `RESORT` | — | `200,000` | — | Resort 3/4: `[50K, 150K, 400K, 1M]` |
 | **19** | Cần Thơ | `PROPERTY` | `AMBER` (2) | `240,000` | `150,000` | `[48K, 144K, 430K, 1,000K, 1,600K]` |
@@ -89,10 +89,11 @@ Toàn bộ đơn vị tiền tệ lưu trữ và hiển thị bằng **số th�
 ## 3. Luật Chơi Cốt Lõi, Kinh Tế & Dòng Chảy Lượt Đi
 
 ### 3.1. Vốn khởi điểm, Lương & Theo dõi Vòng (`laps`)
-- Phòng chờ (`StartModal`) cho phép chọn vốn khởi điểm: **Chuẩn (`2,000,000`)** hoặc **Đại gia (`3,000,000`)**.
+- Phòng chờ (`StartModal` / `OnlineLobbyPanel`) cho phép chọn vốn khởi điểm: **Chuẩn (`2,000,000`)** hoặc **Đại gia (`3,000,000`)**, chế độ **Đấu đơn (`FFA`)** hoặc **Đấu đội `2v2` (`TEAMS_2V2`)**, tùy chọn **Xúc xắc chiến thuật (`Chẵn / Lẻ / Đổ lại`)** (mặc định TẮT để tương thích ngược), và **Đồng hồ giới hạn trận 20 phút (`1200s`)** xét thắng theo Tổng Tài Sản Ròng (`Net Worth`) khi hết giờ.
 - `PlayerState` bổ sung:
-  - `laps: number` (khởi tạo `0`; mỗi lần đi qua hoặc đáp trúng ô `0` khi di chuyển tiến về phía trước — kể cả bằng máy bay Du Lịch hoặc thẻ Cơ Hội tiến tới — được cộng `+300,000` và `laps += 1`).
+  - `laps: number` (khởi tạo `0`; mỗi lần đi qua hoặc đáp trúng ô `0` khi di chuyển tiến về phía trước — kể cả bằng máy bay Du Lịch hoặc thẻ Cơ Hội tiến tới — được cộng `+300,000` và `laps += 1`; dừng tại ô `0` chỉ nhận lương và tăng vòng, không nâng cấp thành phố từ xa).
   - `pendingWorldTour: boolean` (khởi tạo `false`; bật thành `true` khi kết thúc bước đi trên ô `24` Sân bay Du Lịch).
+  - `teamId?: 0 | 1` (chế độ `2v2`), `evenOddCharges?: number` (`3`), `rerollCharges?: number` (`2`).
 
 ### 3.2. Mua đất, Giới hạn Xây dựng theo Vòng & Nâng cấp Khách sạn
 - **Mua lần đầu khi đáp vào `PROPERTY` vô chủ**:
@@ -108,24 +109,26 @@ Toàn bộ đơn vị tiền tệ lưu trữ và hiển thị bằng **số th�
 - **Bảo vệ của Khách Sạn Biểu Tượng (`level = 4 ★`) & Khu Nghỉ Dưỡng (`RESORT`)**:
   - Miễn nhiễm hoàn toàn với **Mua đứt (`Buyout 2×`)**.
 
-### 3.3. Hệ số Nhân Tiền Thuê, Lễ Hội Đầu Trận & Cúp Thế Giới
+### 3.3. Hệ số Nhân Tiền Thuê, Lễ Hội Đầu Trận & Cúp Quốc Gia
 - **Trạng thái Bàn cờ (`MatchBoardModifiers`)**:
   - `festivalTileIndices: number[]` — Khi bắt đầu ván mới, chọn ngẫu nhiên **3 thành phố** thuộc các nhóm màu khác nhau gắn cờ **Lễ Hội cố định (`×2` tiền thuê)**.
-  - `championshipTileIndex: number | null` — Thành phố duy nhất đang giữ **Cúp Thế Giới** (khởi tạo `null`).
-  - `championshipMultiplier: number` — Hệ số nhân hiện tại của Cúp Thế Giới (khởi tạo `1`; lần đầu có người đặt Cúp nhảy lên `2`, mỗi lần Cúp được đặt mới hoặc dời chỗ lại tăng `+1`: `2 → 3 → 4 → 5...`).
+  - `championshipTileIndex: number | null` — Thành phố duy nhất đang giữ **Cúp Quốc Gia** (khởi tạo `null`).
+  - `championshipMultiplier: number` — Hệ số nhân hiện tại của Cúp Quốc Gia (khởi tạo `1`; lần đầu có người đặt Cúp nhảy lên `2`, mỗi lần Cúp được đặt mới hoặc dời chỗ lại tăng `+1`: `2 → 3 → 4 → 5...`).
 - **Công thức Tiền Thuê Thực Tế (`calculateRent`)**:
-  - Với `RESORT`: `RESORT_RENTS[ownedResortCount - 1]` (`50K / 150K / 400K / 1M`).
+  - Với `RESORT`: `RESORT_RENTS[ownedResortCount - 1]` (`50K / 150K / 400K / 1M` — biến thể kinh tế giữ nguyên).
   - Với `PROPERTY`:
     `baseRent = tile.rents[prop.level]`
     `colorMult = ownsFullColorGroup ? 2 : 1`
     `festivalMult = festivalTileIndices.includes(tile.index) ? 2 : 1`
     `champMult = championshipTileIndex === tile.index ? championshipMultiplier : 1`
     `totalRent = baseRent * colorMult * festivalMult * champMult`
-- **Ô Góc 16 — Cúp Thế Giới (`WORLD_CHAMPIONSHIPS`)**:
+  - Trong chế độ `2v2`: nếu người dừng là đồng đội của chủ sở hữu (`areTeammates`), tiền thuê bằng `0`.
+- **Ô Góc 16 — CÚP QUỐC GIA (`WORLD_CHAMPIONSHIPS`)**:
+  - Phí đăng cai tại Ô 16 là **`CHAMPIONSHIP_FEE = 0`** (miễn phí — biến thể kinh tế giữ nguyên).
   - Khi người chơi dừng tại Ô 16:
-    - Nếu người chơi sở hữu ít nhất 1 `PROPERTY` và có `cash >= 50,000`: Chuyển sang `turnPhase = 'CHAMPIONSHIP_SELECTION'`. Người chơi có thể trả **`50,000`** để bấm chọn 1 thành phố của mình trên bàn cờ (hoặc trong modal gợi ý) đăng cai Cúp Thế Giới, hoặc bấm **Bỏ qua**.
-    - Khi xác nhận chọn thành phố `targetIdx`: trừ `50,000`, tăng hệ số Cúp lên `nextMult = championshipTileIndex === null ? 2 : championshipMultiplier + 1`, gán `championshipTileIndex = targetIdx`, kiểm tra hiệu ứng hiển thị nhãn tiền thuê mới rồi kết thúc hành động lượt.
-    - Nếu không sở hữu `PROPERTY` nào hoặc `cash < 50,000`: Ghi nhật ký tham quan Sân vận động miễn phí và kết thúc hành động lượt.
+    - Nếu người chơi sở hữu ít nhất 1 `PROPERTY`: Chuyển sang `turnPhase = 'CHAMPIONSHIP_SELECTION'`. Người chơi có thể chọn miễn phí 1 thành phố của mình trên bàn cờ (hoặc trong modal gợi ý) đăng cai Cúp Quốc Gia, hoặc bấm **Bỏ qua**.
+    - Khi xác nhận chọn thành phố `targetIdx`: tăng hệ số Cúp lên `nextMult = championshipTileIndex === null ? 2 : championshipMultiplier + 1`, gán `championshipTileIndex = targetIdx`, kiểm tra hiệu ứng hiển thị nhãn tiền thuê mới rồi kết thúc hành động lượt.
+    - Nếu không sở hữu `PROPERTY` nào: Ghi nhật ký tham quan Sân vận động miễn phí và kết thúc hành động lượt.
 
 ### 3.4. Mua Đứt Đất Đối Thủ (`Buyout 2×`)
 - Khi đáp vào `PROPERTY` của đối thủ:
@@ -161,29 +164,30 @@ Toàn bộ đơn vị tiền tệ lưu trữ và hiển thị bằng **số th�
 - **Chỉ bán tài sản khi giải quyết nợ (`DEBT_RESOLUTION`)**:
   - Gỡ nút bán nhà/bán đất tự do ngoài lúc mắc nợ và gỡ toàn bộ `TradeModal` (`AuctionAndTradeModals.tsx` + logic `evaluateBotTradeOffer`).
   - Khi `player.cash < debtAmount`:
-    - Tính `totalPortfolioValue = sum(propInvestedValue)` (hoàn **100%** vốn đầu tư cho mỗi thành phố/Resort bán lại cho Ngân hàng; khi bán 1 thành phố là bán trọn gói đất + nhà trên ô đó về trạng thái vô chủ `ownerId: null, level: 0`, nếu thành phố đó đang giữ Cúp Thế Giới thì gỡ Cúp `championshipTileIndex = null`).
+    - Tính `totalPortfolioValue = sum(propInvestedValue)` (hoàn **100%** vốn đầu tư cho mỗi thành phố/Resort bán lại cho Ngân hàng; khi bán 1 thành phố là bán trọn gói đất + nhà trên ô đó về trạng thái vô chủ `ownerId: null, level: 0`, nếu thành phố đó đang giữ Cúp Quốc Gia thì gỡ Cúp `championshipTileIndex = null`).
     - Mở giao diện **"Chọn Thành Phố Để Bán Trả Nợ"** hiển thị rõ:
       1. `Số tiền còn thiếu` (`Math.max(0, debtAmount - (player.cash + selectedRefund))`)
       2. `Số tiền còn dư sau khi trả nợ`
       3. Danh sách các thành phố/Resort đang sở hữu để tick chọn nhiều ô cùng lúc + nút **"Bán Tự Động Tối Ưu" (`Auto-Sale`)** + nút **"Xác Nhận Bán & Trả Nợ"** + nút **"Tuyên Bố Phá Sản"**.
     - **Thuật toán `computeOptimalAutoSale(playerId, neededCash, properties, boardModifiers)`**:
       - Nếu tổng toàn bộ tài sản `< neededCash`, đánh dấu không đủ khả năng chi trả (khuyến nghị Phá sản).
-      - Ngược lại, chấm điểm ưu tiên giữ lại cho từng ô (Khách sạn Cấp 4 > ô thuộc bộ Độc quyền màu hoàn chỉnh > Resort khi có ≥2 > ô giữ Cúp Thế Giới > ô lẻ giá rẻ) và chọn tập con có tổng hoàn tiền `>= neededCash` sao cho **tổng điểm chiến thuật bị mất thấp nhất**, sau đó ưu tiên lượng tiền thừa nhỏ nhất.
+      - Ngược lại, chấm điểm ưu tiên giữ lại cho từng ô (Khách sạn Cấp 4 > ô thuộc bộ Độc quyền màu hoàn chỉnh > Resort khi có ≥2 > ô giữ Cúp Quốc Gia > ô lẻ giá rẻ) và chọn tập con có tổng hoàn tiền `>= neededCash` sao cho **tổng điểm chiến thuật bị mất thấp nhất**, sau đó ưu tiên lượng tiền thừa nhỏ nhất.
 - **Xử lý Phá Sản đồng nhất 100% giữa Người và Bot**:
   - Với **Bot AI** trong `DEBT_RESOLUTION`: Kiểm tra ngay đầu tiên `if (bot.cash + totalPortfolioValue < pendingDebt.amount)` → gọi thẳng `handleDeclareBankruptcy()` mà **không bán lẻ tẻ trước đó**. Nếu đủ khả năng trả, Bot gọi trực tiếp `computeOptimalAutoSale` để bán đúng gói thành phố tối ưu và thanh toán nợ!
   - Trong `handleDeclareBankruptcy()`:
-    - Nếu nợ đối thủ (`creditorId !== null`): Chuyển phần `cash` mặt còn lại của người phá sản cho `creditorId`.
-    - **Toàn bộ** các ô `PROPERTY` và `RESORT` của người phá sản đều trả về Ngân hàng (`ownerId: null, level: 0`), gỡ Cúp Thế Giới nếu đang đặt trên các ô đó.
+    - Nếu nợ đối thủ (`creditorId !== null`): Chuyển cho `creditorId` **phần `cash` mặt còn lại CỘNG `100%` giá trị bất động sản được thanh lý** (`calculateBankruptcyCreditorPayout` — biến thể kinh tế giữ nguyên).
+    - **Toàn bộ** các ô `PROPERTY` và `RESORT` của người phá sản đều trả về Ngân hàng (`ownerId: null, level: 0`), gỡ Cúp Quốc Gia nếu đang đặt trên các ô đó.
 
 ### 3.7. Sửa Dứt Điểm Đồng Hồ Đếm Ngược Lượt Đi (`45s`)
-- Đồng hồ `45s` chỉ khởi tạo lại khi **bắt đầu một lượt mới** (hoặc khi được thưởng thêm lượt mới từ xúc xắc Đôi), **không** bị reset lại 45s khi chuyển qua các bước con (`BUY_DECISION`, `BUYOUT_DECISION`, `DEBT_RESOLUTION`, `AWAIT_END_TURN`) trong cùng 1 lượt.
-- Khi hết giờ (`turnTimeLeft === 0`) đối với người chơi:
+- Đồng hồ `45s` chỉ khởi tạo lại khi **bắt đầu một lượt mới** (hoặc khi được thưởng thêm lượt mới từ xúc xắc Đôi), **không** bị reset lại 45s khi chuyển qua các bước con (`BUY_DECISION`, `BUYOUT_DECISION`, `DEBT_RESOLUTION`, `REROLL_DECISION`) trong cùng 1 lượt.
+- Khi hết giờ (`turnTimeLeft === 0`) đối với người chơi (đồng thời xóa `doublesStreak = 0` trong mọi nhánh hết giờ quyết định để không thưởng thêm lượt khi AFK):
   - `WORLD_TOUR`: Tự bỏ qua chuyến bay và đổ xúc xắc.
   - `AWAIT_ROLL`: Nếu đang ở Đảo Hoang thì tự đổ xúc xắc thử vận may; nếu ở ngoài thì tự đổ xúc xắc.
-  - `BUY_DECISION` / `UPGRADE_DECISION` / `BUYOUT_DECISION` / `CHAMPIONSHIP_SELECTION`: Tự động bỏ qua.
+  - `REROLL_DECISION`: Tự xác nhận giữ kết quả đổ hiện tại và di chuyển (`CONFIRM_ROLL_MOVE`).
+  - `BUY_DECISION` / `UPGRADE_DECISION` / `BUYOUT_DECISION` / `CHAMPIONSHIP_SELECTION` / `CARD_TARGET_SELECTION`: Tự động bỏ qua.
   - `CARD_REVEAL`: Tự xác nhận thẻ.
   - `DEBT_RESOLUTION`: Tự động chạy `computeOptimalAutoSale` để bán trả nợ ngay; nếu tổng tài sản không đủ trả nợ thì tự động gọi `handleDeclareBankruptcy()` (triệt tiêu hoàn toàn lỗi treo đồng hồ ở `00:00`).
-  - `AWAIT_END_TURN`: Đóng mọi popup phụ (`showAssetsModal`, `selectedTileIndex`) trước khi kết thúc lượt.
+  - Lượt đi tự động kết thúc ngay sau khi hoàn tất hành động ở pha con (`completeTurnAfterAction`), không dùng trạng thái trung gian chờ bấm kết thúc lượt.
 
 ---
 
@@ -192,19 +196,19 @@ Toàn bộ đơn vị tiền tệ lưu trữ và hiển thị bằng **số th�
 1. **Khớp 100% 4 Góc 3D trong `src/three/models.ts` & `src/three/textures.ts`**:
    - Góc `0`: Bắt Đầu (`START`).
    - Góc `8`: Đảo Hoang (`LOST_ISLAND` — cập nhật nhãn sàn `ĐẢO HOANG`).
-   - Góc `16`: Cúp Thế Giới (`WORLD_CHAMPIONSHIPS` — dùng mô hình Sân vận động mái vòm + Cúp Vàng xoay hiện đang đặt ở index `14`).
-   - Góc `24`: Du Lịch Xuyên Việt (`WORLD_TOUR` — dùng mô hình Nhà ga Sân bay + Máy bay phản lực hiện đang đặt ở index `21`).
+   - Góc `16`: Cúp Quốc Gia (`WORLD_CHAMPIONSHIPS` — dùng mô hình Sân vận động mái vòm + Cúp Vàng xoay).
+   - Góc `24`: Du Lịch Xuyên Việt (`WORLD_TOUR` — dùng mô hình Nhà ga Sân bay + Máy bay phản lực).
 2. **Nhãn Giá 3D Động ngoài rìa bàn cờ (`MonopolyCanvas.tsx` + `rules.ts`)**:
    - Ô chưa có chủ (`ownerId === null`): Hiển thị **Giá Mua gốc** (ví dụ `200K`).
-   - Ô đã có chủ (`ownerId !== null`): Tự động đổi sang hiển thị **Tiền Thuê Thực Tế Hiện Tại** (đã nhân Độc quyền màu × Lễ hội × Cúp Thế Giới, ví dụ `360K` hoặc `1.44M`) trên nền màu chủ sở hữu, kèm ký hiệu `🏆` nếu đang giữ Cúp hoặc `🎉` nếu là thành phố Lễ Hội.
+   - Ô đã có chủ (`ownerId !== null`): Tự động đổi sang hiển thị **Tiền Thuê Thực Tế Hiện Tại** (đã nhân Độc quyền màu × Lễ hội × Cúp Quốc Gia, ví dụ `360K` hoặc `1.44M`) trên nền màu chủ sở hữu, kèm ký hiệu `🏆` nếu đang giữ Cúp hoặc `🎉` nếu là thành phố Lễ Hội.
    - Ô Cơ Quan Thuế (`30`): Nhãn hiển thị `-10%`.
 3. **Sân cỏ trung tâm (`createCourtyardDiorama`)**:
    - Thay chữ 3D `taxPool` chết bằng dòng chữ nổi 3D thể hiện trạng thái Cúp/Giải đấu hiện tại (ví dụ `CÚP ×2`, `CÚP ×3`, hoặc `2 000 000` mục tiêu khi chưa có Cúp) và sửa đồng hồ 3D khởi tạo đúng `45s`.
 4. **Bộ Thẻ Cơ Hội Giai đoạn 1 (Gộp 3 ô `12, 20, 28` về 1 bộ `CHANCE_CARDS` đồng nhất)**:
-   - Cập nhật toàn bộ chỉ số ô đích & giá trị tiền sang thang 32 ô Business Tour (gồm: *Về Bắt Đầu `+300K`*, *Bay tới Sân bay Du Lịch*, *Tới TP.HCM / Hà Nội / Phú Quốc*, *Đăng cai Cúp Thế Giới miễn phí*, *Đày ra Đảo Hoang*, *Thẻ Thoát Đảo Hoang*, *Tới Cơ quan Thuế*, *Mừng Sinh Nhật `+25K` từ mỗi người*, *Phạt vi phạm `-50K`*, *Cổ tức `+150K`*). *(Các thẻ phá nhà/mất điện/khiên sẽ mở rộng đầy đủ ở Giai đoạn 2).*
+   - Cập nhật toàn bộ chỉ số ô đích & giá trị tiền sang thang 32 ô Business Tour (gồm: *Về Bắt Đầu `+300K`*, *Bay tới Sân bay Du Lịch*, *Tới TP.HCM / Hà Nội / Phú Quốc*, *Đăng cai Cúp Quốc Gia miễn phí*, *Đày ra Đảo Hoang*, *Thẻ Thoát Đảo Hoang*, *Tới Cơ quan Thuế*, *Mừng Sinh Nhật `+25K` từ mỗi người*, *Phạt vi phạm `-50K`*, *Cổ tức `+150K`*, *Động đất*, *Mất điện*, *Khiên bảo hộ*).
 5. **Sửa Backend `server.ts` & `TileInspectorCard`**:
    - Đổi model dự phòng không tồn tại `'gemini-4-hydrogen'` thành `'gemini-2.5-flash'`, bỏ nhân `BT_DISPLAY_MULTIPLIER = 3000` trong `server.ts`, tách bộ nhớ câu thoại theo client/session.
-   - Cập nhật `TileInspectorCard` hiển thị đầy đủ bảng tiền thuê 1–4 Khu nghỉ dưỡng (`RESORT`), thông tin Lễ Hội `×2` và Cúp Thế Giới hiện tại.
+   - Cập nhật `TileInspectorCard` hiển thị đầy đủ bảng tiền thuê 1–4 Khu nghỉ dưỡng (`RESORT`), thông tin Lễ Hội `×2` và Cúp Quốc Gia hiện tại.
 
 ---
 
@@ -219,7 +223,7 @@ Toàn bộ đơn vị tiền tệ lưu trữ và hiển thị bằng **số th�
 ### 5.2. Tiêu chí Kiểm thử Bắt buộc (`src/game/rules.test.ts` + Build)
 1. Kiểm tra đủ 32 ô, tọa độ không gian không chồng lấn, 4 góc đúng chỉ số `0, 8, 16, 24`, 8 nhóm màu (20 thành phố) và 4 Resort (`4, 14, 18, 25`).
 2. Kiểm tra giới hạn xây dựng theo `laps`: `laps = 0` chặn Cấp 3 & 4; `laps >= 1` cho lên Cấp 3, chỉ khi đang ở Cấp 3 mới lên được Cấp 4 (`★`).
-3. Kiểm tra `calculateRent`: kết hợp chính xác giữa Độc quyền màu (`×2`), Lễ Hội (`×2`) và Cúp Thế Giới lũy tiến (`×2, ×3, ×4...`), cũng như bậc tiền thuê `1..4` của Resort.
+3. Kiểm tra `calculateRent`: kết hợp chính xác giữa Độc quyền màu (`×2`), Lễ Hội (`×2`) và Cúp Quốc Gia lũy tiến (`×2, ×3, ×4...`), cũng như bậc tiền thuê `1..4` của Resort.
 4. Kiểm tra `Buyout 2×` chặn đúng Cấp 4 & Resort, và Thuế `10%` tính chuẩn trên tổng vốn bất động sản.
 5. Kiểm tra `computeOptimalAutoSale` (giữ lại Khách sạn & bộ Độc quyền khi có ô lẻ đủ trả nợ; báo không đủ khi tổng vốn `< nợ`) và kiểm tra 4 điều kiện thắng.
 6. Chạy `npm test`, `npm run lint` (`tsc --noEmit`), và `npm run build` xanh 100%.
