@@ -1487,4 +1487,157 @@ test.describe('Business Tour Rules Alignment & UI/Online Parity', () => {
 
     expect(errors).toEqual([]);
   });
+
+  test('Online token movement holds destination tile without snapping back before server snapshot arrives', async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
+    const errors = attachZeroErrorGuard(page);
+
+    let movedPath: number[] | null = null;
+    let landedSnapshotReceivedAt = 0;
+
+    page.on('websocket', (ws) => {
+      ws.on('framereceived', (frame) => {
+        try {
+          const msg = JSON.parse(String(frame.payload));
+          if (msg.type === 'GAME_EVENT' && msg.event?.kind === 'TOKEN_MOVED' && msg.event.playerId === 0) {
+            movedPath = msg.event.path;
+          } else if (
+            msg.type === 'ROOM_SNAPSHOT' &&
+            movedPath &&
+            movedPath.length > 0 &&
+            msg.snapshot?.match?.players?.[0]?.position === movedPath[movedPath.length - 1] &&
+            landedSnapshotReceivedAt === 0
+          ) {
+            landedSnapshotReceivedAt = Date.now();
+          }
+        } catch {
+          // ignore non-JSON frames
+        }
+      });
+    });
+
+    await page.goto('/?quality=high');
+    await getTabOnline(page).click();
+    await page.getByRole('button', { name: '2 Người' }).click();
+    await page.getByTestId('bt-create-room-btn').click();
+    await expect(page.getByTestId('bt-online-start-btn')).toBeEnabled();
+    await page.getByTestId('bt-online-start-btn').click();
+
+    await expect(page.locator('body')).toHaveAttribute('data-state', 'playing');
+    const rollBtn = page.getByTestId('bt-roll-dice-btn');
+    await expect(rollBtn).toBeVisible();
+
+    // Start per-RAF sampler of the active pawn's projected floating speech bubble coordinates
+    await page.evaluate(() => {
+      interface BubbleSample {
+        t: number;
+        x: number;
+        y: number;
+        text: string;
+        borderColor: string;
+      }
+      const samples: BubbleSample[] = [];
+      let active = true;
+      const win = window as unknown as {
+        __btStopBubbleTrace?: () => BubbleSample[];
+      };
+      const parseTranslate3d = (tf: string): { x: number; y: number } | null => {
+        const m = tf.match(/translate3d\(\s*([-\d.]+)px,\s*([-\d.]+)px/);
+        if (!m) return null;
+        return { x: Number(m[1]), y: Number(m[2]) };
+      };
+      const sampleLoop = () => {
+        if (!active) return;
+        const canvasHost = document.querySelector('[aria-label="Bàn cờ Tỷ Phú Việt Nam 3D"]');
+        const bubble = canvasHost?.parentElement?.querySelector('div.pointer-events-none') as HTMLElement | null;
+        if (bubble && bubble.style.opacity === '1') {
+          const coords = parseTranslate3d(bubble.style.transform || '');
+          if (coords) {
+            samples.push({
+              t: performance.now(),
+              x: coords.x,
+              y: coords.y,
+              text: bubble.textContent || '',
+              borderColor: bubble.style.borderColor || '',
+            });
+          }
+        }
+        requestAnimationFrame(sampleLoop);
+      };
+      requestAnimationFrame(sampleLoop);
+      win.__btStopBubbleTrace = () => {
+        active = false;
+        return samples;
+      };
+    });
+
+    // Wait 2 frames so pre-move origin coordinates on Tile 0 are captured
+    await page.waitForTimeout(80);
+    await rollBtn.click();
+
+    // Wait until TOKEN_MOVED + post-move ROOM_SNAPSHOT arrives + 400ms settle window
+    await expect
+      .poll(() => (landedSnapshotReceivedAt > 0 ? Date.now() - landedSnapshotReceivedAt : -1), {
+        timeout: 15_000,
+      })
+      .toBeGreaterThanOrEqual(400);
+
+    const samples = await page.evaluate(() => {
+      const win = window as unknown as {
+        __btStopBubbleTrace?: () => Array<{
+          t: number;
+          x: number;
+          y: number;
+          text: string;
+          borderColor: string;
+        }>;
+      };
+      return win.__btStopBubbleTrace ? win.__btStopBubbleTrace() : [];
+    });
+
+    expect(movedPath).not.toBeNull();
+    expect(movedPath!.length).toBeGreaterThanOrEqual(2);
+
+    // Filter samples belonging to Player 0 (#F5B800 -> rgb(245, 184, 0))
+    const p0Samples = samples.filter(
+      (s) =>
+        s.borderColor.includes('245, 184, 0') ||
+        s.borderColor.toLowerCase().includes('#f5b800')
+    );
+    expect(p0Samples.length).toBeGreaterThan(20);
+
+    const originSample = p0Samples[0];
+    const settledSample = p0Samples[p0Samples.length - 1];
+    const totalChordPx = Math.hypot(
+      settledSample.x - originSample.x,
+      settledSample.y - originSample.y
+    );
+    expect(totalChordPx).toBeGreaterThan(80);
+
+    // Find the first frame during "Đang di chuyển..." where the pawn lands on the destination tile (within 18px of settled dest)
+    const arrivalIdx = p0Samples.findIndex(
+      (s) =>
+        s.text.includes('Đang di chuyển') &&
+        Math.hypot(s.x - settledSample.x, s.y - settledSample.y) <= 18
+    );
+    expect(arrivalIdx, 'Expected pawn to reach destination tile during hop animation').toBeGreaterThan(0);
+
+    const postArrivalSamples = p0Samples.slice(arrivalIdx);
+    const maxSnapbackPx = Math.max(
+      ...postArrivalSamples.map((s) =>
+        Math.hypot(s.x - settledSample.x, s.y - settledSample.y)
+      )
+    );
+
+    expect(
+      maxSnapbackPx,
+      `Pawn snapped back ${maxSnapbackPx.toFixed(1)}px from destination toward origin (totalChord=${totalChordPx.toFixed(1)}px) after finishing hop!`
+    ).toBeLessThanOrEqual(28);
+
+    expect(errors).toEqual([]);
+    await context.close();
+  });
 });

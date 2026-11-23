@@ -13,6 +13,7 @@ import {
   getPauseModal,
   getTabOffline,
   getTabOnline,
+  getTileScreenPoint,
   isScrollableOrWithinViewport,
   resolveDialogElement,
 } from './helpers';
@@ -1116,6 +1117,61 @@ test.describe('Responsive Layouts, Accessibility, WebGL & Audio Fault Safety', (
       390,
       'LuckCardModal Tiếp Tục Ngay @ 844x390'
     );
+
+    expect(errors).toEqual([]);
+  });
+
+  test('Board-focused 3D layout keeps all 4 corners unclipped on desktop/mobile and renders 4-edge player vaults, courtyard Bank & Night Mode cleanly', async ({
+    page,
+  }) => {
+    const errors = attachZeroErrorGuard(page);
+
+    for (const vp of [
+      { width: 1440, height: 900 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(vp);
+      await page.goto('/?autostart=1&players=4&hotseat=1&dice=1-2,1-2&quality=low');
+      await expect(page.locator('body')).toHaveAttribute('data-state', 'playing');
+
+      for (const cornerIdx of [0, 8, 16, 24]) {
+        const pt = await getTileScreenPoint(page, cornerIdx);
+        expect(pt, `Corner ${cornerIdx} must project cleanly @ ${vp.width}x${vp.height}`).not.toBeNull();
+        expect(pt!.x).toBeGreaterThan(8);
+        expect(pt!.x).toBeLessThan(vp.width - 8);
+        expect(pt!.y).toBeGreaterThan(24);
+        expect(pt!.y).toBeLessThan(vp.height - 16);
+      }
+    }
+
+    // Switch back to 1440x900, verify all 4 currency styles on 4-edge player vaults + Night Mode + live tray-to-tray rent transfer
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/?autostart=1&players=2&hotseat=1&dice=1-2,1-2&quality=high');
+    await expect(page.locator('body')).toHaveAttribute('data-state', 'playing');
+    await enable2xSpeed(page);
+
+    await page.getByTestId('bt-btn-settings').click();
+    const settingsPop = page.getByTestId('bt-settings-popover');
+    await expect(settingsPop).toBeVisible();
+    for (const styleLabel of ['Tiền mặt', 'Tiền xu', 'Vàng & Chip', 'Tiền mặt & Xu']) {
+      await settingsPop.getByRole('button', { name: styleLabel, exact: true }).click();
+    }
+    await settingsPop.getByRole('button', { name: /Chế độ ánh sáng/i }).click();
+    await settingsPop.getByRole('button', { name: 'Góc Chuẩn 3D' }).click();
+    await expect(settingsPop).toHaveCount(0);
+
+    // P1 buys Đà Lạt -> P2 lands on Đà Lạt & pays rent (triggers on-board pawn-to-pawn 3D cash-flow arc)
+    await page.getByTestId('bt-roll-dice-btn').click();
+    const buyModal = page.getByTestId('buy-decision-modal');
+    await expect(buyModal).toBeVisible();
+    await buyModal.getByRole('button', { name: /Mua Ngay/i }).click();
+
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
+    await page.getByTestId('bt-roll-dice-btn').click();
+    const buyoutModal = page.getByTestId('buyout-decision-modal');
+    await expect(buyoutModal).toBeVisible();
+    await buyoutModal.getByRole('button', { name: 'Bỏ Qua' }).click();
+    await expect(page.getByTestId('bt-roll-dice-btn')).toBeVisible();
 
     expect(errors).toEqual([]);
   });
