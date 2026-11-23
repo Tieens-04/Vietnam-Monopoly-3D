@@ -1056,6 +1056,27 @@ export function createTreasurySystem(
     bullionBump.dispose();
     chipTex.dispose();
 
+    const disposedGeos = new Set<THREE.BufferGeometry>();
+    const disposedMats = new Set<THREE.Material>();
+    group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        if (obj.geometry && !disposedGeos.has(obj.geometry)) {
+          disposedGeos.add(obj.geometry);
+          obj.geometry.dispose();
+        }
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of mats) {
+          if (m && !disposedMats.has(m)) {
+            disposedMats.add(m);
+            m.dispose();
+          }
+        }
+      }
+      if (obj instanceof THREE.InstancedMesh) {
+        obj.dispose();
+      }
+    });
+
     trayBaseMat.dispose();
     goldRimMat.dispose();
     for (const tr of [...playerTrays, bankTray]) {

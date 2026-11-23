@@ -4,8 +4,10 @@ import { CurrencyStyleId } from '../game/types';
  * Procedural Web Audio API Sound Synthesizer for 3D Monopoly.
  * Zero external audio files required.
  */
-class SoundEngine {
+export class SoundEngine {
   private ctx: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
+  private compressor: DynamicsCompressorNode | null = null;
   private muted = false;
 
   public setMuted(muted: boolean): void {
@@ -18,17 +20,57 @@ class SoundEngine {
 
   private ensureContext(): AudioContext | null {
     if (this.muted || typeof window === 'undefined') return null;
+    if (this.ctx && this.ctx.state === 'closed') {
+      this.ctx = null;
+      this.masterGain = null;
+      this.compressor = null;
+    }
     if (!this.ctx) {
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtx) return null;
-      this.ctx = new AudioCtx();
+      try {
+        this.ctx = new AudioCtx();
+      } catch {
+        return null;
+      }
     }
     if (this.ctx.state === 'suspended') {
       this.ctx.resume().catch(() => {});
     }
+    if (this.ctx.state !== 'running') {
+      return null;
+    }
     return this.ctx;
+  }
+
+  private getOutputNode(ctx: AudioContext): AudioNode {
+    if (
+      !this.masterGain ||
+      !this.compressor ||
+      this.masterGain.context !== ctx
+    ) {
+      try {
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.setValueAtTime(-14, ctx.currentTime);
+        compressor.knee.setValueAtTime(18, ctx.currentTime);
+        compressor.ratio.setValueAtTime(6, ctx.currentTime);
+        compressor.attack.setValueAtTime(0.005, ctx.currentTime);
+        compressor.release.setValueAtTime(0.15, ctx.currentTime);
+
+        const masterGain = ctx.createGain();
+        masterGain.gain.setValueAtTime(0.9, ctx.currentTime);
+
+        masterGain.connect(compressor);
+        compressor.connect(ctx.destination);
+        this.masterGain = masterGain;
+        this.compressor = compressor;
+      } catch {
+        return ctx.destination;
+      }
+    }
+    return this.masterGain;
   }
 
   /** Rattling wooden dice shake & bounce sound */
@@ -53,7 +95,7 @@ class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
 
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getOutputNode(ctx));
       osc.start(t);
       osc.stop(t + 0.055);
     });
@@ -80,7 +122,7 @@ class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
 
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getOutputNode(ctx));
     osc.start(now);
     osc.stop(now + 0.09);
   }
@@ -105,7 +147,7 @@ class SoundEngine {
       g.gain.setValueAtTime(n.gain, now + n.delay);
       g.gain.exponentialRampToValueAtTime(0.001, now + n.delay + n.dur);
       osc.connect(g);
-      g.connect(ctx.destination);
+      g.connect(this.getOutputNode(ctx));
       osc.start(now + n.delay);
       osc.stop(now + n.delay + n.dur + 0.02);
     });
@@ -126,7 +168,7 @@ class SoundEngine {
       g.gain.setValueAtTime(0.13, t);
       g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
       osc.connect(g);
-      g.connect(ctx.destination);
+      g.connect(this.getOutputNode(ctx));
       osc.start(t);
       osc.stop(t + 0.17);
     });
@@ -148,7 +190,7 @@ class SoundEngine {
       g.gain.setValueAtTime(0.14, t);
       g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
       osc.connect(g);
-      g.connect(ctx.destination);
+      g.connect(this.getOutputNode(ctx));
       osc.start(t);
       osc.stop(t + 0.28);
     });
@@ -171,7 +213,7 @@ class SoundEngine {
       g.gain.setValueAtTime(0.15, t);
       g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
       osc.connect(g);
-      g.connect(ctx.destination);
+      g.connect(this.getOutputNode(ctx));
       osc.start(t);
       osc.stop(t + 0.24);
     });
@@ -191,7 +233,7 @@ class SoundEngine {
     g.gain.setValueAtTime(0.12, now);
     g.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
     osc.connect(g);
-    g.connect(ctx.destination);
+    g.connect(this.getOutputNode(ctx));
     osc.start(now);
     osc.stop(now + 0.16);
   }
@@ -211,7 +253,7 @@ class SoundEngine {
       g.gain.setValueAtTime(0.07, t);
       g.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
       osc.connect(g);
-      g.connect(ctx.destination);
+      g.connect(this.getOutputNode(ctx));
       osc.start(t);
       osc.stop(t + 0.115);
     });
@@ -240,7 +282,7 @@ class SoundEngine {
       g.gain.setValueAtTime(0.18, now + n.t);
       g.gain.exponentialRampToValueAtTime(0.001, now + n.t + n.d);
       osc.connect(g);
-      g.connect(ctx.destination);
+      g.connect(this.getOutputNode(ctx));
       osc.start(now + n.t);
       osc.stop(now + n.t + n.d + 0.03);
     });
@@ -260,7 +302,7 @@ class SoundEngine {
     g.gain.setValueAtTime(0.13, now);
     g.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
     osc.connect(g);
-    g.connect(ctx.destination);
+    g.connect(this.getOutputNode(ctx));
     osc.start(now);
     osc.stop(now + 0.12);
   }
@@ -280,7 +322,7 @@ class SoundEngine {
       g.gain.setValueAtTime(0.2, now + offset);
       g.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.08);
       osc.connect(g);
-      g.connect(ctx.destination);
+      g.connect(this.getOutputNode(ctx));
       osc.start(now + offset);
       osc.stop(now + offset + 0.09);
     });
@@ -292,7 +334,7 @@ class SoundEngine {
     bg.gain.setValueAtTime(0.16, now + 0.24);
     bg.gain.exponentialRampToValueAtTime(0.001, now + 0.58);
     bell.connect(bg);
-    bg.connect(ctx.destination);
+    bg.connect(this.getOutputNode(ctx));
     bell.start(now + 0.24);
     bell.stop(now + 0.6);
   }
@@ -313,7 +355,7 @@ class SoundEngine {
       g.gain.setValueAtTime(0.09, t);
       g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
       osc.connect(g);
-      g.connect(ctx.destination);
+      g.connect(this.getOutputNode(ctx));
       osc.start(t);
       osc.stop(t + 0.17);
     });
@@ -333,7 +375,7 @@ class SoundEngine {
     g.gain.setValueAtTime(0.11, now);
     g.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
     osc.connect(g);
-    g.connect(ctx.destination);
+    g.connect(this.getOutputNode(ctx));
     osc.start(now);
     osc.stop(now + 0.12);
   }
@@ -356,7 +398,7 @@ class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.052);
 
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getOutputNode(ctx));
     osc.start(now);
     osc.stop(now + 0.056);
   }
@@ -392,7 +434,7 @@ class SoundEngine {
 
         src.connect(filter);
         filter.connect(g);
-        g.connect(ctx.destination);
+        g.connect(this.getOutputNode(ctx));
         src.start(t);
       }
     };
@@ -411,7 +453,7 @@ class SoundEngine {
         g.gain.setValueAtTime(0.085, t);
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
         osc.connect(g);
-        g.connect(ctx.destination);
+        g.connect(this.getOutputNode(ctx));
         osc.start(t);
         osc.stop(t + 0.13);
       }
@@ -439,7 +481,7 @@ class SoundEngine {
         g.gain.setValueAtTime(idx === 0 ? 0.12 : 0.07, t);
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
         osc.connect(g);
-        g.connect(ctx.destination);
+        g.connect(this.getOutputNode(ctx));
         osc.start(t);
         osc.stop(t + 0.3);
       });
