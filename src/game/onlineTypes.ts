@@ -3,12 +3,15 @@ import {
   GameLogEntry,
   LuckCard,
   MatchBoardModifiers,
+  MatchMode,
   MatchWinnerResult,
   PendingDebt,
   PlayerSetupConfig,
   PlayerState,
   PropertyState,
   TacticalCardActionKind,
+  TacticalDiceChoice,
+  TeamId,
   TurnPhase,
 } from './types';
 
@@ -24,6 +27,7 @@ export interface LobbySeatInfo {
   colorName: string;
   connected: boolean;
   isHost: boolean;
+  teamId?: TeamId;
 }
 
 export interface OnlineMatchSnapshot {
@@ -37,11 +41,17 @@ export interface OnlineMatchSnapshot {
   lastRentPaid: number;
   boardModifiers: MatchBoardModifiers;
   isFreeChampionship: boolean;
-  upgradeTargetTileIndex?: number | null;
   pendingTacticalCard?: TacticalCardActionKind | null;
   turnTimeLeft: number;
+  /** Remaining match countdown seconds (20:00 = 1200s) */
+  matchTimeLeft: number;
+  matchMode?: MatchMode;
+  tacticalDiceEnabled?: boolean;
+  festivalEnabled?: boolean;
   drawnCard: LuckCard | null;
   pendingDebt: PendingDebt | null;
+  pendingDebtQueue?: PendingDebt[];
+  debtReturnToPlayerIndex?: number | null;
   matchWinnerResult: MatchWinnerResult | null;
   logs: GameLogEntry[];
   landingCueText: string | null;
@@ -53,20 +63,22 @@ export interface OnlineRoomSnapshot {
   maxPlayers: 2 | 3 | 4;
   startingCash: number;
   fillBots: boolean;
+  matchMode?: MatchMode;
+  tacticalDiceEnabled?: boolean;
+  festivalEnabled?: boolean;
   seats: LobbySeatInfo[];
   hostSeatIndex: number;
   match: OnlineMatchSnapshot | null;
 }
 
 export type OnlineGameAction =
-  | { kind: 'ROLL_DICE' }
+  | { kind: 'ROLL_DICE'; diceChoice?: TacticalDiceChoice }
+  | { kind: 'REROLL_DICE' }
+  | { kind: 'CONFIRM_ROLL_MOVE' }
   | { kind: 'PAY_JAIL_FINE' }
   | { kind: 'USE_JAIL_CARD' }
   | { kind: 'BUY_PROPERTY'; initialLevel: number }
   | { kind: 'SKIP_BUY' }
-  | { kind: 'SELECT_START_UPGRADE_CITY'; targetTile: number }
-  | { kind: 'BACK_TO_START_UPGRADE' }
-  | { kind: 'SKIP_START_UPGRADE' }
   | { kind: 'UPGRADE_PROPERTY'; targetLevel: number }
   | { kind: 'SKIP_UPGRADE' }
   | { kind: 'CONFIRM_BUYOUT' }
@@ -79,8 +91,7 @@ export type OnlineGameAction =
   | { kind: 'APPLY_TACTICAL_CARD'; targetTile: number }
   | { kind: 'SKIP_TACTICAL_CARD' }
   | { kind: 'SELL_AND_PAY_DEBT'; tileIndicesToSell: number[] }
-  | { kind: 'DECLARE_BANKRUPTCY' }
-  | { kind: 'END_TURN' };
+  | { kind: 'DECLARE_BANKRUPTCY' };
 
 export type ClientToServerMessage =
   | {
@@ -90,6 +101,9 @@ export type ClientToServerMessage =
       maxPlayers: 2 | 3 | 4;
       startingCash: number;
       fillBots: boolean;
+      matchMode?: MatchMode;
+      tacticalDiceEnabled?: boolean;
+      festivalEnabled?: boolean;
     }
   | {
       type: 'JOIN_ROOM';
@@ -108,6 +122,9 @@ export type ClientToServerMessage =
       maxPlayers?: 2 | 3 | 4;
       startingCash?: number;
       fillBots?: boolean;
+      matchMode?: MatchMode;
+      tacticalDiceEnabled?: boolean;
+      festivalEnabled?: boolean;
     }
   | {
       type: 'UPDATE_MY_PROFILE';
@@ -116,6 +133,7 @@ export type ClientToServerMessage =
     }
   | { type: 'START_MATCH' }
   | { type: 'RETURN_TO_LOBBY' }
+  | { type: 'RECLAIM_CONTROL' }
   | { type: 'GAME_ACTION'; action: OnlineGameAction }
   | { type: 'SEND_EMOTE'; emoteText: string }
   | { type: 'PING' };

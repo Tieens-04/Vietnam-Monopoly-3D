@@ -99,7 +99,7 @@ export const BOARD_TILES: TileDefinition[] = [
     name: 'BẮT ĐẦU',
     shortName: 'BẮT ĐẦU',
     kind: TileKind.START,
-    description: 'Nhận ngay 300K tiền lương khi đi qua; dừng trực tiếp tại Bắt Đầu còn được nâng cấp ngay 1 thành phố đang sở hữu!',
+    description: 'Nhận ngay 300K tiền lương và tăng 1 vòng mỗi khi đi qua hoặc dừng tại ô Bắt Đầu.',
   },
   {
     index: 1,
@@ -348,7 +348,7 @@ export const BOARD_TILES: TileDefinition[] = [
     name: 'Du Lịch Xuyên Việt',
     shortName: 'DU LỊCH',
     kind: TileKind.WORLD_TOUR,
-    description: 'Đáp tại sân bay chuyên cơ: ở đầu lượt kế tiếp, trả 50K để bay tới bất kỳ thành phố, khu nghỉ dưỡng, Cúp Quốc Gia hoặc Ô Bắt Đầu!',
+    description: 'Đáp tại sân bay chuyên cơ: ở đầu lượt kế tiếp, trả 50K để bay tới một ô đất hoặc khu nghỉ dưỡng trống chưa có chủ hoặc thuộc sở hữu của bạn!',
   },
   {
     index: 25,
