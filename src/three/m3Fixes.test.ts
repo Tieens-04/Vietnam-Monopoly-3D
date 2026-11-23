@@ -4,7 +4,12 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { Pass } from 'three/addons/postprocessing/Pass.js';
 import { SoundEngine } from '../audio/soundEngine';
-import { detectCashSnapshotChanges } from '../components/MonopolyCanvas';
+import {
+  detectCashSnapshotChanges,
+  type PendingTokenLandingLatch,
+  resolveEffectiveTokenPlayers,
+  upsertPendingTokenLandingLatch,
+} from '../components/MonopolyCanvas';
 import { detectCashFlowTransfers } from '../game/currencyLogic';
 import type { PlayerState } from '../game/types';
 import { createNightLightingPalette, createPlayerTokenMesh } from './models';
@@ -508,4 +513,101 @@ test('BUG-54: SoundEngine guards throwing AudioContext, skips suspended scheduli
       (globalThis as Record<string, unknown>).window = prevWin;
     }
   }
+});
+
+test('Online token landing latch holds destination tile across post-hop snapshot gap without premature co-located shift', () => {
+  const makePlayer = (id: number, position: number, bankrupt = false): PlayerState => ({
+    id,
+    name: `P${id}`,
+    isBot: false,
+    color: '#F5B800',
+    colorName: 'Vàng kim',
+    tokenType: 'car',
+    cash: 2_000_000,
+    position,
+    laps: 0,
+    inJail: false,
+    jailTurns: 0,
+    jailFreeCards: 0,
+    doublesStreak: 0,
+    pendingWorldTour: false,
+    bankrupt,
+  });
+
+  const latches = new Map<number, PendingTokenLandingLatch>();
+  const staleSnapshotPlayers = [makePlayer(0, 0), makePlayer(1, 6)];
+
+  // 1. Start online hop 0 -> [1,2,3,4,5,6] while ROOM_SNAPSHOT still has player 0 at tile 0
+  upsertPendingTokenLandingLatch(latches, 0, 0, [1, 2, 3, 4, 5, 6], 8_000);
+  assert.equal(latches.get(0)?.targetTile, 6);
+
+  // 2. During early hop steps (stepIndex = 2 < 5), player 0 has not arrived at tile 6 yet
+  const midHopPlayers = resolveEffectiveTokenPlayers(staleSnapshotPlayers, latches, 1_000, {
+    playerId: 0,
+    path: [1, 2, 3, 4, 5, 6],
+    stepIndex: 2,
+  });
+  assert.equal(midHopPlayers[0].position, 0);
+  assert.equal(latches.has(0), true);
+
+  // 3. On the final hop step (stepIndex = 5), player 0 claims tile 6 so co-located slot offsets align
+  const finalStepPlayers = resolveEffectiveTokenPlayers(staleSnapshotPlayers, latches, 1_650, {
+    playerId: 0,
+    path: [1, 2, 3, 4, 5, 6],
+    stepIndex: 5,
+  });
+  assert.equal(finalStepPlayers[0].position, 6);
+
+  // 4. Hop finishes (activeHop = null) at 1800ms BEFORE server ROOM_SNAPSHOT arrives at 2020ms+:
+  //    player 0 MUST remain latched at tile 6 instead of snapping back to stale tile 0!
+  const postHopGapPlayers = resolveEffectiveTokenPlayers(staleSnapshotPlayers, latches, 1_850, null);
+  assert.equal(postHopGapPlayers[0].position, 6);
+  assert.equal(latches.has(0), true);
+
+  // 5. Server ROOM_SNAPSHOT arrives with authoritative position = 6 -> latch clears seamlessly
+  const syncedPlayers = [makePlayer(0, 6), makePlayer(1, 6)];
+  const afterSyncPlayers = resolveEffectiveTokenPlayers(syncedPlayers, latches, 2_060, null);
+  assert.equal(afterSyncPlayers[0].position, 6);
+  assert.equal(latches.has(0), false);
+});
+
+test('Online token landing latch handles back-to-back moves before intermediate snapshot and clears on expiry or bankruptcy', () => {
+  const makePlayer = (id: number, position: number, bankrupt = false): PlayerState => ({
+    id,
+    name: `P${id}`,
+    isBot: false,
+    color: '#F5B800',
+    colorName: 'Vàng kim',
+    tokenType: 'car',
+    cash: 2_000_000,
+    position,
+    laps: 0,
+    inJail: false,
+    jailTurns: 0,
+    jailFreeCards: 0,
+    doublesStreak: 0,
+    pendingWorldTour: false,
+    bankrupt,
+  });
+
+  const latches = new Map<number, PendingTokenLandingLatch>();
+  upsertPendingTokenLandingLatch(latches, 0, 0, [1, 2, 3], 5_000);
+  // Chained move (e.g. card move 3 -> 8) starts before snapshot for 3 arrives
+  upsertPendingTokenLandingLatch(latches, 0, 0, [8], 9_000);
+
+  // Delayed intermediate snapshot (position = 3) arrives -> must stay at 8, not snap back to 3!
+  const delayedIntermediate = resolveEffectiveTokenPlayers([makePlayer(0, 3)], latches, 2_500, null);
+  assert.equal(delayedIntermediate[0].position, 8);
+  assert.equal(latches.has(0), true);
+
+  // Expiry clears latch safely
+  const afterExpiry = resolveEffectiveTokenPlayers([makePlayer(0, 3)], latches, 9_500, null);
+  assert.equal(afterExpiry[0].position, 3);
+  assert.equal(latches.has(0), false);
+
+  // Bankruptcy clears latch immediately
+  upsertPendingTokenLandingLatch(latches, 0, 3, [4, 5], 15_000);
+  const afterBankrupt = resolveEffectiveTokenPlayers([makePlayer(0, 3, true)], latches, 10_000, null);
+  assert.equal(afterBankrupt[0].position, 3);
+  assert.equal(latches.has(0), false);
 });

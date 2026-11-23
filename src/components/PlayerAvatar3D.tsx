@@ -227,6 +227,23 @@ class SharedAvatarRenderEngine {
         this.syncSchedule();
       }
     });
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', (e) => {
+        if (e.persisted) return;
+        this.stopLoop();
+        if (this.renderer && !this.contextLost) {
+          this.contextLost = true;
+          try {
+            const gl = this.renderer.getContext();
+            this.renderer.dispose();
+            gl?.getExtension('WEBGL_lose_context')?.loseContext();
+          } catch {
+            // Ignore unload WebGL teardown errors
+          }
+          this.renderer = null;
+        }
+      });
+    }
   }
 
   private ensureEnvTexture(): THREE.Texture | null {
