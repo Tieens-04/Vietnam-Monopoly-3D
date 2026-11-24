@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { CHARACTER_PERSONAS } from '../game/avatarLogic';
 import { BOARD_TILES, CHANCE_CARDS } from '../game/boardData';
 import {
+  ChatChannel,
   ClientToServerMessage,
   LobbySeatInfo,
   OnlineGameAction,
@@ -10,7 +11,9 @@ import {
   OnlineRoomStatus,
   OnlineSoundEffect,
   OnlineVisualEvent,
+  RoomChatMessage,
   RoomParticipantSummary,
+  RtcSignalPayload,
   ServerToClientMessage,
   TokenArchetype,
 } from '../game/onlineTypes';
@@ -101,6 +104,10 @@ const DISCONNECT_BOT_TAKEOVER_MS = 90_000;
 const EMPTY_LOBBY_CLEANUP_MS = 10_000;
 const MAX_ROOMS = 100;
 const EMOTE_COOLDOWN_MS = 1500;
+const CHAT_COOLDOWN_MS = 800;
+const MAX_CHAT_LENGTH = 160;
+const MAX_ALL_CHAT_HISTORY = 60;
+const MAX_TEAM_CHAT_HISTORY = 30;
 
 const TOKEN_COLORS: Record<TokenArchetype, { color: string; colorName: string }> = {
   car: { color: '#F5B800', colorName: 'Vàng kim' },
@@ -143,6 +150,24 @@ function normalizeMatchMode(val: unknown): MatchMode {
 
 function isValidTacticalDiceChoice(val: unknown): val is TacticalDiceChoice {
   return val === 'NORMAL' || val === 'EVEN' || val === 'ODD';
+}
+
+function isValidRtcSignalPayload(signal: unknown): signal is RtcSignalPayload {
+  if (!signal || typeof signal !== 'object' || Array.isArray(signal)) {
+    return false;
+  }
+  const candidate = signal as Record<string, unknown>;
+  if (candidate.kind === 'offer' || candidate.kind === 'answer') {
+    return typeof candidate.sdp === 'string' && candidate.sdp.length > 0;
+  }
+  if (candidate.kind === 'ice') {
+    return (
+      typeof candidate.candidate === 'object' &&
+      candidate.candidate !== null &&
+      !Array.isArray(candidate.candidate)
+    );
+  }
+  return false;
 }
 
 function generateParticipantId(existingHumans: HumanSeatRecord[] = []): string {
@@ -225,6 +250,9 @@ interface RoomRecord {
   festivalEnabled: boolean;
   hostSeatIndex: number;
   humans: HumanSeatRecord[];
+  allChatHistory: RoomChatMessage[];
+  teamChatHistory: Record<TeamId, RoomChatMessage[]>;
+  nextChatId: number;
   match: MatchRecord | null;
   matchEpoch: number;
   eventSeq: number;
@@ -249,6 +277,7 @@ export class OnlineRoomManager {
   private readonly rooms = new Map<string, RoomRecord>();
   private readonly clientSessions = new Map<string, { roomCode: string; sessionToken: string }>();
   private readonly lastEmoteAtByClient = new Map<string, number>();
+  private readonly lastChatAtByClient = new Map<string, number>();
   private readonly sendMessage: (clientId: string, msg: ServerToClientMessage) => void;
   private readonly timingScale: number;
   private readonly generateBotQuip?: (payload: BotQuipPayload) => Promise<string | null>;
@@ -290,6 +319,7 @@ export class OnlineRoomManager {
     this.rooms.clear();
     this.clientSessions.clear();
     this.lastEmoteAtByClient.clear();
+    this.lastChatAtByClient.clear();
   }
 
   private clearBotActionTimer(room: RoomRecord): void {
@@ -419,11 +449,23 @@ export class OnlineRoomManager {
       }));
   }
 
+  private getSeatTeamId(room: RoomRecord, seat: HumanSeatRecord | undefined): TeamId | undefined {
+    if (!seat || seat.explicitlyLeft || room.matchMode !== 'TEAMS_2V2') {
+      return undefined;
+    }
+    if (room.match && seat.playerId !== null) {
+      const player = room.match.players.find((p) => p.id === seat.playerId);
+      if (player?.teamId === 0 || player?.teamId === 1) {
+        return player.teamId;
+      }
+    }
+    return (seat.seatIndex % 2) as TeamId;
+  }
+
   private buildRoomSnapshot(
     room: RoomRecord,
     recipientParticipantId?: string
   ): OnlineRoomSnapshot {
-    void recipientParticipantId;
     const usedByHumans = new Set(room.humans.map((h) => h.tokenType));
     const freeTokens = ALL_TOKENS.filter((t) => !usedByHumans.has(t));
     let freeTokenIdx = 0;
@@ -492,6 +534,17 @@ export class OnlineRoomManager {
         }
       : null;
 
+    const recipientSeat = recipientParticipantId
+      ? room.humans.find((h) => h.participantId === recipientParticipantId && !h.explicitlyLeft)
+      : undefined;
+    const recipientTeamId = this.getSeatTeamId(room, recipientSeat);
+    const chatHistory =
+      room.matchMode === 'TEAMS_2V2' && recipientTeamId !== undefined
+        ? [...room.allChatHistory, ...room.teamChatHistory[recipientTeamId]].sort(
+            (a, b) => a.id - b.id
+          )
+        : [...room.allChatHistory];
+
     return {
       roomCode: room.roomCode,
       status: room.status,
@@ -503,7 +556,7 @@ export class OnlineRoomManager {
       festivalEnabled: room.festivalEnabled,
       seats,
       participants: this.buildParticipantsList(room),
-      chatHistory: [],
+      chatHistory,
       hostSeatIndex: room.hostSeatIndex,
       match: matchSnap,
     };
@@ -531,6 +584,8 @@ export class OnlineRoomManager {
       | Omit<Extract<OnlineVisualEvent, { kind: 'SOUND' }>, 'eventSeq'>
       | Omit<Extract<OnlineVisualEvent, { kind: 'PLAYER_EMOTE' }>, 'eventSeq'>
       | Omit<Extract<OnlineVisualEvent, { kind: 'BOT_QUIP' }>, 'eventSeq'>
+      | Omit<Extract<OnlineVisualEvent, { kind: 'CHAT_MESSAGE' }>, 'eventSeq'>,
+    options?: { teamId?: TeamId }
   ): void {
     room.eventSeq += 1;
     const event = {
@@ -539,9 +594,11 @@ export class OnlineRoomManager {
     } as OnlineVisualEvent;
 
     for (const h of room.humans) {
-      if (h.connected && h.clientId) {
-        this.sendMessage(h.clientId, { type: 'GAME_EVENT', event });
+      if (!h.connected || !h.clientId || h.explicitlyLeft) continue;
+      if (options?.teamId !== undefined && this.getSeatTeamId(room, h) !== options.teamId) {
+        continue;
       }
+      this.sendMessage(h.clientId, { type: 'GAME_EVENT', event });
     }
   }
 
@@ -617,6 +674,9 @@ export class OnlineRoomManager {
         festivalEnabled,
         hostSeatIndex: 0,
         humans: [creator],
+        allChatHistory: [],
+        teamChatHistory: { 0: [], 1: [] },
+        nextChatId: 1,
         match: null,
         matchEpoch: 1,
         eventSeq: 0,
@@ -769,6 +829,7 @@ export class OnlineRoomManager {
         const oldClientId = seat.clientId;
         this.clientSessions.delete(oldClientId);
         this.lastEmoteAtByClient.delete(oldClientId);
+        this.lastChatAtByClient.delete(oldClientId);
         this.sendError(
           oldClientId,
           'SESSION_REPLACED',
@@ -833,12 +894,16 @@ export class OnlineRoomManager {
     const room = this.rooms.get(session.roomCode);
     if (!room) {
       this.clientSessions.delete(clientId);
+      this.lastEmoteAtByClient.delete(clientId);
+      this.lastChatAtByClient.delete(clientId);
       this.sendError(clientId, 'ROOM_NOT_FOUND', 'Phòng không còn tồn tại.');
       return;
     }
     const seat = room.humans.find((h) => h.sessionToken === session.sessionToken);
     if (!seat) {
       this.clientSessions.delete(clientId);
+      this.lastEmoteAtByClient.delete(clientId);
+      this.lastChatAtByClient.delete(clientId);
       this.sendError(clientId, 'SESSION_EXPIRED', 'Không tìm thấy vị trí của bạn trong phòng.');
       return;
     }
@@ -1027,6 +1092,102 @@ export class OnlineRoomManager {
       return;
     }
 
+    if (msg.type === 'SEND_CHAT_MESSAGE') {
+      if (seat.explicitlyLeft) return;
+      if (typeof msg.text !== 'string') {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Nội dung tin nhắn không hợp lệ.');
+        return;
+      }
+      const text = msg.text.replace(/\s+/g, ' ').trim().slice(0, MAX_CHAT_LENGTH);
+      if (!text) return;
+
+      const now = Date.now();
+      const lastChatAt = this.lastChatAtByClient.get(clientId);
+      if (lastChatAt !== undefined && now - lastChatAt < CHAT_COOLDOWN_MS) {
+        this.sendError(clientId, 'RATE_LIMITED', 'Bạn gửi tin nhắn quá nhanh.');
+        return;
+      }
+      this.lastChatAtByClient.set(clientId, now);
+
+      const senderTeamId = this.getSeatTeamId(room, seat);
+      const channel: ChatChannel =
+        msg.channel === 'TEAM' && room.matchMode === 'TEAMS_2V2' && senderTeamId !== undefined
+          ? 'TEAM'
+          : 'ALL';
+
+      const chatMessage: RoomChatMessage = {
+        id: room.nextChatId++,
+        participantId: seat.participantId,
+        playerId: seat.playerId,
+        senderName: seat.playerName,
+        senderColor: TOKEN_COLORS[seat.tokenType].color,
+        role: 'player',
+        channel,
+        ...(channel === 'TEAM' ? { teamId: senderTeamId } : {}),
+        text,
+        createdAt: now,
+      };
+
+      if (channel === 'TEAM' && senderTeamId !== undefined) {
+        const teamHistory = room.teamChatHistory[senderTeamId];
+        teamHistory.push(chatMessage);
+        if (teamHistory.length > MAX_TEAM_CHAT_HISTORY) {
+          teamHistory.splice(0, teamHistory.length - MAX_TEAM_CHAT_HISTORY);
+        }
+        this.emitVisualEvent(
+          room,
+          { kind: 'CHAT_MESSAGE', message: chatMessage },
+          { teamId: senderTeamId }
+        );
+      } else {
+        room.allChatHistory.push(chatMessage);
+        if (room.allChatHistory.length > MAX_ALL_CHAT_HISTORY) {
+          room.allChatHistory.splice(0, room.allChatHistory.length - MAX_ALL_CHAT_HISTORY);
+        }
+        this.emitVisualEvent(room, { kind: 'CHAT_MESSAGE', message: chatMessage });
+      }
+      return;
+    }
+
+    if (msg.type === 'RTC_SIGNAL') {
+      if (seat.explicitlyLeft) return;
+      if (
+        typeof msg.targetParticipantId !== 'string' ||
+        !msg.targetParticipantId.trim() ||
+        msg.targetParticipantId === seat.participantId ||
+        !isValidRtcSignalPayload(msg.signal)
+      ) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Tín hiệu kết nối thoại không hợp lệ.');
+        return;
+      }
+
+      const target = room.humans.find(
+        (h) =>
+          h.participantId === msg.targetParticipantId &&
+          !h.explicitlyLeft &&
+          h.connected &&
+          Boolean(h.clientId)
+      );
+      if (!target || !target.clientId) {
+        this.sendError(clientId, 'TARGET_NOT_FOUND', 'Không tìm thấy thành viên nhận tín hiệu.');
+        return;
+      }
+
+      this.sendMessage(target.clientId, {
+        type: 'RTC_SIGNAL',
+        fromParticipantId: seat.participantId,
+        signal: msg.signal,
+      });
+      return;
+    }
+
+    if (msg.type === 'UPDATE_VOICE_STATE') {
+      if (seat.explicitlyLeft) return;
+      seat.micEnabled = Boolean(msg.micEnabled);
+      this.broadcastSnapshot(room);
+      return;
+    }
+
     if (msg.type === 'GAME_ACTION') {
       if (
         !msg.action ||
@@ -1048,6 +1209,7 @@ export class OnlineRoomManager {
 
   public handleDisconnect(clientId: string): void {
     this.lastEmoteAtByClient.delete(clientId);
+    this.lastChatAtByClient.delete(clientId);
     this.detachClientIfAny(clientId, true);
   }
 
@@ -1063,6 +1225,7 @@ export class OnlineRoomManager {
 
     seat.clientId = null;
     seat.connected = false;
+    seat.micEnabled = false;
     seat.disconnectedAt = Date.now();
 
     if (room.match && seat.playerId !== null) {
@@ -1087,6 +1250,8 @@ export class OnlineRoomManager {
   private handleExplicitLeave(room: RoomRecord, seat: HumanSeatRecord, clientId: string): void {
     this.clientSessions.delete(clientId);
     this.lastEmoteAtByClient.delete(clientId);
+    this.lastChatAtByClient.delete(clientId);
+    seat.micEnabled = false;
     this.sendMessage(clientId, { type: 'LEFT_ROOM' });
 
     if (room.status === 'lobby') {

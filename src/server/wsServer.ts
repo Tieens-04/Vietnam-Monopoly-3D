@@ -5,9 +5,10 @@ import type { ClientToServerMessage, ServerToClientMessage } from '../game/onlin
 import type { BotQuipPayload } from '../game/types';
 import { OnlineRoomManager } from './roomManager';
 
-const MAX_WS_PAYLOAD_BYTES = 16 * 1024;
+const MAX_WS_PAYLOAD_BYTES = 32 * 1024;
 const DEFAULT_MAX_WS_CLIENTS = 256;
 const DEFAULT_RATE_LIMIT_MAX_MESSAGES = 40;
+const DEFAULT_RTC_RATE_LIMIT_MAX_MESSAGES = 120;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 5000;
 
 interface TrackedSocket extends WebSocket {
@@ -34,12 +35,15 @@ export function attachMultiplayerWebSocketServer(
     timingScale?: number;
     maxClients?: number;
     rateLimitMaxMessages?: number;
+    rtcRateLimitMaxMessages?: number;
     rateLimitWindowMs?: number;
   } = {}
 ): MultiplayerWsServerHandle {
   const clients = new Map<string, TrackedSocket>();
   const maxClients = options.maxClients ?? DEFAULT_MAX_WS_CLIENTS;
   const rateLimitMaxMessages = options.rateLimitMaxMessages ?? DEFAULT_RATE_LIMIT_MAX_MESSAGES;
+  const rtcRateLimitMaxMessages =
+    options.rtcRateLimitMaxMessages ?? DEFAULT_RTC_RATE_LIMIT_MAX_MESSAGES;
   const rateLimitWindowMs = options.rateLimitWindowMs ?? DEFAULT_RATE_LIMIT_WINDOW_MS;
 
   const roomManager = new OnlineRoomManager(
@@ -97,6 +101,7 @@ export function attachMultiplayerWebSocketServer(
     clients.set(clientId, ws);
 
     const msgTimestamps: number[] = [];
+    const rtcMsgTimestamps: number[] = [];
     let rateViolations = 0;
     let cleanedUp = false;
     const cleanup = () => {
@@ -112,10 +117,31 @@ export function attachMultiplayerWebSocketServer(
 
     ws.on('message', (data) => {
       const now = Date.now();
-      while (msgTimestamps.length > 0 && now - msgTimestamps[0] >= rateLimitWindowMs) {
-        msgTimestamps.shift();
+
+      let parsed: unknown = null;
+      let parseError = false;
+      try {
+        parsed = JSON.parse(String(data));
+      } catch {
+        parseError = true;
       }
-      if (msgTimestamps.length >= rateLimitMaxMessages) {
+
+      const isValidEnvelope =
+        !parseError &&
+        Boolean(parsed) &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed) &&
+        typeof (parsed as { type?: unknown }).type === 'string';
+
+      // Check RTC_SIGNAL before mutating the gameplay bucket so trickle ICE bursts cannot drop game messages.
+      const isRtcSignal = isValidEnvelope && (parsed as { type: string }).type === 'RTC_SIGNAL';
+      const timestamps = isRtcSignal ? rtcMsgTimestamps : msgTimestamps;
+      const bucketMax = isRtcSignal ? rtcRateLimitMaxMessages : rateLimitMaxMessages;
+
+      while (timestamps.length > 0 && now - timestamps[0] >= rateLimitWindowMs) {
+        timestamps.shift();
+      }
+      if (timestamps.length >= bucketMax) {
         rateViolations += 1;
         sendSafe(ws, {
           type: 'ERROR',
@@ -127,12 +153,9 @@ export function attachMultiplayerWebSocketServer(
         }
         return;
       }
-      msgTimestamps.push(now);
+      timestamps.push(now);
 
-      let parsed: unknown = null;
-      try {
-        parsed = JSON.parse(String(data));
-      } catch {
+      if (parseError) {
         sendSafe(ws, {
           type: 'ERROR',
           code: 'BAD_JSON',
@@ -141,12 +164,7 @@ export function attachMultiplayerWebSocketServer(
         return;
       }
 
-      if (
-        !parsed ||
-        typeof parsed !== 'object' ||
-        Array.isArray(parsed) ||
-        typeof (parsed as { type?: unknown }).type !== 'string'
-      ) {
+      if (!isValidEnvelope) {
         sendSafe(ws, {
           type: 'ERROR',
           code: 'BAD_MESSAGE',

@@ -3773,3 +3773,478 @@ test('Participant identity: stable participantId across CREATE_ROOM, JOIN_ROOM, 
     manager.dispose();
   }
 });
+
+test('Chat channel security: TEAM chat stays isolated in TEAMS_2V2 across live events and RECONNECT_ROOM, and UPDATE_VOICE_STATE broadcasts micEnabled', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c0', {
+      type: 'CREATE_ROOM',
+      playerName: 'An',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: false,
+      matchMode: 'TEAMS_2V2',
+    });
+    const created = latestByClient.get('c0');
+    assert.equal(created?.type, 'ROOM_JOINED');
+    if (!created || created.type !== 'ROOM_JOINED') return;
+
+    const roomCode = created.roomCode;
+    manager.handleClientMessage('c1', {
+      type: 'JOIN_ROOM',
+      roomCode,
+      playerName: 'Bình',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode,
+      playerName: 'Chi',
+      tokenType: 'jet',
+    });
+    manager.handleClientMessage('c3', {
+      type: 'JOIN_ROOM',
+      roomCode,
+      playerName: 'Dũng',
+      tokenType: 'crown',
+    });
+
+    const c1Join = (allByClient.get('c1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(c1Join?.type, 'ROOM_JOINED');
+    if (!c1Join || c1Join.type !== 'ROOM_JOINED') return;
+
+    // Lobby: seat 0 (team 0) sends TEAM chat before match starts
+    manager.handleClientMessage('c0', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Đội 0 bàn chiến thuật sảnh chờ',
+    });
+
+    // UPDATE_VOICE_STATE toggles micEnabled in participants snapshot
+    manager.handleClientMessage('c2', {
+      type: 'UPDATE_VOICE_STATE',
+      micEnabled: true,
+    });
+    const c0SnapAfterMic = latestByClient.get('c0');
+    assert.equal(c0SnapAfterMic?.type, 'ROOM_SNAPSHOT');
+    if (!c0SnapAfterMic || c0SnapAfterMic.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(
+      c0SnapAfterMic.snapshot.participants.find((p) => p.seatIndex === 2)?.micEnabled,
+      true
+    );
+    assert.equal(
+      c0SnapAfterMic.snapshot.participants.find((p) => p.seatIndex === 1)?.micEnabled,
+      false
+    );
+
+    // Start 2v2 match
+    manager.handleClientMessage('c0', { type: 'START_MATCH' });
+
+    const origNow = Date.now;
+    let fakeNow = origNow() + 5_000;
+    Date.now = () => fakeNow;
+    try {
+      // Seat 0 (teamId=0) sends TEAM chat during match
+      manager.handleClientMessage('c0', {
+        type: 'SEND_CHAT_MESSAGE',
+        channel: 'TEAM',
+        text: 'Mật thư đội 0 trong trận',
+      });
+      fakeNow += 1_000;
+      // Seat 1 (teamId=1) sends TEAM chat during match
+      manager.handleClientMessage('c1', {
+        type: 'SEND_CHAT_MESSAGE',
+        channel: 'TEAM',
+        text: 'Mật thư đội 1 trong trận',
+      });
+      fakeNow += 1_000;
+      // Seat 2 sends ALL chat
+      manager.handleClientMessage('c2', {
+        type: 'SEND_CHAT_MESSAGE',
+        channel: 'ALL',
+        text: 'Chào cả phòng!',
+      });
+    } finally {
+      Date.now = origNow;
+    }
+
+    const chatEventsFor = (cid: string) =>
+      (allByClient.get(cid) || []).flatMap((m) =>
+        m.type === 'GAME_EVENT' && m.event.kind === 'CHAT_MESSAGE' ? [m.event.message] : []
+      );
+
+    const c0Texts = chatEventsFor('c0').map((m) => m.text);
+    const c2Texts = chatEventsFor('c2').map((m) => m.text);
+    const c1Texts = chatEventsFor('c1').map((m) => m.text);
+    const c3Texts = chatEventsFor('c3').map((m) => m.text);
+
+    assert.deepEqual(c0Texts, [
+      'Đội 0 bàn chiến thuật sảnh chờ',
+      'Mật thư đội 0 trong trận',
+      'Chào cả phòng!',
+    ]);
+    assert.deepEqual(c2Texts, [
+      'Đội 0 bàn chiến thuật sảnh chờ',
+      'Mật thư đội 0 trong trận',
+      'Chào cả phòng!',
+    ]);
+    assert.deepEqual(c1Texts, ['Mật thư đội 1 trong trận', 'Chào cả phòng!']);
+    assert.deepEqual(c3Texts, ['Mật thư đội 1 trong trận', 'Chào cả phòng!']);
+
+    // Reconnect seat 1 (teamId=1) -> snapshot.chatHistory must NOT contain team 0 messages
+    manager.handleDisconnect('c1');
+    manager.handleClientMessage('c1-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode,
+      sessionToken: c1Join.sessionToken,
+    });
+    const c1Rejoined = (allByClient.get('c1-re') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(c1Rejoined?.type, 'ROOM_JOINED');
+    if (!c1Rejoined || c1Rejoined.type !== 'ROOM_JOINED') return;
+    assert.deepEqual(
+      c1Rejoined.snapshot.chatHistory.map((m) => m.text),
+      ['Mật thư đội 1 trong trận', 'Chào cả phòng!']
+    );
+
+    // Also verify FFA forces channel='TEAM' to 'ALL'
+    manager.handleClientMessage('ffa1', {
+      type: 'CREATE_ROOM',
+      playerName: 'F1',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+      matchMode: 'FFA',
+    });
+    const ffaCreated = latestByClient.get('ffa1');
+    assert.equal(ffaCreated?.type, 'ROOM_JOINED');
+    if (!ffaCreated || ffaCreated.type !== 'ROOM_JOINED') return;
+    manager.handleClientMessage('ffa2', {
+      type: 'JOIN_ROOM',
+      roomCode: ffaCreated.roomCode,
+      playerName: 'F2',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('ffa1', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Tin nhắn ở FFA',
+    });
+    const ffa2Chats = chatEventsFor('ffa2');
+    assert.equal(ffa2Chats.length, 1);
+    assert.equal(ffa2Chats[0].channel, 'ALL');
+    assert.equal(ffa2Chats[0].teamId, undefined);
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('Chat validation & rate limit: empty ignored, 220 chars truncated to 160, <800ms RATE_LIMITED, and 65 ALL messages capped at newest 60', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  const origNow = Date.now;
+  let fakeNow = 1_700_000_000_000;
+  Date.now = () => fakeNow;
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'An',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: true,
+    });
+    const created = latestByClient.get('c1');
+    assert.equal(created?.type, 'ROOM_JOINED');
+    if (!created || created.type !== 'ROOM_JOINED') return;
+
+    // 1. Empty / whitespace message is ignored without triggering cooldown
+    manager.handleClientMessage('c1', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'ALL',
+      text: '   \n\t  ',
+    });
+
+    // 2. 220-char message right after empty message succeeds and truncates to 160 chars
+    const longText = 'X'.repeat(220);
+    manager.handleClientMessage('c1', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'ALL',
+      text: longText,
+    });
+
+    // 3. Second message within <800ms returns RATE_LIMITED
+    fakeNow += 500;
+    manager.handleClientMessage('c1', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'ALL',
+      text: 'Quá nhanh',
+    });
+
+    const c1Msgs = allByClient.get('c1') || [];
+    const rateErr = c1Msgs.find((m) => m.type === 'ERROR' && m.code === 'RATE_LIMITED');
+    assert.ok(rateErr, 'Sending 2 messages within <800ms must return ERROR(RATE_LIMITED)');
+
+    const chatEvents = c1Msgs.flatMap((m) =>
+      m.type === 'GAME_EVENT' && m.event.kind === 'CHAT_MESSAGE' ? [m.event.message] : []
+    );
+    assert.equal(chatEvents.length, 1);
+    assert.equal(chatEvents[0].text.length, 160);
+    assert.equal(chatEvents[0].text, 'X'.repeat(160));
+
+    // 4. Send 65 ALL messages (advancing >= 800ms each) -> reconnect snapshot keeps newest 60
+    const roomCode = created.roomCode;
+    const sessionToken = created.sessionToken;
+    for (let i = 1; i <= 65; i++) {
+      fakeNow += 800;
+      manager.handleClientMessage('c1', {
+        type: 'SEND_CHAT_MESSAGE',
+        channel: 'ALL',
+        text: `Msg-${i}`,
+      });
+    }
+
+    manager.handleDisconnect('c1');
+    manager.handleClientMessage('c1-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode,
+      sessionToken,
+    });
+    const rejoined = (allByClient.get('c1-re') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(rejoined?.type, 'ROOM_JOINED');
+    if (!rejoined || rejoined.type !== 'ROOM_JOINED') return;
+
+    assert.equal(rejoined.snapshot.chatHistory.length, 60);
+    assert.equal(rejoined.snapshot.chatHistory[0].text, 'Msg-6');
+    assert.equal(rejoined.snapshot.chatHistory[59].text, 'Msg-65');
+
+    // 5. Verify TEAM history caps at newest 30 per team without leaking to opponent team, and gameover chat works
+    manager.handleClientMessage('t0', {
+      type: 'CREATE_ROOM',
+      playerName: 'T0',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      matchMode: 'TEAMS_2V2',
+    });
+    const t0Join = (allByClient.get('t0') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(t0Join?.type, 'ROOM_JOINED');
+    if (!t0Join || t0Join.type !== 'ROOM_JOINED') return;
+    manager.handleClientMessage('t1', {
+      type: 'JOIN_ROOM',
+      roomCode: t0Join.roomCode,
+      playerName: 'T1',
+      tokenType: 'yacht',
+    });
+    const t1Join = (allByClient.get('t1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(t1Join?.type, 'ROOM_JOINED');
+    if (!t1Join || t1Join.type !== 'ROOM_JOINED') return;
+
+    for (let i = 1; i <= 35; i++) {
+      fakeNow += 800;
+      manager.handleClientMessage('t0', {
+        type: 'SEND_CHAT_MESSAGE',
+        channel: 'TEAM',
+        text: `Team0-${i}`,
+      });
+    }
+    manager.handleDisconnect('t0');
+    manager.handleClientMessage('t0-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: t0Join.roomCode,
+      sessionToken: t0Join.sessionToken,
+    });
+    const t0Rejoined = (allByClient.get('t0-re') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(t0Rejoined?.type, 'ROOM_JOINED');
+    if (!t0Rejoined || t0Rejoined.type !== 'ROOM_JOINED') return;
+    assert.equal(t0Rejoined.snapshot.chatHistory.length, 30);
+    assert.equal(t0Rejoined.snapshot.chatHistory[0].text, 'Team0-6');
+    assert.equal(t0Rejoined.snapshot.chatHistory[29].text, 'Team0-35');
+
+    manager.handleDisconnect('t1');
+    manager.handleClientMessage('t1-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: t0Join.roomCode,
+      sessionToken: t1Join.sessionToken,
+    });
+    const t1Rejoined = (allByClient.get('t1-re') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(t1Rejoined?.type, 'ROOM_JOINED');
+    if (!t1Rejoined || t1Rejoined.type !== 'ROOM_JOINED') return;
+    assert.equal(t1Rejoined.snapshot.chatHistory.length, 0);
+
+    // Also verify chat works in gameover status
+    manager.handleClientMessage('t0-re', { type: 'START_MATCH' });
+    const roomsMap = (manager as unknown as {
+      rooms: Map<string, { status: string; match: { matchTimeLeft: number } | null }>;
+    }).rooms;
+    const tRoom = roomsMap.get(t0Join.roomCode)!;
+    assert.ok(tRoom.match);
+    tRoom.match.matchTimeLeft = 1;
+    manager.tickOneSecond();
+    assert.equal(tRoom.status, 'gameover');
+    fakeNow += 800;
+    manager.handleClientMessage('t0-re', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'ALL',
+      text: 'GG hay quá!',
+    });
+    const t1GameoverChats = (allByClient.get('t1-re') || []).flatMap((m) =>
+      m.type === 'GAME_EVENT' && m.event.kind === 'CHAT_MESSAGE' ? [m.event.message.text] : []
+    );
+    assert.deepEqual(t1GameoverChats, ['GG hay quá!']);
+  } finally {
+    Date.now = origNow;
+    manager.dispose();
+  }
+});
+
+test('RTC_SIGNAL routing & cross-room protection: relays to target in same room and rejects cross-room or disconnected targets', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'P1',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const c1Join = (allByClient.get('c1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(c1Join?.type, 'ROOM_JOINED');
+    if (!c1Join || c1Join.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: c1Join.roomCode,
+      playerName: 'P2',
+      tokenType: 'yacht',
+    });
+    const c2Join = (allByClient.get('c2') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(c2Join?.type, 'ROOM_JOINED');
+    if (!c2Join || c2Join.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c3', {
+      type: 'CREATE_ROOM',
+      playerName: 'OtherRoom',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const c3Join = (allByClient.get('c3') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(c3Join?.type, 'ROOM_JOINED');
+    if (!c3Join || c3Join.type !== 'ROOM_JOINED') return;
+
+    // Same-room relay: c1 -> c2
+    const offerSignal = { kind: 'offer' as const, sdp: 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n' };
+    manager.handleClientMessage('c1', {
+      type: 'RTC_SIGNAL',
+      targetParticipantId: c2Join.yourParticipantId,
+      signal: offerSignal,
+    });
+
+    const c2Rtc = (allByClient.get('c2') || []).filter((m) => m.type === 'RTC_SIGNAL');
+    assert.equal(c2Rtc.length, 1);
+    assert.deepEqual(c2Rtc[0], {
+      type: 'RTC_SIGNAL',
+      fromParticipantId: c1Join.yourParticipantId,
+      signal: offerSignal,
+    });
+    assert.equal(
+      (allByClient.get('c1') || []).some((m) => m.type === 'RTC_SIGNAL'),
+      false
+    );
+    assert.equal(
+      (allByClient.get('c3') || []).some((m) => m.type === 'RTC_SIGNAL'),
+      false
+    );
+
+    // Self-target RTC_SIGNAL -> ERROR(BAD_MESSAGE)
+    manager.handleClientMessage('c1', {
+      type: 'RTC_SIGNAL',
+      targetParticipantId: c1Join.yourParticipantId,
+      signal: offerSignal,
+    });
+    assert.ok(
+      (allByClient.get('c1') || []).some(
+        (m) => m.type === 'ERROR' && m.code === 'BAD_MESSAGE'
+      )
+    );
+
+    // Cross-room relay: c1 -> c3 (different room) -> ERROR(TARGET_NOT_FOUND)
+    manager.handleClientMessage('c1', {
+      type: 'RTC_SIGNAL',
+      targetParticipantId: c3Join.yourParticipantId,
+      signal: offerSignal,
+    });
+    assert.ok(
+      (allByClient.get('c1') || []).some(
+        (m) => m.type === 'ERROR' && m.code === 'TARGET_NOT_FOUND'
+      )
+    );
+    assert.equal(
+      (allByClient.get('c3') || []).some((m) => m.type === 'RTC_SIGNAL'),
+      false
+    );
+
+    // Disconnected target -> ERROR(TARGET_NOT_FOUND)
+    manager.handleDisconnect('c2');
+    const c1ErrCountBefore = (allByClient.get('c1') || []).filter(
+      (m) => m.type === 'ERROR' && m.code === 'TARGET_NOT_FOUND'
+    ).length;
+    manager.handleClientMessage('c1', {
+      type: 'RTC_SIGNAL',
+      targetParticipantId: c2Join.yourParticipantId,
+      signal: { kind: 'ice', candidate: { candidate: 'candidate:1', sdpMid: '0' } },
+    });
+    const c1ErrCountAfter = (allByClient.get('c1') || []).filter(
+      (m) => m.type === 'ERROR' && m.code === 'TARGET_NOT_FOUND'
+    ).length;
+    assert.equal(c1ErrCountAfter, c1ErrCountBefore + 1);
+  } finally {
+    manager.dispose();
+  }
+});
