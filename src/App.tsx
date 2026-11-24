@@ -33,6 +33,7 @@ import {
 import {
   createMonotonicCountdownClock,
   MonotonicCountdownClock,
+  waitMonotonicBeat,
 } from './game/gameplayClock';
 import {
   detectBrowserGpu,
@@ -127,6 +128,10 @@ import {
   TurnPhase,
 } from './game/types';
 import type { OnlineVisualEvent } from './game/onlineTypes';
+import {
+  loadSavedCinematicCameraPref,
+  saveCinematicCameraPref,
+} from './three/cameraDirector';
 import { fetchBotQuip } from './utils/botQuipClient';
 import { useOnlineMultiplayer } from './utils/onlineClient';
 
@@ -323,7 +328,9 @@ export default function App() {
   useLayoutEffect(() => {
     setAvatarGraphicsTier(effectiveQualityTier);
   }, [effectiveQualityTier]);
-  const [cinematicCamera, setCinematicCamera] = useState<boolean>(false);
+  const [cinematicCamera, setCinematicCamera] = useState<boolean>(() =>
+    loadSavedCinematicCameraPref()
+  );
   const [nightMode, setNightMode] = useState<boolean>(false);
   const [soundMuted, setSoundMuted] = useState<boolean>(false);
   const [botBubbles, setBotBubbles] = useState<Record<number, BotChatBubbleState>>({});
@@ -354,6 +361,10 @@ export default function App() {
   });
 
   const canvasRef = useRef<MonopolyCanvasHandle | null>(null);
+  const activeViewPlayerIdRef = useRef<number | null>(null);
+  const viewPlayersForVisualRef = useRef<PlayerState[]>([]);
+  const prevRevealedCardKeyRef = useRef<string | null>(null);
+  const prevCeremonyKeyRef = useRef<string | null>(null);
   const logIdRef = useRef<number>(logs.length + 1);
   const sessionEpochRef = useRef<number>(1);
   const quipSeqRef = useRef<number>(1);
@@ -386,6 +397,22 @@ export default function App() {
     }
 
     if (event.kind === 'TOKEN_MOVED') {
+      const mover = viewPlayersForVisualRef.current.find(
+        (p) => p.id === event.playerId
+      );
+      if (
+        mover?.pendingWorldTour &&
+        mover.position === WORLD_TOUR_TILE_INDEX &&
+        event.path.length > 0
+      ) {
+        soundEngine.playWorldTourTakeoff();
+        canvasRef.current?.dispatchAnimationCue({
+          kind: 'WORLD_TOUR_FLIGHT',
+          playerId: event.playerId,
+          fromTile: WORLD_TOUR_TILE_INDEX,
+          toTile: event.path[event.path.length - 1],
+        });
+      }
       void canvasRef.current?.animateTokenPath(
         event.playerId,
         event.path,
@@ -405,9 +432,23 @@ export default function App() {
           break;
         case 'buyProperty':
           soundEngine.playBuyProperty();
+          if (activeViewPlayerIdRef.current !== null) {
+            canvasRef.current?.dispatchAnimationCue({
+              kind: 'TOKEN_REACTION',
+              playerId: activeViewPlayerIdRef.current,
+              reaction: 'buy_proud',
+            });
+          }
           break;
         case 'buildHouse':
           soundEngine.playBuildHouse(event.level ?? 1);
+          if (activeViewPlayerIdRef.current !== null) {
+            canvasRef.current?.dispatchAnimationCue({
+              kind: 'TOKEN_REACTION',
+              playerId: activeViewPlayerIdRef.current,
+              reaction: 'buy_proud',
+            });
+          }
           break;
         case 'auctionGavel':
           soundEngine.playAuctionGavel();
@@ -417,6 +458,13 @@ export default function App() {
           break;
         case 'jailAlert':
           soundEngine.playJailAlert();
+          if (activeViewPlayerIdRef.current !== null) {
+            canvasRef.current?.dispatchAnimationCue({
+              kind: 'TOKEN_REACTION',
+              playerId: activeViewPlayerIdRef.current,
+              reaction: 'jail',
+            });
+          }
           break;
         case 'victory':
           soundEngine.playVictoryFanfare();
@@ -674,6 +722,8 @@ export default function App() {
     : screenState;
 
   const viewCurrentPlayer = viewPlayers[viewActivePlayerIndex] || viewPlayers[0];
+  activeViewPlayerIdRef.current = viewCurrentPlayer?.id ?? null;
+  viewPlayersForVisualRef.current = viewPlayers;
   const myOnlinePlayer =
     isOnlineMatch && online.yourPlayerId !== null
       ? viewPlayers.find((p) => p.id === online.yourPlayerId) || null
@@ -691,7 +741,8 @@ export default function App() {
   const prevOnlineSyncedRef = useRef<boolean>(online.isSynced);
   useEffect(() => {
     if (isOnlineMatch && !prevOnlineSyncedRef.current && online.isSynced) {
-      // Freshly resynced after an Online reconnect: cancel any stale pre-disconnect animations & latches
+      // Freshly resynced after an Online reconnect: fast-forward visual timelines & cancel any stale pre-disconnect animations
+      canvasRef.current?.fastForwardVisualAnimations();
       canvasRef.current?.cancelPendingAnimations();
     }
     prevOnlineSyncedRef.current = online.isSynced;
@@ -948,35 +999,84 @@ export default function App() {
     document.body.dataset.rules = 'BUSINESS_TOUR';
   }, []);
 
+  useEffect(() => {
+    if (viewScreenState === 'gameover' || viewTurnPhase === 'GAME_OVER') {
+      canvasRef.current?.dispatchAnimationCue({
+        kind: 'CAMERA_FOCUS',
+        shot: 'victory_podium',
+      });
+      return;
+    }
+    if (viewScreenState === 'playing') {
+      if (
+        viewTurnPhase === 'BUY_DECISION' ||
+        viewTurnPhase === 'UPGRADE_DECISION' ||
+        viewTurnPhase === 'BUYOUT_DECISION'
+      ) {
+        canvasRef.current?.dispatchAnimationCue({
+          kind: 'CAMERA_FOCUS',
+          shot: 'transaction',
+          tileIndex: viewCurrentPlayer?.position,
+        });
+        return;
+      }
+      if (
+        viewTurnPhase === 'WORLD_TOUR' ||
+        viewTurnPhase === 'CHAMPIONSHIP_SELECTION' ||
+        viewTurnPhase === 'CARD_TARGET_SELECTION' ||
+        viewTurnPhase === 'DEBT_RESOLUTION'
+      ) {
+        canvasRef.current?.dispatchAnimationCue({
+          kind: 'CAMERA_FOCUS',
+          shot: 'overview',
+        });
+        return;
+      }
+    }
+    canvasRef.current?.dispatchAnimationCue({
+      kind: 'CAMERA_FOCUS',
+      shot: 'auto',
+    });
+  }, [viewScreenState, viewTurnPhase, viewCurrentPlayer?.position]);
+
+  useEffect(() => {
+    if (
+      viewScreenState === 'playing' &&
+      viewTurnPhase === 'CARD_REVEAL' &&
+      viewDrawnCard?.id
+    ) {
+      const revealKey = `${viewTurnCount}:${viewDrawnCard.id}`;
+      if (prevRevealedCardKeyRef.current !== revealKey) {
+        prevRevealedCardKeyRef.current = revealKey;
+        canvasRef.current?.dispatchAnimationCue({
+          kind: 'CHANCE_CARD_3D_FLIP',
+          cardId: viewDrawnCard.id,
+        });
+      }
+    } else if (viewTurnPhase !== 'CARD_REVEAL') {
+      prevRevealedCardKeyRef.current = null;
+    }
+  }, [viewScreenState, viewTurnPhase, viewDrawnCard?.id, viewTurnCount]);
+
   /**
-   * Pause-aware beat between movement/dice settlement and modal pop-ups so players
-   * can read where the pawn landed without timers firing behind the Pause screen.
+   * Pause-aware monotonic beat between movement/dice settlement and modal pop-ups so players
+   * can read where the pawn landed without Pause leakage or 1 Hz background-tab stretch.
    */
   const waitGameBeat = useCallback((ms: number, epoch: number): Promise<boolean> => {
-    let remaining = Math.max(120, Math.round(ms / speedRef.current));
-    return new Promise((resolve) => {
-      const stepMs = 60;
-      const tick = () => {
-        if (sessionEpochRef.current !== epoch) {
-          resolve(false);
-          return;
-        }
-        if (screenStateRef.current === 'playing' && !onlinePauseOpenRef.current) {
-          remaining -= stepMs;
-          if (remaining <= 0) {
-            resolve(true);
-            return;
-          }
-        }
-        window.setTimeout(tick, stepMs);
-      };
-      window.setTimeout(tick, stepMs);
+    const targetMs = Math.max(120, Math.round(ms / speedRef.current));
+    return waitMonotonicBeat({
+      targetMs,
+      pollMs: 60,
+      isCancelled: () => sessionEpochRef.current !== epoch,
+      isActive: () =>
+        screenStateRef.current === 'playing' && !onlinePauseOpenRef.current,
     });
   }, []);
 
   const handleToggleCinematic = useCallback(() => {
     setCinematicCamera((prev) => {
       const next = !prev;
+      saveCinematicCameraPref(next);
       soundEngine.playAmbienceToggle(next);
       return next;
     });
@@ -1613,7 +1713,12 @@ export default function App() {
       commitPendingDebt(null);
       setShowAssetsModal(false);
       commitPendingTacticalCard(null);
-      soundEngine.playJailAlert();
+      soundEngine.playBankruptSlump();
+      canvasRef.current?.dispatchAnimationCue({
+        kind: 'TOKEN_REACTION',
+        playerId: player.id,
+        reaction: 'bankrupt',
+      });
 
       if (creditor) {
         addLog(
@@ -2263,6 +2368,7 @@ export default function App() {
 
       let die1: number;
       let die2: number;
+      let usedTacticalChoice: TacticalDiceChoice = 'NORMAL';
       const queuedPair = diceQueueRef.current.shift();
       if (
         tacticalDiceEnabledRef.current &&
@@ -2270,6 +2376,7 @@ export default function App() {
         (effectiveChoice === 'EVEN' || effectiveChoice === 'ODD') &&
         (player.evenOddCharges ?? 0) > 0
       ) {
+        usedTacticalChoice = effectiveChoice;
         const nextCharges = Math.max(0, (player.evenOddCharges ?? 0) - 1);
         commitPlayers((prev) =>
           prev.map((p) =>
@@ -2305,6 +2412,12 @@ export default function App() {
       commitLastDice([die1, die2]);
       commitTurnPhase('ROLLING_DICE');
       soundEngine.playDiceRoll();
+      canvasRef.current?.dispatchAnimationCue({
+        kind: 'DICE_ANTICIPATION',
+        die1,
+        die2,
+        choice: usedTacticalChoice,
+      });
 
       await canvasRef.current?.animateDiceRoll(die1, die2, speedRef.current);
       if (sessionEpochRef.current !== epoch) return;
@@ -2657,6 +2770,11 @@ export default function App() {
       } else {
         soundEngine.playBuyProperty();
       }
+      canvasRef.current?.dispatchAnimationCue({
+        kind: 'TOKEN_REACTION',
+        playerId: player.id,
+        reaction: 'buy_proud',
+      });
       commitPlayers(nextPlayers);
       commitProperties(nextProps);
 
@@ -2750,6 +2868,11 @@ export default function App() {
       }
 
       soundEngine.playBuildHouse(targetLevel);
+      canvasRef.current?.dispatchAnimationCue({
+        kind: 'TOKEN_REACTION',
+        playerId: player.id,
+        reaction: 'buy_proud',
+      });
       const nextPlayers = commitPlayers((prev) =>
         prev.map((p) => (p.id === player.id ? { ...p, cash: p.cash - check.cost } : p))
       );
@@ -2968,6 +3091,12 @@ export default function App() {
 
       if (fee > 0) soundEngine.playCashPay();
       soundEngine.playBuildHouse(prop.level + 1);
+      canvasRef.current?.dispatchAnimationCue({
+        kind: 'CAMERA_FOCUS',
+        shot: 'special_event',
+        tileIndex: targetTile,
+        shake: false,
+      });
       addLog(
         `🏆 ${player.name} đăng cai Cúp Quốc Gia tại ${tile.name} (${nextMods.championshipMultiplier}× tiền thuê${fee > 0 ? `, phí -${formatBusinessTourCompact(fee)}` : ', miễn phí'})!`,
         player.color,
@@ -3088,6 +3217,13 @@ export default function App() {
 
       commitTurnPhase('MOVING_TOKEN');
       if (path.length > 0) {
+        soundEngine.playWorldTourTakeoff();
+        canvasRef.current?.dispatchAnimationCue({
+          kind: 'WORLD_TOUR_FLIGHT',
+          playerId: player.id,
+          fromTile: player.position,
+          toTile: targetTile,
+        });
         await canvasRef.current?.animateTokenPath(
           player.id,
           path,
@@ -3462,6 +3598,12 @@ export default function App() {
         );
         commitProperties(res.nextProperties);
         commitBoardModifiers(res.nextModifiers);
+        canvasRef.current?.dispatchAnimationCue({
+          kind: 'CAMERA_FOCUS',
+          shot: 'special_event',
+          tileIndex: targetTile,
+          shake: !res.blockedByShield,
+        });
         if (res.blockedByShield) {
           soundEngine.playBuildHouse(2);
           addLog(
@@ -3470,7 +3612,12 @@ export default function App() {
             'highlight'
           );
         } else if (res.destroyedToBank) {
-          soundEngine.playJailAlert();
+          soundEngine.playEarthquakeImpact();
+          canvasRef.current?.dispatchAnimationCue({
+            kind: 'BUILDING_EVENT',
+            tileIndex: targetTile,
+            effect: 'quake',
+          });
           addLog(
             `🌋 ĐỊA CHẤN! ${player.name} san phẳng ${tile.name} — mảnh đất sụp đổ trả về Ngân hàng!`,
             player.color,
@@ -3491,6 +3638,12 @@ export default function App() {
           boardModifiersRef.current
         );
         commitBoardModifiers(res.nextModifiers);
+        canvasRef.current?.dispatchAnimationCue({
+          kind: 'CAMERA_FOCUS',
+          shot: 'special_event',
+          tileIndex: targetTile,
+          shake: false,
+        });
         if (res.blockedByShield) {
           soundEngine.playBuildHouse(2);
           addLog(
@@ -4351,6 +4504,46 @@ export default function App() {
     [viewMatchMode, viewMatchWinnerResult, viewPlayers, viewProperties]
   );
 
+  useEffect(() => {
+    if (viewScreenState === 'gameover' && computedWinner) {
+      const isTeamWin =
+        viewMatchMode === 'TEAMS_2V2' && computedWinner.winningTeamId !== undefined;
+      const teamWinners = isTeamWin
+        ? viewPlayers
+            .filter((p) => !p.bankrupt && p.teamId === computedWinner.winningTeamId)
+            .sort((a, b) =>
+              a.id === computedWinner.winner.id
+                ? -1
+                : b.id === computedWinner.winner.id
+                  ? 1
+                  : a.id - b.id
+            )
+            .map((p) => p.id)
+        : [];
+      const winnerIds =
+        teamWinners.length > 0 ? teamWinners : [computedWinner.winner.id];
+      const key = `${isOnlineMatch ? 'online' : 'offline'}:${viewTurnCount}:${winnerIds.join(',')}`;
+      if (prevCeremonyKeyRef.current !== key) {
+        prevCeremonyKeyRef.current = key;
+        canvasRef.current?.dispatchAnimationCue({
+          kind: 'ENDGAME_CEREMONY',
+          winnerIds,
+          teamMode: isTeamWin,
+        });
+      }
+    } else if (prevCeremonyKeyRef.current !== null) {
+      prevCeremonyKeyRef.current = null;
+      canvasRef.current?.dispatchAnimationCue({ kind: 'ENDGAME_CEREMONY_CLEAR' });
+    }
+  }, [
+    viewScreenState,
+    computedWinner,
+    viewMatchMode,
+    viewPlayers,
+    isOnlineMatch,
+    viewTurnCount,
+  ]);
+
   const ownedCount = useMemo(() => {
     if (!currentPlayer) return 0;
     let owned = 0;
@@ -4673,6 +4866,10 @@ export default function App() {
     viewPendingDebt?.debtorId !== undefined
       ? (viewPlayers.find((p) => p.id === viewPendingDebt.debtorId) ?? currentPlayer)
       : currentPlayer;
+  const activeDebtPlayerId =
+    viewScreenState === 'playing' && viewTurnPhase === 'DEBT_RESOLUTION'
+      ? (debtPlayer?.id ?? null)
+      : null;
 
   return (
     <main className="relative h-full w-full overflow-hidden">
@@ -4691,8 +4888,14 @@ export default function App() {
         activeSpeechText={activeSpeechText}
         currencyStyle={currencyStyle}
         graphicsQualityTier={effectiveQualityTier}
-        isBoardOccluded={viewScreenState !== 'playing' && !(isOnlineMatch && viewScreenState === 'paused')}
+        isBoardOccluded={
+          viewScreenState !== 'playing' &&
+          viewScreenState !== 'gameover' &&
+          !(isOnlineMatch && viewScreenState === 'paused')
+        }
         isPaused={viewScreenState === 'paused' && !isOnlineMatch}
+        speedMultiplier={speedMultiplier}
+        debtPlayerId={activeDebtPlayerId}
         cinematicCamera={cinematicCamera}
         nightMode={nightMode}
         onSelectTile={handleCanvasTileClick}
@@ -4804,6 +5007,7 @@ export default function App() {
             boardModifiers={viewBoardModifiers}
             matchMode={viewMatchMode}
             currencyStyle={currencyStyle}
+            debtPlayerId={activeDebtPlayerId}
             botBubbles={botBubbles}
             localPlayerId={isOnlineMatch ? online.yourPlayerId : null}
             playerEmotes={isOnlineMatch ? onlinePlayerEmotes : offlinePlayerEmotes}
@@ -5081,8 +5285,12 @@ export default function App() {
                 online.yourSeatIndex === online.roomSnapshot.hostSeatIndex
             )
           }
+          graphicsQualityTier={effectiveQualityTier}
           trapFocus={!showRulebookModal}
-          onReturnToOnlineLobby={online.returnToLobby}
+          onReturnToOnlineLobby={() => {
+            canvasRef.current?.cancelPendingAnimations();
+            online.returnToLobby();
+          }}
           onPlayAgain={() => {
             if (isOnlineMatch) {
               canvasRef.current?.cancelPendingAnimations();
