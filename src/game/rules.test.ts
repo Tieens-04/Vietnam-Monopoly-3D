@@ -1817,6 +1817,30 @@ test('Phase 2 Task 1: 3-tier Bot AI difficulty (easy / normal / hard) differenti
     botPickWorldTourTarget({ ...wtBlockBot, cash: 130_000 }, teamNearCyanProps, mods, teamPlayers, 'TEAMS_2V2', 'hard'),
     7
   );
+
+  // Hard World Tour priority: owning 1 Resort must NOT cause flying to a non-blocking 2nd Resort ahead of
+  // blocking an opponent's 2/3 color monopoly or upgrading own Lv3 city to Hotel ★
+  const hardResortVsBlockProps = makeTestProps({
+    4: { ownerId: 1, level: 0 }, // Bot already owns 1 Resort (tile 4); tiles 14, 18, 25 are unowned Resorts
+    5: { ownerId: 0, level: 1 }, // Opponent owns 2/3 Cyan (tiles 5, 6); tile 7 (Huế) is unowned
+    6: { ownerId: 0, level: 1 },
+  });
+  const hardWtBot = { ...players[1], cash: 1_200_000, laps: 1, position: 24, pendingWorldTour: true };
+  assert.equal(
+    botPickWorldTourTarget(hardWtBot, hardResortVsBlockProps, mods, players, 'FFA', 'hard'),
+    7,
+    'Hard bot owning 1 Resort must block opponent 2/3 color monopoly before flying to non-blocking 2nd Resort'
+  );
+
+  const hardResortVsHotelProps = makeTestProps({
+    4: { ownerId: 1, level: 0 }, // Bot already owns 1 Resort (tile 4); tiles 14, 18, 25 unowned Resorts
+    2: { ownerId: 1, level: 3 }, // Bot owns Lv3 city (tile 2) upgradable to Hotel ★
+  });
+  assert.equal(
+    botPickWorldTourTarget(hardWtBot, hardResortVsHotelProps, mods, players, 'FFA', 'hard'),
+    2,
+    'Hard bot owning 1 Resort must upgrade own Lv3 city to Hotel ★ before flying to non-blocking 2nd Resort'
+  );
 });
 
 

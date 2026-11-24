@@ -409,6 +409,7 @@ export async function createAppServer(
   });
 
   app.get('/api/rtc-config', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
     res.status(200).json({
       iceServers: buildRtcIceServers(),
     });

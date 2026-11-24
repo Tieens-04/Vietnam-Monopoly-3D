@@ -6773,3 +6773,308 @@ test('seriesStandings & postMatchAwards: computes awards & FFA/20m Sudden Death/
     manager.dispose();
   }
 });
+
+test('Consolidated server fixes: teamChatHistory reset across swaps/mode/rematch, offline-host JOIN_ROOM & TRANSFER_HOST ready=false, lobby/gameover spectator eviction, and RTC/chat/kick hygiene', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  const origNow = Date.now;
+  let fakeNow = origNow();
+  Date.now = () => fakeNow;
+
+  try {
+    // 1. Offline-host JOIN_ROOM promotes guest to Host cleanly & demotes reconnecting ex-host ready=false
+    manager.handleClientMessage('h0', {
+      type: 'CREATE_ROOM',
+      playerName: 'CreatorOffline',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      matchMode: 'TEAMS_2V2',
+    });
+    const h0Join = (allByClient.get('h0') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(h0Join?.type, 'ROOM_JOINED');
+    if (!h0Join || h0Join.type !== 'ROOM_JOINED') return;
+    const roomCode = h0Join.roomCode;
+
+    // Creator disconnects before anyone else joins
+    manager.handleDisconnect('h0');
+
+    // Guest joins while creator is offline -> Guest (seat 1) becomes Host and ready=true
+    manager.handleClientMessage('g1', {
+      type: 'JOIN_ROOM',
+      roomCode,
+      playerName: 'GuestPromoted',
+      tokenType: 'yacht',
+    });
+    const g1Join = (allByClient.get('g1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(g1Join?.type, 'ROOM_JOINED');
+    if (!g1Join || g1Join.type !== 'ROOM_JOINED') return;
+    assert.equal(g1Join.snapshot.hostSeatIndex, 1);
+    assert.equal(g1Join.snapshot.seats[1].isHost, true);
+    assert.equal(g1Join.snapshot.seats[1].ready, true);
+
+    // Offline creator reconnects -> seat 0 is NOT host and has ready=false
+    manager.handleClientMessage('h0_re', {
+      type: 'RECONNECT_ROOM',
+      roomCode,
+      sessionToken: h0Join.sessionToken,
+    });
+    const h0ReSnap = latestByClient.get('h0_re');
+    assert.equal(h0ReSnap?.type, 'ROOM_SNAPSHOT');
+    if (!h0ReSnap || h0ReSnap.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(h0ReSnap.snapshot.hostSeatIndex, 1);
+    assert.equal(h0ReSnap.snapshot.seats[0].isHost, false);
+    assert.equal(h0ReSnap.snapshot.seats[0].ready, false);
+
+    // TRANSFER_HOST in lobby sets demoted previous host ready=false and new host ready=true
+    manager.handleClientMessage('g1', {
+      type: 'TRANSFER_HOST',
+      targetParticipantId: h0Join.yourParticipantId,
+    });
+    const afterTransfer = latestByClient.get('h0_re');
+    assert.equal(afterTransfer?.type, 'ROOM_SNAPSHOT');
+    if (!afterTransfer || afterTransfer.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterTransfer.snapshot.hostSeatIndex, 0);
+    assert.equal(afterTransfer.snapshot.seats[0].ready, true);
+    assert.equal(afterTransfer.snapshot.seats[1].ready, false);
+
+    // 2. teamChatHistory reset across TEAMS_2V2 cross-team move, HOST_SWAP_SEATS, mode toggle, and RETURN_TO_LOBBY
+    manager.handleClientMessage('g2', {
+      type: 'JOIN_ROOM',
+      roomCode,
+      playerName: 'TeammateSeat2',
+      tokenType: 'jet',
+    });
+    fakeNow += 1_000;
+    manager.handleClientMessage('h0_re', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Bí mật Đội A lần 1',
+    });
+    const g2TeamSnap1 = latestByClient.get('g2');
+    assert.equal(g2TeamSnap1?.type, 'ROOM_SNAPSHOT');
+    // Reconnect g2 to inspect full server chatHistory cleanly
+    const g2Join = (allByClient.get('g2') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(g2Join?.type, 'ROOM_JOINED');
+    if (!g2Join || g2Join.type !== 'ROOM_JOINED') return;
+    manager.handleClientMessage('g2_chk', {
+      type: 'RECONNECT_ROOM',
+      roomCode,
+      sessionToken: g2Join.sessionToken,
+    });
+    const g2ChkSnap = latestByClient.get('g2_chk');
+    assert.equal(g2ChkSnap?.type, 'ROOM_SNAPSHOT');
+    if (!g2ChkSnap || g2ChkSnap.type !== 'ROOM_SNAPSHOT') return;
+    assert.ok(g2ChkSnap.snapshot.chatHistory.some((m) => m.text === 'Bí mật Đội A lần 1'));
+
+    // Host swaps seat 1 (Team 1) and seat 2 (Team 0) -> incoming player on Team 0 must NOT inherit old Team 0 chat!
+    manager.handleClientMessage('h0_re', {
+      type: 'HOST_SWAP_SEATS',
+      seatA: 1,
+      seatB: 2,
+    });
+    const g1AfterSwap = latestByClient.get('g1');
+    assert.equal(g1AfterSwap?.type, 'ROOM_SNAPSHOT');
+    if (!g1AfterSwap || g1AfterSwap.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(
+      g1AfterSwap.snapshot.chatHistory.some((m) => m.text === 'Bí mật Đội A lần 1'),
+      false,
+      'Swapped player entering Team 0 must not see prior Team 0 private chat'
+    );
+
+    // Team A sends new message, then mode toggles TEAMS_2V2 -> FFA -> TEAMS_2V2 -> old TEAM chat cleared
+    fakeNow += 1_000;
+    manager.handleClientMessage('h0_re', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Bí mật Đội A lần 2',
+    });
+    manager.handleClientMessage('h0_re', { type: 'UPDATE_LOBBY_SETTINGS', matchMode: 'FFA' });
+    manager.handleClientMessage('h0_re', { type: 'UPDATE_LOBBY_SETTINGS', matchMode: 'TEAMS_2V2' });
+    const afterModeToggle = latestByClient.get('h0_re');
+    assert.equal(afterModeToggle?.type, 'ROOM_SNAPSHOT');
+    if (!afterModeToggle || afterModeToggle.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(
+      afterModeToggle.snapshot.chatHistory.some((m) => m.text === 'Bí mật Đội A lần 2'),
+      false
+    );
+
+    // 3. RTC_SIGNAL projects only allowed fields & SEND_CHAT_MESSAGE trims trailing slice space
+    manager.handleClientMessage('h0_re', {
+      type: 'RTC_SIGNAL',
+      targetParticipantId: g1Join.yourParticipantId,
+      signal: {
+        kind: 'offer',
+        sdp: 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n',
+        extraInjectedField: 'strip-me',
+      } as unknown as { kind: 'offer'; sdp: string },
+    });
+    manager.handleClientMessage('h0_re', {
+      type: 'RTC_SIGNAL',
+      targetParticipantId: g1Join.yourParticipantId,
+      signal: {
+        kind: 'ice',
+        candidate: {
+          candidate: 'candidate:1',
+          sdpMid: '0',
+          sdpMLineIndex: 0,
+          usernameFragment: 'ufrag',
+          evilField: 999,
+        } as unknown as RTCIceCandidateInit,
+        topExtra: 'strip-me',
+      } as unknown as { kind: 'ice'; candidate: RTCIceCandidateInit },
+    });
+    const g1RtcMsgs = (allByClient.get('g1') || []).filter((m) => m.type === 'RTC_SIGNAL');
+    assert.equal(g1RtcMsgs.length, 2);
+    if (g1RtcMsgs[0]?.type === 'RTC_SIGNAL' && g1RtcMsgs[1]?.type === 'RTC_SIGNAL') {
+      assert.deepEqual(Object.keys(g1RtcMsgs[0].signal).sort(), ['kind', 'sdp']);
+      assert.deepEqual(g1RtcMsgs[1].signal, {
+        kind: 'ice',
+        candidate: {
+          candidate: 'candidate:1',
+          sdpMid: '0',
+          sdpMLineIndex: 0,
+          usernameFragment: 'ufrag',
+        },
+      });
+    }
+
+    fakeNow += 1_000;
+    const padded = `${'a'.repeat(159)} bbbb`;
+    manager.handleClientMessage('h0_re', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'ALL',
+      text: padded,
+    });
+    const chatEvents = (allByClient.get('h0_re') || []).filter(
+      (m) => m.type === 'GAME_EVENT' && m.event.kind === 'CHAT_MESSAGE'
+    );
+    const lastChatEv = chatEvents[chatEvents.length - 1];
+    assert.equal(lastChatEv?.type, 'GAME_EVENT');
+    if (lastChatEv?.type === 'GAME_EVENT' && lastChatEv.event.kind === 'CHAT_MESSAGE') {
+      assert.equal(lastChatEv.event.message.text, 'a'.repeat(159));
+    }
+
+    // 4. 90s disconnected spectator eviction in BOTH 'lobby' and 'gameover'
+    // Fill match temporarily so a spectator can join, then return to lobby to test lobby eviction
+    markAllGuestsReady(manager, ['g1', 'g2_chk']);
+    manager.handleClientMessage('h0_re', { type: 'START_MATCH' });
+    manager.handleClientMessage('spec1', {
+      type: 'JOIN_ROOM',
+      roomCode,
+      playerName: 'SpecA',
+      tokenType: 'car',
+    });
+    manager.handleClientMessage('h0_re', { type: 'RETURN_TO_LOBBY' });
+    const lobbyWithSpec = latestByClient.get('h0_re');
+    assert.equal(lobbyWithSpec?.type, 'ROOM_SNAPSHOT');
+    if (!lobbyWithSpec || lobbyWithSpec.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(lobbyWithSpec.snapshot.spectators.length, 1);
+
+    manager.handleDisconnect('spec1');
+    fakeNow += 91_000;
+    manager.tickOneSecond();
+    const lobbyAfterEvict = latestByClient.get('h0_re');
+    assert.equal(lobbyAfterEvict?.type, 'ROOM_SNAPSHOT');
+    if (!lobbyAfterEvict || lobbyAfterEvict.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(lobbyAfterEvict.snapshot.spectators.length, 0);
+
+    // Also verify disconnected spectator eviction in 'gameover'
+    markAllGuestsReady(manager, ['g1', 'g2_chk']);
+    manager.handleClientMessage('h0_re', { type: 'START_MATCH' });
+    manager.handleClientMessage('spec2', {
+      type: 'JOIN_ROOM',
+      roomCode,
+      playerName: 'SpecB',
+      tokenType: 'car',
+    });
+    const roomsMap = (manager as unknown as {
+      rooms: Map<string, { match: { matchTimeLeft: number } | null }>;
+    }).rooms;
+    roomsMap.get(roomCode)!.match!.matchTimeLeft = 1;
+    manager.tickOneSecond();
+    const gameOverSnap = latestByClient.get('h0_re');
+    assert.equal(gameOverSnap?.type, 'ROOM_SNAPSHOT');
+    if (!gameOverSnap || gameOverSnap.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(gameOverSnap.snapshot.status, 'gameover');
+    assert.equal(gameOverSnap.snapshot.spectators.length, 1);
+
+    manager.handleDisconnect('spec2');
+    fakeNow += 91_000;
+    manager.tickOneSecond();
+    const gameOverAfterEvict = latestByClient.get('h0_re');
+    assert.equal(gameOverAfterEvict?.type, 'ROOM_SNAPSHOT');
+    if (!gameOverAfterEvict || gameOverAfterEvict.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(gameOverAfterEvict.snapshot.spectators.length, 0);
+
+    // 5. Verify RETURN_TO_LOBBY clears teamChatHistory & deterministic seriesStandings tie-breaker
+    fakeNow += 1_000;
+    manager.handleClientMessage('h0_re', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Mật thư hậu trận Đội A',
+    });
+    assert.ok(
+      (allByClient.get('h0_re') || []).some(
+        (m) =>
+          m.type === 'GAME_EVENT' &&
+          m.event.kind === 'CHAT_MESSAGE' &&
+          m.event.message.text === 'Mật thư hậu trận Đội A'
+      )
+    );
+    manager.handleClientMessage('h0_re', { type: 'RETURN_TO_LOBBY' });
+    const afterReturn = latestByClient.get('h0_re');
+    assert.equal(afterReturn?.type, 'ROOM_SNAPSHOT');
+    if (afterReturn?.type === 'ROOM_SNAPSHOT') {
+      assert.equal(
+        afterReturn.snapshot.chatHistory.some((m) => m.text === 'Mật thư hậu trận Đội A'),
+        false
+      );
+    }
+
+    // 6. Verify KICK_PARTICIPANT does NOT duplicate bot takeover log when target already taken over by Bot
+    markAllGuestsReady(manager, ['g1', 'g2_chk']);
+    manager.handleClientMessage('h0_re', { type: 'START_MATCH' });
+    manager.handleDisconnect('g1');
+    fakeNow += 91_000;
+    manager.tickOneSecond();
+    const beforeKickLogsSnap = latestByClient.get('h0_re');
+    assert.equal(beforeKickLogsSnap?.type, 'ROOM_SNAPSHOT');
+    if (beforeKickLogsSnap?.type === 'ROOM_SNAPSHOT') {
+      const takeoverLogsBefore = beforeKickLogsSnap.snapshot.match?.logs.filter((l) =>
+        l.text.includes('tiếp quản')
+      ).length ?? 0;
+      assert.equal(takeoverLogsBefore, 1);
+      manager.handleClientMessage('h0_re', {
+        type: 'KICK_PARTICIPANT',
+        targetParticipantId: g1Join.yourParticipantId,
+      });
+      const afterKickLogsSnap = latestByClient.get('h0_re');
+      assert.equal(afterKickLogsSnap?.type, 'ROOM_SNAPSHOT');
+      if (afterKickLogsSnap?.type === 'ROOM_SNAPSHOT') {
+        const takeoverLogsAfter = afterKickLogsSnap.snapshot.match?.logs.filter((l) =>
+          l.text.includes('tiếp quản')
+        ).length ?? 0;
+        assert.equal(takeoverLogsAfter, 1);
+      }
+    }
+  } finally {
+    Date.now = origNow;
+    manager.dispose();
+  }
+});

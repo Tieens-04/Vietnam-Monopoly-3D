@@ -548,11 +548,31 @@ export class OnlineRoomManager {
       .filter((h) => h.connected && !h.explicitlyLeft)
       .sort((a, b) => a.seatIndex - b.seatIndex)[0];
     if (nextConnected && nextConnected.seatIndex !== room.hostSeatIndex) {
+      if (room.status === 'lobby' && currentHost && !currentHost.explicitlyLeft) {
+        currentHost.ready = false;
+      }
       room.hostSeatIndex = nextConnected.seatIndex;
       nextConnected.ready = true;
       return true;
     }
     return false;
+  }
+
+  private evictStaleSpectators(room: RoomRecord, now: number): boolean {
+    const prevCount = room.spectators.length;
+    if (prevCount === 0) return false;
+    room.spectators = room.spectators.filter((s) => {
+      if (
+        !s.connected &&
+        s.disconnectedAt !== null &&
+        now - s.disconnectedAt >= DISCONNECT_BOT_TAKEOVER_MS
+      ) {
+        this.clearPendingTakeoverRequestForParticipant(room, s.participantId);
+        return false;
+      }
+      return true;
+    });
+    return room.spectators.length !== prevCount;
   }
 
   private scheduleGraceCleanupIfEmpty(room: RoomRecord): void {
@@ -843,7 +863,11 @@ export class OnlineRoomManager {
         : null,
       chatHistory,
       seriesStandings: Array.from(room.seriesStandings.values(), (entry) => ({ ...entry })).sort(
-        (a, b) => b.seriesPoints - a.seriesPoints || b.wins - a.wins
+        (a, b) =>
+          b.seriesPoints - a.seriesPoints ||
+          b.wins - a.wins ||
+          a.playerName.localeCompare(b.playerName) ||
+          a.participantId.localeCompare(b.participantId)
       ),
       hostSeatIndex: room.hostSeatIndex,
       match: matchSnap,
@@ -1085,9 +1109,15 @@ export class OnlineRoomManager {
         const sessionToken = crypto.randomBytes(18).toString('hex');
         const participantId = generateParticipantId([...room.humans, ...room.spectators]);
         const hasSeatedHost = room.humans.some(
-          (h) => !h.explicitlyLeft && h.seatIndex === room.hostSeatIndex
+          (h) => !h.explicitlyLeft && h.connected && h.seatIndex === room.hostSeatIndex
         );
         if (!hasSeatedHost) {
+          const prevHost = room.humans.find(
+            (h) => !h.explicitlyLeft && h.seatIndex === room.hostSeatIndex
+          );
+          if (prevHost) {
+            prevHost.ready = false;
+          }
           room.hostSeatIndex = freeSeat;
         }
         const joiner: HumanSeatRecord = {
@@ -1106,6 +1136,8 @@ export class OnlineRoomManager {
         };
 
         room.humans.push(joiner);
+        this.promoteConnectedHostIfNeeded(room);
+        joiner.ready = joiner.seatIndex === room.hostSeatIndex;
         this.clientSessions.set(clientId, { roomCode: room.roomCode, sessionToken });
 
         this.sendMessage(clientId, {
@@ -1321,6 +1353,7 @@ export class OnlineRoomManager {
         return;
       }
 
+      let seatsCompacted = false;
       room.matchMode = nextMatchMode;
       if (nextMaxPlayers !== room.maxPlayers) {
         room.maxPlayers = nextMaxPlayers;
@@ -1332,6 +1365,7 @@ export class OnlineRoomManager {
               if (!activeHumans.some((other) => other !== h && other.seatIndex === s)) {
                 const wasHost = h.seatIndex === room.hostSeatIndex;
                 h.seatIndex = s;
+                seatsCompacted = true;
                 if (wasHost) room.hostSeatIndex = s;
                 break;
               }
@@ -1345,6 +1379,10 @@ export class OnlineRoomManager {
         ) {
           this.clearPendingSeatSwap(room);
         }
+      }
+
+      if (room.matchMode !== prevMatchMode || seatsCompacted) {
+        room.teamChatHistory = { 0: [], 1: [] };
       }
 
       if (msg.startingCash !== undefined) {
@@ -1433,6 +1471,9 @@ export class OnlineRoomManager {
         };
         room.humans.push(newSeat);
         this.promoteConnectedHostIfNeeded(room);
+        if (room.matchMode === 'TEAMS_2V2') {
+          room.teamChatHistory = { 0: [], 1: [] };
+        }
         if (
           room.pendingSeatSwap &&
           (room.pendingSeatSwap.fromSeatIndex === targetSeatIndex ||
@@ -1465,6 +1506,9 @@ export class OnlineRoomManager {
       }
       const prevSeatIndex = seat.seatIndex;
       this.swapLobbySeatAssignments(room, prevSeatIndex, targetSeatIndex);
+      if (room.matchMode === 'TEAMS_2V2' && prevSeatIndex % 2 !== targetSeatIndex % 2) {
+        room.teamChatHistory = { 0: [], 1: [] };
+      }
       if (
         room.pendingSeatSwap &&
         (room.pendingSeatSwap.fromParticipantId === seat.participantId ||
@@ -1520,6 +1564,9 @@ export class OnlineRoomManager {
         disconnectedAt: mover.disconnectedAt,
         micEnabled: mover.micEnabled,
       });
+      if (room.matchMode === 'TEAMS_2V2') {
+        room.teamChatHistory = { 0: [], 1: [] };
+      }
       if (nextHost) {
         room.hostSeatIndex = nextHost.seatIndex;
         nextHost.ready = true;
@@ -1632,7 +1679,11 @@ export class OnlineRoomManager {
           this.broadcastSnapshot(room);
           return;
         }
+        const teamChanged = fromSeat.seatIndex % 2 !== toSeat.seatIndex % 2;
         this.swapLobbySeatAssignments(room, fromSeat.seatIndex, toSeat.seatIndex);
+        if (room.matchMode === 'TEAMS_2V2' && teamChanged) {
+          room.teamChatHistory = { 0: [], 1: [] };
+        }
       }
       this.broadcastSnapshot(room);
       return;
@@ -1656,7 +1707,13 @@ export class OnlineRoomManager {
         this.sendError(clientId, 'BAD_MESSAGE', 'Cặp ghế cần hoán đổi không hợp lệ.');
         return;
       }
+      const anyOccupied = room.humans.some(
+        (h) => !h.explicitlyLeft && (h.seatIndex === seatA || h.seatIndex === seatB)
+      );
       this.swapLobbySeatAssignments(room, seatA, seatB);
+      if (room.matchMode === 'TEAMS_2V2' && anyOccupied && seatA % 2 !== seatB % 2) {
+        room.teamChatHistory = { 0: [], 1: [] };
+      }
       if (
         room.pendingSeatSwap &&
         (room.pendingSeatSwap.fromSeatIndex === seatA ||
@@ -1731,6 +1788,7 @@ export class OnlineRoomManager {
       room.hostSeatIndex = target.seatIndex;
       target.ready = true;
       if (room.status === 'lobby') {
+        seat.ready = false;
         this.appendSystemLobbyChat(room, `👑 ${target.playerName} đã trở thành chủ phòng mới.`);
       } else if (room.status === 'playing' && room.match) {
         this.addLog(
@@ -1820,6 +1878,9 @@ export class OnlineRoomManager {
 
       if (room.status === 'lobby') {
         room.humans = room.humans.filter((h) => h !== targetHuman);
+        if (room.matchMode === 'TEAMS_2V2') {
+          room.teamChatHistory = { 0: [], 1: [] };
+        }
         this.appendSystemLobbyChat(
           room,
           `🚫 ${targetHuman.playerName} đã bị chủ phòng mời khỏi phòng.`
@@ -1833,7 +1894,7 @@ export class OnlineRoomManager {
         const player = room.match.players.find((p) => p.id === targetHuman.playerId);
         if (player) {
           player.onlineConnected = false;
-          if (!player.bankrupt) {
+          if (!player.bankrupt && !player.isBot) {
             player.isBot = true;
             player.onlineBotTakeover = true;
             this.addLog(
@@ -2181,7 +2242,7 @@ export class OnlineRoomManager {
         this.sendError(clientId, 'BAD_MESSAGE', 'Nội dung tin nhắn không hợp lệ.');
         return;
       }
-      const text = msg.text.replace(/\s+/g, ' ').trim().slice(0, MAX_CHAT_LENGTH);
+      const text = msg.text.replace(/\s+/g, ' ').trim().slice(0, MAX_CHAT_LENGTH).trimEnd();
       if (!text) return;
 
       const now = Date.now();
@@ -2288,10 +2349,44 @@ export class OnlineRoomManager {
         return;
       }
 
+      let projectedSignal: RtcSignalPayload;
+      if (msg.signal.kind === 'ice') {
+        const rawCandidate = msg.signal.candidate as Record<string, unknown> | null;
+        const candidate: RTCIceCandidateInit | null = rawCandidate
+          ? {
+              ...(typeof rawCandidate.candidate === 'string'
+                ? { candidate: rawCandidate.candidate }
+                : {}),
+              ...(typeof rawCandidate.sdpMid === 'string' || rawCandidate.sdpMid === null
+                ? { sdpMid: rawCandidate.sdpMid as string | null }
+                : {}),
+              ...(typeof rawCandidate.sdpMLineIndex === 'number' &&
+              Number.isFinite(rawCandidate.sdpMLineIndex)
+                ? { sdpMLineIndex: rawCandidate.sdpMLineIndex }
+                : rawCandidate.sdpMLineIndex === null
+                  ? { sdpMLineIndex: null }
+                  : {}),
+              ...(typeof rawCandidate.usernameFragment === 'string' ||
+              rawCandidate.usernameFragment === null
+                ? { usernameFragment: rawCandidate.usernameFragment as string | null }
+                : {}),
+            }
+          : null;
+        projectedSignal = {
+          kind: 'ice',
+          candidate: candidate as RTCIceCandidateInit,
+        };
+      } else {
+        projectedSignal = {
+          kind: msg.signal.kind,
+          sdp: msg.signal.sdp,
+        };
+      }
+
       this.sendMessage(targetClientId, {
         type: 'RTC_SIGNAL',
         fromParticipantId: senderParticipantId,
-        signal: msg.signal,
+        signal: projectedSignal,
       });
       return;
     }
@@ -2530,6 +2625,9 @@ export class OnlineRoomManager {
     if (room.status === 'lobby') {
       this.clearPendingSeatSwapForParticipant(room, seat.participantId);
       room.humans = room.humans.filter((h) => h !== seat);
+      if (room.matchMode === 'TEAMS_2V2') {
+        room.teamChatHistory = { 0: [], 1: [] };
+      }
       if (room.humans.length === 0 && room.spectators.length === 0) {
         this.clearRoomTimers(room);
         this.rooms.delete(room.roomCode);
@@ -2592,6 +2690,7 @@ export class OnlineRoomManager {
     this.clearRoomTimers(room);
     room.status = 'lobby';
     room.match = null;
+    room.teamChatHistory = { 0: [], 1: [] };
     room.humans = room.humans.filter((h) => !h.explicitlyLeft);
     for (const h of room.humans) {
       h.playerId = null;
@@ -5274,15 +5373,27 @@ export class OnlineRoomManager {
     if (this.disposed) return;
     const now = Date.now();
     for (const room of this.rooms.values()) {
-      if (room.status === 'gameover') {
-        if (this.promoteConnectedHostIfNeeded(room)) {
+      const spectatorEvicted = this.evictStaleSpectators(room, now);
+
+      if (room.status === 'lobby' || room.status === 'gameover') {
+        const hostPromoted = this.promoteConnectedHostIfNeeded(room);
+        if (hostPromoted || spectatorEvicted) {
           this.broadcastSnapshot(room);
+        }
+        if (spectatorEvicted) {
+          this.scheduleGraceCleanupIfEmpty(room);
         }
         continue;
       }
 
       const match = room.match;
-      if (room.status !== 'playing' || !match) continue;
+      if (room.status !== 'playing' || !match) {
+        if (spectatorEvicted) {
+          this.broadcastSnapshot(room);
+          this.scheduleGraceCleanupIfEmpty(room);
+        }
+        continue;
+      }
 
       // 20-minute match countdown & Net Worth Sudden Death (BUG-04)
       if (match.matchTimeLeft > 0) {
@@ -5342,28 +5453,14 @@ export class OnlineRoomManager {
         }
       }
 
-      // Evict spectators who stayed disconnected beyond 90s to free spectator slots
-      const prevSpectatorCount = room.spectators.length;
-      if (prevSpectatorCount > 0) {
-        room.spectators = room.spectators.filter((s) => {
-          if (
-            !s.connected &&
-            s.disconnectedAt !== null &&
-            now - s.disconnectedAt >= DISCONNECT_BOT_TAKEOVER_MS
-          ) {
-            this.clearPendingTakeoverRequestForParticipant(room, s.participantId);
-            return false;
-          }
-          return true;
-        });
-      }
-      const spectatorEvicted = room.spectators.length !== prevSpectatorCount;
-
       if (takeoverChanged || spectatorEvicted) {
         if (takeoverChanged) {
           this.promoteConnectedHostIfNeeded(room);
         }
         this.broadcastSnapshot(room);
+        if (spectatorEvicted) {
+          this.scheduleGraceCleanupIfEmpty(room);
+        }
         if (takeoverChanged) {
           this.scheduleBotTurnIfNeeded(room);
         }

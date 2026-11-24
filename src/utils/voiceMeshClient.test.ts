@@ -936,3 +936,134 @@ test('deduplicates concurrent getUserMedia calls, handles PTT release and dispos
   }
 });
 
+test('Consolidated VoiceMeshClient fixes: toggleMic->push_to_talk race, glare offerEpoch check after setLocalDescription, and renegotiation ignoreOffer ICE suppression', async () => {
+  // (a) Switching setInputMode('push_to_talk') while toggleMic() awaits getUserMedia keeps mic disabled & muted
+  const deferredMic = createDeferred<MockMediaStream>();
+  const track = createMockTrack('race-mic');
+  const clientA = new VoiceMeshClient({
+    myParticipantId: 'p_0001',
+    sendSignal: () => {},
+    isSecureContext: true,
+    createPeerConnection: (cfg) => new MockRTCPeerConnection(cfg),
+    getUserMedia: () => deferredMic.promise,
+  });
+
+  try {
+    const togglePromise = clientA.toggleMic();
+    clientA.setInputMode('push_to_talk');
+    deferredMic.resolve(createMockStream([track]));
+    await togglePromise;
+
+    assert.equal(clientA.getSnapshot().inputMode, 'push_to_talk');
+    assert.equal(clientA.getSnapshot().micEnabled, false);
+    assert.equal(clientA.getSnapshot().pttPressed, false);
+    assert.equal(track.enabled, false);
+  } finally {
+    clientA.dispose();
+  }
+
+  // (b) Glare rollback during await setLocalDescription cancels outgoing offer before emitSignal
+  const politeSent: Array<{ target: string; signal: RtcSignalPayload }> = [];
+  const politePcs: MockRTCPeerConnection[] = [];
+  const setLocalOfferDeferred = createDeferred<void>();
+
+  const politeClient = new VoiceMeshClient({
+    myParticipantId: 'p_0001',
+    sendSignal: (target, signal) => politeSent.push({ target, signal }),
+    isSecureContext: true,
+    createPeerConnection: (cfg) => {
+      const pc = new MockRTCPeerConnection(cfg);
+      const origSetLocal = pc.setLocalDescription.bind(pc);
+      pc.setLocalDescription = async (desc?: RTCSessionDescriptionInit) => {
+        if (desc?.type === 'offer') {
+          await origSetLocal(desc);
+          await setLocalOfferDeferred.promise;
+          return;
+        }
+        return origSetLocal(desc);
+      };
+      politePcs.push(pc);
+      return pc;
+    },
+  });
+
+  try {
+    politeClient.syncPeers(['p_0002']);
+    const negoPromise = politePcs[0].onnegotiationneeded?.();
+    // Flush until setLocalDescription(offer) suspends
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Colliding remote offer arrives -> polite peer increments offerEpoch, rolls back, and sends answer
+    await politeClient.handleSignal('p_0002', {
+      kind: 'offer',
+      sdp: 'glare-offer-while-setting-local',
+    });
+
+    setLocalOfferDeferred.resolve();
+    await negoPromise;
+
+    // ONLY the glare answer should have been sent; the stale local offer must NOT leak after setLocalDescription!
+    assert.equal(
+      politeSent.some((m) => m.signal.kind === 'offer'),
+      false,
+      'Stale offer after glare rollback during setLocalDescription must not be emitted'
+    );
+    assert.equal(politeSent.length, 1);
+    assert.equal(politeSent[0].signal.kind, 'answer');
+  } finally {
+    politeClient.dispose();
+  }
+
+  // (c) Renegotiation glare on impolite peer ignores ICE candidates even when remoteDescription is already set
+  const impolitePcs: MockRTCPeerConnection[] = [];
+  const impoliteClient = new VoiceMeshClient({
+    myParticipantId: 'p_0002',
+    sendSignal: () => {},
+    isSecureContext: true,
+    createPeerConnection: (cfg) => {
+      const pc = new MockRTCPeerConnection(cfg);
+      impolitePcs.push(pc);
+      return pc;
+    },
+  });
+
+  try {
+    impoliteClient.syncPeers(['p_0001']);
+    // Complete initial negotiation so pc.remoteDescription IS already populated
+    await impoliteClient.handleSignal('p_0001', {
+      kind: 'offer',
+      sdp: 'initial-remote-offer',
+    });
+    assert.ok(impolitePcs[0].remoteDescription);
+    const iceCountBeforeGlare = impolitePcs[0].iceCandidatesAdded.length;
+
+    // Now impolite peer starts renegotiation (makingOffer=true via deferred createOffer)
+    const renegOfferDeferred = createDeferred<RTCSessionDescriptionInit>();
+    impolitePcs[0].createOfferHook = () => renegOfferDeferred.promise;
+    const renegPromise = impolitePcs[0].onnegotiationneeded?.();
+
+    // Polite peer sends colliding renegotiation offer -> impolite sets ignoreOffer = true
+    await impoliteClient.handleSignal('p_0001', {
+      kind: 'offer',
+      sdp: 'colliding-reneg-offer',
+    });
+    // Trickle ICE for the ignored renegotiation offer arrives while remoteDescription ALREADY exists
+    await impoliteClient.handleSignal('p_0001', {
+      kind: 'ice',
+      candidate: { candidate: 'candidate:ignored-reneg-ice' },
+    });
+
+    assert.equal(
+      impolitePcs[0].iceCandidatesAdded.length,
+      iceCountBeforeGlare,
+      'ICE candidates for ignored renegotiation offer must be dropped even when remoteDescription is set'
+    );
+
+    renegOfferDeferred.resolve({ type: 'offer', sdp: 'impolite-reneg-offer' });
+    await renegPromise;
+  } finally {
+    impoliteClient.dispose();
+  }
+});
+

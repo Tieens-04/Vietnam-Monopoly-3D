@@ -286,6 +286,8 @@ export class VoiceMeshClient {
   private pttPressed = false;
   private permissionStatus: VoicePermissionStatus = 'idle';
   private localSpeaking = false;
+  private micToggleEpoch = 0;
+  private audioUnlockBound = false;
 
   private localStream: MediaStreamLike | null = null;
   private localAudioTrack: AudioTrackLike | null = null;
@@ -429,23 +431,39 @@ export class VoiceMeshClient {
     if (this.disposed) return;
 
     if (!this.micEnabled) {
+      const startEpoch = ++this.micToggleEpoch;
       const acquired = await this.acquireLocalMic();
-      if (!acquired || this.disposed || !this.localAudioTrack) {
-        this.micEnabled = false;
-        this.localSpeaking = false;
-        this.emitSnapshot();
+      if (
+        !acquired ||
+        this.disposed ||
+        !this.localAudioTrack ||
+        this.micToggleEpoch !== startEpoch ||
+        this.inputMode === 'push_to_talk'
+      ) {
+        if (
+          this.localAudioTrack &&
+          (this.micToggleEpoch !== startEpoch || this.inputMode === 'push_to_talk')
+        ) {
+          this.localAudioTrack.enabled = false;
+        }
+        if (!this.disposed) {
+          this.micEnabled = false;
+          if (this.inputMode === 'push_to_talk') {
+            this.pttPressed = false;
+          }
+          this.localSpeaking = false;
+          this.emitSnapshot();
+        }
         return;
       }
       void this.audioContext?.resume?.().catch(() => {});
       this.micEnabled = true;
-      if (this.inputMode === 'push_to_talk') {
-        this.pttPressed = true;
-      }
       this.localAudioTrack.enabled = true;
       this.emitSnapshot();
       return;
     }
 
+    this.micToggleEpoch += 1;
     this.micEnabled = false;
     if (this.inputMode === 'push_to_talk') {
       this.pttPressed = false;
@@ -459,6 +477,7 @@ export class VoiceMeshClient {
 
   setInputMode(mode: VoiceInputMode): void {
     if (this.disposed || this.inputMode === mode) return;
+    this.micToggleEpoch += 1;
     this.inputMode = mode;
     this.pttPressed = false;
     if (mode === 'push_to_talk') {
@@ -475,6 +494,7 @@ export class VoiceMeshClient {
 
   async setPushToTalkPressed(pressed: boolean): Promise<void> {
     if (this.disposed) return;
+    this.micToggleEpoch += 1;
     if (this.inputMode !== 'push_to_talk') {
       if (!pressed && this.pttPressed) {
         this.pttPressed = false;
@@ -597,6 +617,8 @@ export class VoiceMeshClient {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.micToggleEpoch += 1;
+    this.unbindAudioUnlockListeners();
 
     this.stopSpeakingDetectorLoop();
 
@@ -798,6 +820,7 @@ export class VoiceMeshClient {
 
       await peer.pc.setLocalDescription(offer);
       if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
+      if (peer.offerEpoch !== startEpoch) return;
 
       const localDesc = peer.pc.localDescription ?? offer;
       if (localDesc?.sdp) {
@@ -875,9 +898,9 @@ export class VoiceMeshClient {
     }
 
     if (signal.kind === 'ice') {
+      if (peer.ignoreOffer) return;
       try {
         if (!pc.remoteDescription) {
-          if (peer.ignoreOffer) return;
           peer.pendingIceCandidates.push(signal.candidate);
           return;
         }
@@ -1005,15 +1028,17 @@ export class VoiceMeshClient {
     if (this.disposed || peer.disposed || peer.connectionState === 'closed') return;
     const pc = peer.pc;
 
+    const transceivers = pc.getTransceivers?.() ?? [];
+    const isAudioTransceiver = (t: RTCRtpTransceiverLike): boolean =>
+      t.sender?.track?.kind === 'audio' ||
+      t.receiver?.track?.kind === 'audio' ||
+      t.sender === peer.audioSender;
     const existingTransceiver =
       peer.audioTransceiver ??
-      pc.getTransceivers?.().find(
-        (t) =>
-          t.sender?.track?.kind === 'audio' ||
-          t.receiver?.track?.kind === 'audio' ||
-          t.sender === peer.audioSender
-      ) ??
-      pc.getTransceivers?.()[0] ??
+      transceivers.find((t) => t.mid !== null && t.mid !== undefined && isAudioTransceiver(t)) ??
+      transceivers.find((t) => isAudioTransceiver(t)) ??
+      transceivers.find((t) => t.mid !== null && t.mid !== undefined) ??
+      transceivers[0] ??
       null;
 
     if (existingTransceiver) {
@@ -1045,10 +1070,63 @@ export class VoiceMeshClient {
     }
   }
 
+  private readonly handleUserGestureAudioUnlock = (): void => {
+    if (this.disposed) {
+      this.unbindAudioUnlockListeners();
+      return;
+    }
+    const ctx = this.audioContext;
+    if (!ctx) return;
+    if (ctx.state === 'running') {
+      this.unbindAudioUnlockListeners();
+      return;
+    }
+    if (typeof ctx.resume === 'function') {
+      void Promise.resolve(ctx.resume())
+        .then(() => {
+          if (this.disposed || this.audioContext?.state === 'running') {
+            this.unbindAudioUnlockListeners();
+          }
+        })
+        .catch(() => {});
+    }
+  };
+
+  private bindAudioUnlockListeners(): void {
+    if (this.disposed || this.audioUnlockBound) return;
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+    this.audioUnlockBound = true;
+    window.addEventListener('pointerdown', this.handleUserGestureAudioUnlock, {
+      capture: true,
+      passive: true,
+    });
+    window.addEventListener('keydown', this.handleUserGestureAudioUnlock, {
+      capture: true,
+      passive: true,
+    });
+  }
+
+  private unbindAudioUnlockListeners(): void {
+    if (!this.audioUnlockBound) return;
+    this.audioUnlockBound = false;
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('pointerdown', this.handleUserGestureAudioUnlock, {
+        capture: true,
+      });
+      window.removeEventListener('keydown', this.handleUserGestureAudioUnlock, {
+        capture: true,
+      });
+    }
+  }
+
   private ensureAudioContext(): AudioContextLike | null {
     if (this.disposed) return null;
-    if (this.audioContext) return this.audioContext;
-    this.audioContext = this.createAudioContextFn();
+    if (!this.audioContext) {
+      this.audioContext = this.createAudioContextFn();
+    }
+    if (this.audioContext && this.audioContext.state !== 'running') {
+      this.bindAudioUnlockListeners();
+    }
     return this.audioContext;
   }
 

@@ -1626,10 +1626,12 @@ function isStrategicWinOrBlockTile(
   tileIndex: number,
   players: PlayerState[],
   properties: Record<number, PropertyState>,
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  options?: { includeOwnSecondResort?: boolean }
 ): boolean {
   const tile = BOARD_TILES[tileIndex];
   if (!tile) return false;
+  const includeOwnSecondResort = options?.includeOwnSecondResort ?? true;
 
   const activePlayers = players.filter((p) => !p.bankrupt);
   const ownerGroups: Set<number>[] =
@@ -1663,6 +1665,7 @@ function isStrategicWinOrBlockTile(
       if (ownedResorts >= RESORT_TILE_INDICES.length - 1) return true;
     }
     if (
+      includeOwnSecondResort &&
       RESORT_TILE_INDICES.some((idx) => {
         if (idx === tileIndex) return false;
         const oid = properties[idx]?.ownerId;
@@ -2054,13 +2057,17 @@ export function botPickWorldTourTarget(
     }
   }
 
-  // 1b. Hard bots also fly to block opponent near-monopolies
+  // 1b. Hard bots also fly to block genuine opponent near-monopolies (excluding generic 2nd-resort buy heuristic)
   if (difficulty === 'hard') {
     for (const tile of validUnowned) {
       const move = resolveWorldTourMovement(bot.position, tile.index);
       const cashBudget = bot.cash + (move.passedStart ? START_SALARY : 0) - WORLD_TOUR_FEE;
       if (cashBudget - tile.price! < monoReserve) continue;
-      if (isStrategicWinOrBlockTile(bot.id, tile.index, players, properties, matchMode)) {
+      if (
+        isStrategicWinOrBlockTile(bot.id, tile.index, players, properties, matchMode, {
+          includeOwnSecondResort: false,
+        })
+      ) {
         return tile.index;
       }
     }
@@ -2094,7 +2101,11 @@ export function botPickWorldTourTarget(
     }
   }
 
-  // 3. Best affordable unowned Resort or City
+  // 3. Best affordable unowned Resort or City (lower fallback after blocks/upgrades)
+  const ownResortCount = RESORT_TILE_INDICES.filter((i) => {
+    const oid = properties[i]?.ownerId;
+    return oid !== null && oid !== undefined && actorTeam.has(oid);
+  }).length;
   const generalWtReserve =
     difficulty === 'easy' ? 550_000 : difficulty === 'hard' ? 200_000 : 350_000;
   const bestUnowned = validUnowned
@@ -2104,8 +2115,18 @@ export function botPickWorldTourTarget(
       return cashBudget - (t.price ?? 0) >= generalWtReserve;
     })
     .sort((a, b) => {
-      const scoreA = a.kind === TileKind.RESORT ? 250_000 : a.price ?? 0;
-      const scoreB = b.kind === TileKind.RESORT ? 250_000 : b.price ?? 0;
+      const scoreA =
+        a.kind === TileKind.RESORT
+          ? difficulty === 'hard' && ownResortCount >= 1
+            ? 500_000
+            : 250_000
+          : (a.price ?? 0);
+      const scoreB =
+        b.kind === TileKind.RESORT
+          ? difficulty === 'hard' && ownResortCount >= 1
+            ? 500_000
+            : 250_000
+          : (b.price ?? 0);
       return scoreB - scoreA;
     });
 

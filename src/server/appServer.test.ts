@@ -170,6 +170,7 @@ test('Phase 1 Task 3: GET /api/rtc-config returns default STUN iceServers and al
         const res = await fetch(`${srv.baseUrl}/api/rtc-config`);
         assert.equal(res.status, 200);
         assert.match(res.headers.get('content-type') || '', /application\/json/);
+        assert.equal(res.headers.get('cache-control'), 'no-store');
 
         const permissionsPolicy = res.headers.get('permissions-policy') ?? '';
         assert.match(permissionsPolicy, /microphone=\(self\)/);
