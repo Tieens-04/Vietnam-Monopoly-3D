@@ -42,6 +42,7 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
   const [activeChannel, setActiveChannel] = useState<ChatChannel>('ALL');
   const [draft, setDraft] = useState<string>('');
 
+  const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef<boolean>(true);
   const prevVisibleCountRef = useRef<number>(0);
@@ -60,11 +61,14 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
   const effectiveChannel: ChatChannel = canUseTeamChannel ? activeChannel : 'ALL';
 
   const visibleMessages = useMemo(() => {
+    const safeMessages = canUseTeamChannel
+      ? messages
+      : messages.filter((msg) => msg.channel !== 'TEAM');
     if (effectiveChannel === 'TEAM') {
-      return messages.filter((msg) => msg.channel === 'TEAM');
+      return safeMessages.filter((msg) => msg.channel === 'TEAM');
     }
-    return messages;
-  }, [messages, effectiveChannel]);
+    return safeMessages;
+  }, [messages, effectiveChannel, canUseTeamChannel]);
 
   // Close drawer on Escape (document capture runs before App.tsx window bubble Pause shortcut)
   useEffect(() => {
@@ -72,6 +76,13 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' && event.code !== 'Escape') return;
+      const hasExternalModal = Array.from(document.querySelectorAll('[aria-modal="true"]')).some(
+        (modalEl) =>
+          panelRef.current &&
+          !panelRef.current.contains(modalEl) &&
+          !modalEl.contains(panelRef.current)
+      );
+      if (hasExternalModal) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
@@ -159,6 +170,7 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
 
   return (
     <div
+      ref={panelRef}
       data-testid="bt-online-chat-panel"
       role={isDrawer ? 'dialog' : 'region'}
       aria-modal={isDrawer ? false : undefined}

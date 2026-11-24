@@ -676,33 +676,29 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         const cleanLabel = label.trim() || '🎯 Ping!';
         const safeColor = colorHex || '#FACC15';
 
-        setActiveTilePings((prev) => {
-          const filtered = prev.filter((item) => item.tileIndex !== normTile);
-          const next = [
-            ...filtered,
-            { tileIndex: normTile, colorHex: safeColor, label: cleanLabel },
-          ];
-          while (next.length > MAX_ACTIVE_TILE_PINGS) {
-            const evicted = next.shift();
-            if (evicted) {
-              const evictedTimer = pingTimersRef.current.get(evicted.tileIndex);
-              if (evictedTimer !== undefined) {
-                window.clearTimeout(evictedTimer);
-                pingTimersRef.current.delete(evicted.tileIndex);
-              }
+        const filtered = activeTilePingsRef.current.filter((item) => item.tileIndex !== normTile);
+        const next = [
+          ...filtered,
+          { tileIndex: normTile, colorHex: safeColor, label: cleanLabel },
+        ];
+        while (next.length > MAX_ACTIVE_TILE_PINGS) {
+          const evicted = next.shift();
+          if (evicted) {
+            const evictedTimer = pingTimersRef.current.get(evicted.tileIndex);
+            if (evictedTimer !== undefined) {
+              window.clearTimeout(evictedTimer);
+              pingTimersRef.current.delete(evicted.tileIndex);
             }
           }
-          activeTilePingsRef.current = next;
-          return next;
-        });
+        }
+        activeTilePingsRef.current = next;
+        setActiveTilePings(next);
 
         const timerId = window.setTimeout(() => {
           pingTimersRef.current.delete(normTile);
-          setActiveTilePings((prev) => {
-            const next = prev.filter((item) => item.tileIndex !== normTile);
-            activeTilePingsRef.current = next;
-            return next;
-          });
+          const remaining = activeTilePingsRef.current.filter((item) => item.tileIndex !== normTile);
+          activeTilePingsRef.current = remaining;
+          setActiveTilePings(remaining);
         }, TILE_PING_DURATION_MS);
         pingTimersRef.current.set(normTile, timerId);
 

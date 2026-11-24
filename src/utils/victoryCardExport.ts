@@ -107,7 +107,11 @@ function truncateText(
 
 function sortStandings(standings: ReadonlyArray<SeriesStandingEntry>): SeriesStandingEntry[] {
   return [...standings].sort(
-    (a, b) => b.seriesPoints - a.seriesPoints || b.wins - a.wins
+    (a, b) =>
+      b.seriesPoints - a.seriesPoints ||
+      b.wins - a.wins ||
+      a.playerName.localeCompare(b.playerName) ||
+      a.participantId.localeCompare(b.participantId)
   );
 }
 
@@ -298,7 +302,11 @@ export function renderVictoryCardCanvas(
     ctx.textAlign = 'right';
     ctx.fillStyle = isBankrupt ? '#FB7185' : '#4ADE80';
     ctx.font = `900 15px ${FONT_FAMILY}`;
-    ctx.fillText(pl.netWorthText, leftX + leftW - 24, rowY + 18);
+    ctx.fillText(
+      truncateText(ctx, pl.netWorthText, isChamp ? 140 : 155),
+      leftX + leftW - 24,
+      rowY + 18
+    );
   });
 
   // 3b. Series Standings Panel
@@ -355,15 +363,27 @@ export function renderVictoryCardCanvas(
       ctx.textAlign = 'right';
       ctx.fillStyle = '#FEF08A';
       ctx.font = `800 13px ${FONT_FAMILY}`;
-      ctx.fillText(`🏆 ${entry.wins} Cúp`, leftX + leftW - 150, rowY + 17);
+      ctx.fillText(
+        truncateText(ctx, `🏆 ${entry.wins} Cúp`, 115),
+        leftX + leftW - 150,
+        rowY + 17
+      );
 
       ctx.fillStyle = '#CBD5E1';
       ctx.font = `700 12px ${FONT_FAMILY}`;
-      ctx.fillText(`${entry.matchesPlayed} trận`, leftX + leftW - 92, rowY + 17);
+      ctx.fillText(
+        truncateText(ctx, `${entry.matchesPlayed} trận`, 54),
+        leftX + leftW - 92,
+        rowY + 17
+      );
 
       ctx.fillStyle = '#38BDF8';
       ctx.font = `900 14px ${FONT_FAMILY}`;
-      ctx.fillText(`${entry.seriesPoints} điểm`, leftX + leftW - 24, rowY + 17);
+      ctx.fillText(
+        truncateText(ctx, `${entry.seriesPoints} điểm`, 64),
+        leftX + leftW - 24,
+        rowY + 17
+      );
     });
   }
 
@@ -493,11 +513,14 @@ export function downloadVictoryCardPng(
   const body = document.body;
   if (body && typeof body.appendChild === 'function') {
     body.appendChild(link);
-    link.click();
-    if (typeof body.removeChild === 'function') {
-      body.removeChild(link);
-    } else if (typeof link.remove === 'function') {
-      link.remove();
+    try {
+      link.click();
+    } finally {
+      if (typeof body.removeChild === 'function') {
+        body.removeChild(link);
+      } else if (typeof link.remove === 'function') {
+        link.remove();
+      }
     }
   } else {
     link.click();

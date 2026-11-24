@@ -195,7 +195,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
     const currentBotDifficulty: BotDifficulty = room.botDifficulty ?? 'normal';
     const spectators = room.spectators ?? [];
     const sortedSeriesStandings = [...(room.seriesStandings ?? [])].sort(
-      (a, b) => b.seriesPoints - a.seriesPoints || b.wins - a.wins
+      (a, b) =>
+        b.seriesPoints - a.seriesPoints ||
+        b.wins - a.wins ||
+        a.playerName.localeCompare(b.playerName) ||
+        a.participantId.localeCompare(b.participantId)
     );
     const pendingSwap = room.pendingSeatSwap ?? null;
     const isIncomingSwapRecipient = Boolean(
@@ -330,6 +334,8 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
 
           {pendingSwap && isIncomingSwapRecipient && (
             <div
+              role="status"
+              aria-live="polite"
               data-testid="bt-seat-swap-incoming-banner"
               className="px-3.5 py-2.5 rounded-2xl bg-amber-50 border-2 border-amber-300 text-xs font-extrabold text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-xs"
             >
@@ -360,6 +366,8 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
 
           {pendingSwap && isOutgoingSwapSender && (
             <div
+              role="status"
+              aria-live="polite"
               data-testid="bt-seat-swap-outgoing-notice"
               className="px-3.5 py-2 rounded-xl bg-sky-100 border border-sky-300 text-xs font-extrabold text-sky-900"
             >
@@ -621,7 +629,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                     const persona = CHARACTER_PERSONAS[seat.tokenType];
                     const isYou = seat.seatIndex === online.yourSeatIndex;
                     const seatParticipant = seat.occupiedByHuman
-                      ? room.participants.find((p) => p.seatIndex === seat.seatIndex)
+                      ? room.participants.find(
+                          (p) =>
+                            p.seatIndex === seat.seatIndex ||
+                            (Boolean(seat.participantId) && p.participantId === seat.participantId)
+                        )
                       : undefined;
                     const isSpeaking = Boolean(
                       seatParticipant && speakingParticipantIds?.[seatParticipant.participantId]
@@ -816,6 +828,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                                   type="button"
                                   data-testid={`bt-seat-action-${seat.seatIndex}`}
                                   disabled={seatClickDisabled}
+                                  aria-pressed={isHost && swapModeActive ? isSwapSource : undefined}
                                   title={seatActionTitle}
                                   onClick={seatClickHandler}
                                   className={`px-2.5 py-0.5 rounded-lg border text-[10px] font-black transition-colors ${
@@ -1129,7 +1142,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                         <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-mono-num">
                           🏆 {entry.wins} Cúp
                         </span>
-                        <span className="text-slate-500 font-semibold hidden sm:inline font-mono-num">
+                        <span className="text-slate-500 font-semibold hidden md:inline font-mono-num">
                           {entry.matchesPlayed} trận
                         </span>
                         <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-900 font-mono-num">

@@ -223,6 +223,13 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' && event.code !== 'Escape') return;
+      const hasExternalModal = Array.from(document.querySelectorAll('[aria-modal="true"]')).some(
+        (modalEl) =>
+          containerRef.current &&
+          !containerRef.current.contains(modalEl) &&
+          !modalEl.contains(containerRef.current)
+      );
+      if (hasExternalModal) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();

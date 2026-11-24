@@ -396,6 +396,24 @@ test('SpecialEventEffects.playTilePing reuses POOL_PING_RINGS = 4 with zero allo
     '#22C55E'
   );
 
+  // LRU eviction check: ping 4 distinct tiles, refresh the oldest (tile 7) to MRU, then 5th ping must evict tile 9 (LRU), NOT tile 7
+  fx.playTilePing(9, '#3B82F6', 3.5);
+  fx.playTilePing(11, '#F59E0B', 3.5);
+  fx.playTilePing(13, '#EC4899', 3.5);
+  // Refresh tile 7 (currently oldest) -> becomes MRU; tile 9 is now LRU
+  fx.playTilePing(7, '#10B981', 3.5);
+  // 5th distinct ping -> evicts tile 9 (#3B82F6), keeping refreshed tile 7 (#10B981)!
+  fx.playTilePing(15, '#8B5CF6', 3.5);
+  const lruRings = scene.children.filter(
+    (c): c is THREE.Mesh => c instanceof THREE.Mesh && c.visible && c.renderOrder === 4
+  );
+  assert.equal(lruRings.length, POOL_PING_RINGS);
+  const lruHexes = new Set(
+    lruRings.map((m) => `#${(m.material as THREE.MeshBasicMaterial).color.getHexString().toUpperCase()}`)
+  );
+  assert.equal(lruHexes.has('#10B981'), true, 'Refreshed MRU tile 7 ring must survive 5th ping');
+  assert.equal(lruHexes.has('#3B82F6'), false, 'Least-recently-used tile 9 ring must be evicted');
+
   fx.dispose();
   director.dispose();
   assert.equal(scene.children.length, 0);

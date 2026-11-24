@@ -439,6 +439,7 @@ export function createSpecialEventEffects(
     mat: THREE.MeshBasicMaterial;
     active: boolean;
     tileIndex: number | null;
+    lastUsedSeq: number;
     runToken: number;
     timeline: ManagedVisualTimeline | null;
     proxy: { u: number };
@@ -466,12 +467,13 @@ export function createSpecialEventEffects(
       mat,
       active: false,
       tileIndex: null,
+      lastUsedSeq: 0,
       runToken: 0,
       timeline: null,
       proxy: { u: 0 },
     });
   }
-  let pingCursor = 0;
+  let pingUseSeq = 0;
 
   // 11. Pooled 3D Board Taunt Projectiles (Phase 3)
   const tauntPool = createTauntProjectilePool({
@@ -1047,16 +1049,18 @@ export function createSpecialEventEffects(
         return i;
       }
     }
-    for (let offset = 0; offset < POOL_PING_RINGS; offset++) {
-      const idx = (pingCursor + offset) % POOL_PING_RINGS;
-      if (!pingRingPool[idx].active) {
-        pingCursor = (idx + 1) % POOL_PING_RINGS;
-        return idx;
+    for (let i = 0; i < POOL_PING_RINGS; i++) {
+      if (!pingRingPool[i].active) {
+        return i;
       }
     }
-    const evicted = pingCursor;
-    pingCursor = (pingCursor + 1) % POOL_PING_RINGS;
-    return evicted;
+    let lruIdx = 0;
+    for (let i = 1; i < POOL_PING_RINGS; i++) {
+      if (pingRingPool[i].lastUsedSeq < pingRingPool[lruIdx].lastUsedSeq) {
+        lruIdx = i;
+      }
+    }
+    return lruIdx;
   };
 
   /** Phase 3: Pooled public 3D tile ping ring (default 3.5s) */
@@ -1082,8 +1086,10 @@ export function createSpecialEventEffects(
       Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 3.5;
     const tf = getTileTransform(normTile);
 
+    pingUseSeq += 1;
     entry.active = true;
     entry.tileIndex = normTile;
+    entry.lastUsedSeq = pingUseSeq;
     entry.mat.color.set(colorHex || '#FACC15');
     entry.mat.opacity = reduced ? 0.78 : 0.9;
     entry.mesh.position.set(tf.x, TILE_SURFACE_Y + 0.04, tf.z);
@@ -1096,6 +1102,7 @@ export function createSpecialEventEffects(
       entry.timeline = null;
       entry.active = false;
       entry.tileIndex = null;
+      entry.lastUsedSeq = 0;
       entry.mesh.visible = false;
       entry.mat.opacity = 0;
     };
@@ -1157,6 +1164,7 @@ export function createSpecialEventEffects(
       if (tl) tl.cancel();
       p.active = false;
       p.tileIndex = null;
+      p.lastUsedSeq = 0;
       p.mesh.visible = false;
       p.mat.opacity = 0;
     }

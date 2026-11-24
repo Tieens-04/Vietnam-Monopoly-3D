@@ -848,7 +848,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
 
           <div
             data-testid="bt-spectator-status-bar"
-            className="pointer-events-auto bt-casual-modal rounded-full px-3.5 sm:px-4 py-1.5 sm:py-2 flex flex-wrap items-center justify-center gap-2 sm:gap-3 shadow-lg"
+            className="pointer-events-auto bt-casual-modal rounded-2xl sm:rounded-full px-3.5 sm:px-4 py-1.5 sm:py-2 flex flex-wrap items-center justify-center gap-2 sm:gap-3 shadow-lg"
           >
             <span className="text-xs sm:text-sm font-black text-sky-950 whitespace-nowrap">
               👁️ Chế độ Khán giả — Đang xem trực tiếp

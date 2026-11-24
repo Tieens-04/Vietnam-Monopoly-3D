@@ -31,7 +31,7 @@ import {
 import { CityLandmarkBadge } from './CityLandmarkBadge';
 import { PlayerAvatar3D } from './PlayerAvatar3D';
 import { resolveDeedGroupPalette } from '../three/textures';
-import { whenAllGameFontsLoaded } from '../utils/fontLoader';
+import { waitForGameFonts } from '../utils/fontLoader';
 import {
   copyVictoryCardToClipboard,
   downloadVictoryCardPng,
@@ -1585,7 +1585,11 @@ export const VictoryModal: React.FC<{
   const sortedSeriesStandings = useMemo(
     () =>
       [...(seriesStandings ?? [])].sort(
-        (a, b) => b.seriesPoints - a.seriesPoints || b.wins - a.wins
+        (a, b) =>
+          b.seriesPoints - a.seriesPoints ||
+          b.wins - a.wins ||
+          a.playerName.localeCompare(b.playerName) ||
+          a.participantId.localeCompare(b.participantId)
       ),
     [seriesStandings]
   );
@@ -1627,7 +1631,7 @@ export const VictoryModal: React.FC<{
     if (exportBusy) return;
     setExportBusy(true);
     try {
-      await whenAllGameFontsLoaded().catch(() => undefined);
+      await waitForGameFonts(1200).catch(() => false);
       const canvas = renderVictoryCardCanvas(buildExportData());
       const outcome = await copyVictoryCardToClipboard(canvas, exportFilename);
       showExportFeedback(
@@ -1635,6 +1639,8 @@ export const VictoryModal: React.FC<{
           ? 'Đã copy ảnh vào Clipboard!'
           : 'Trình duyệt không hỗ trợ copy ảnh — đã tự tải file PNG!'
       );
+    } catch {
+      showExportFeedback('Không thể tạo ảnh lúc này — vui lòng thử lại!');
     } finally {
       setExportBusy(false);
     }
@@ -1644,10 +1650,12 @@ export const VictoryModal: React.FC<{
     if (exportBusy) return;
     setExportBusy(true);
     try {
-      await whenAllGameFontsLoaded().catch(() => undefined);
+      await waitForGameFonts(1200).catch(() => false);
       const canvas = renderVictoryCardCanvas(buildExportData());
       downloadVictoryCardPng(canvas, exportFilename);
       showExportFeedback('Đã tải xuống ảnh PNG tổng kết!');
+    } catch {
+      showExportFeedback('Không thể tạo ảnh lúc này — vui lòng thử lại!');
     } finally {
       setExportBusy(false);
     }

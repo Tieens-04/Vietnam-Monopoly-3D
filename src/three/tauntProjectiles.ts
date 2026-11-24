@@ -435,11 +435,11 @@ export function createTauntProjectilePool(
     slot.root.position.set(fromX, TILE_SURFACE_Y + 0.52, fromZ);
     slot.root.rotation.set(0, yaw, 0);
 
+    const confettiChipCount = tier === 'low' ? 3 : slot.confettiChips.length;
     if (kind === 'confetti') {
       slot.confettiBurstGroup.visible = true;
-      const chipLimit = tier === 'low' ? 3 : slot.confettiChips.length;
       for (let i = 0; i < slot.confettiChips.length; i++) {
-        slot.confettiChips[i].visible = i < chipLimit;
+        slot.confettiChips[i].visible = i < confettiChipCount;
       }
     }
 
@@ -478,7 +478,7 @@ export function createTauntProjectilePool(
                 for (let i = 0; i < slot.confettiChips.length; i++) {
                   const chip = slot.confettiChips[i];
                   if (!chip.visible) continue;
-                  const a = (i / 6) * Math.PI * 2;
+                  const a = (i / confettiChipCount) * Math.PI * 2;
                   const r = 0.06 + u * 0.16;
                   chip.position.set(
                     Math.cos(a) * r,
@@ -539,7 +539,7 @@ export function createTauntProjectilePool(
                 for (let i = 0; i < slot.confettiChips.length; i++) {
                   const chip = slot.confettiChips[i];
                   if (!chip.visible) continue;
-                  const a = (i / 6) * Math.PI * 2;
+                  const a = (i / confettiChipCount) * Math.PI * 2;
                   const r = 0.22 + b * 0.56;
                   chip.position.set(
                     Math.cos(a) * r,

@@ -200,7 +200,13 @@ test.describe('Phase 1 Online Room Chat & WebRTC Voice Integration', () => {
       await expect(teamMsgItem).toContainText('[Đội]');
 
       // Host (Seat 0, Team A) must NEVER see Guest's (Seat 1, Team B) [Đội] message
-      await hostPage.waitForTimeout(400);
+      // Sync barrier: Guest triggers a public emote AFTER guestTeamMsg; once Host receives player-emote-1
+      // over the same ordered WebSocket, any leaked TEAM message would already have arrived.
+      await guestPage.getByTestId('bt-btn-emotes').click();
+      const guestEmotePop = guestPage.getByTestId('bt-emote-popover');
+      await expect(guestEmotePop).toBeVisible();
+      await guestEmotePop.locator('button').nth(1).click();
+      await expect(hostPage.getByTestId('player-emote-1')).toBeVisible();
       await expect(hostPage.getByTestId('bt-chat-messages-list')).not.toContainText(guestTeamMsg);
 
       // 7. Mutual exclusion & unclipped in-match Voice Popover: opening Voice Popover closes open Chat Drawer and vice versa

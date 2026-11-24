@@ -801,7 +801,15 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
 
   useEffect(() => {
     if (openTauntTargetId === null) return;
-    if (tauntCooldownSecondsLeft > 0 || !onSendBoardTaunt) {
+    const targetPlayer = players.slice(0, 4).find((p) => p.id === openTauntTargetId);
+    const targetStillValid = Boolean(
+      targetPlayer &&
+        !targetPlayer.bankrupt &&
+        localPlayerId !== null &&
+        localPlayerId !== undefined &&
+        targetPlayer.id !== localPlayerId
+    );
+    if (tauntCooldownSecondsLeft > 0 || !onSendBoardTaunt || !targetStillValid) {
       setOpenTauntTargetIdRef.current(null);
       return;
     }
@@ -816,7 +824,7 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
     };
     document.addEventListener('pointerdown', handleOutsidePointerDown);
     return () => document.removeEventListener('pointerdown', handleOutsidePointerDown);
-  }, [openTauntTargetId, tauntCooldownSecondsLeft, onSendBoardTaunt]);
+  }, [openTauntTargetId, tauntCooldownSecondsLeft, onSendBoardTaunt, players, localPlayerId]);
 
   return (
     <div className="fixed inset-0 z-20 pointer-events-none">

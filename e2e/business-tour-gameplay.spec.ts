@@ -521,7 +521,9 @@ test.describe('Business Tour Vietnam 3D — Full Headed Pre-Deploy Verification'
     await expect(hostPage.getByText('Danh Sách Ghế Ngồi (2/2 Người)')).toBeVisible();
     await expect(guestPage.getByText('Danh Sách Ghế Ngồi (2/2 Người)')).toBeVisible();
 
-    // Host starts the online match!
+    // Guest confirms Ready, then Host starts the online match!
+    await guestPage.getByTestId('bt-ready-toggle-btn').click();
+    await expect(hostPage.getByTestId('bt-online-start-btn')).toBeEnabled();
     await hostPage.getByTestId('bt-online-start-btn').click();
     await expect(hostPage.locator('body')).toHaveAttribute('data-state', 'playing');
     await expect(guestPage.locator('body')).toHaveAttribute('data-state', 'playing');

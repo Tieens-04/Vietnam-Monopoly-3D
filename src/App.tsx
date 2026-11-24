@@ -752,6 +752,7 @@ export default function App() {
       if (voiceClientRef.current === client) {
         voiceClientRef.current = null;
       }
+      pendingRtcSignalsRef.current = [];
       lastReportedMicEnabledRef.current = null;
       setVoiceState(DEFAULT_VOICE_SNAPSHOT);
     };
@@ -1134,11 +1135,47 @@ export default function App() {
   const onlinePauseOpenRef = useRef(onlinePauseOpen);
   onlinePauseOpenRef.current = onlinePauseOpen;
 
+  const isTurnDecisionModalOpen =
+    viewScreenState === 'playing' &&
+    ((!(isOnlineDecisionPendingAck && isActivelyControlledByMe) &&
+      viewTurnPhase === 'CARD_REVEAL' &&
+      Boolean(viewDrawnCard)) ||
+      (!isOnlineDecisionPendingAck &&
+        isActivelyControlledByMe &&
+        (viewTurnPhase === 'BUY_DECISION' ||
+          viewTurnPhase === 'UPGRADE_DECISION' ||
+          viewTurnPhase === 'BUYOUT_DECISION' ||
+          viewTurnPhase === 'CHAMPIONSHIP_SELECTION' ||
+          viewTurnPhase === 'WORLD_TOUR' ||
+          (viewTurnPhase === 'CARD_TARGET_SELECTION' && Boolean(viewPendingTacticalCard)) ||
+          viewTurnPhase === 'DEBT_RESOLUTION')));
+
+  const openTauntTargetPlayer =
+    openTauntTargetPlayerId !== null
+      ? viewPlayers.find((p) => p.id === openTauntTargetPlayerId)
+      : undefined;
+  const isOpenTauntTargetValid = Boolean(
+    isOnlineMatch &&
+      !online.isSpectator &&
+      viewScreenState === 'playing' &&
+      openTauntTargetPlayer &&
+      !openTauntTargetPlayer.bankrupt &&
+      online.yourPlayerId !== null &&
+      openTauntTargetPlayer.id !== online.yourPlayerId &&
+      !showRulebookModal &&
+      !showAssetsModal &&
+      selectedTileIndex === null &&
+      !isTurnDecisionModalOpen
+  );
+  const effectiveOpenTauntTargetPlayerId = isOpenTauntTargetValid
+    ? openTauntTargetPlayerId
+    : null;
+
   useEffect(() => {
-    if (!isOnlineMatch || online.isSpectator || viewScreenState !== 'playing') {
+    if (openTauntTargetPlayerId !== null && !isOpenTauntTargetValid) {
       setOpenTauntTargetPlayerId(null);
     }
-  }, [isOnlineMatch, online.isSpectator, viewScreenState]);
+  }, [openTauntTargetPlayerId, isOpenTauntTargetValid]);
 
   // BUG-11: Always reset tactical dice choice ('EVEN'/'ODD' -> 'NORMAL') on turn/decision transitions,
   // jail entry, or exhausted Even/Odd charges so stale choices are never sent on subsequent turns.
@@ -4692,7 +4729,7 @@ export default function App() {
           setOpenActionMenu('none');
           return;
         }
-        if (openTauntTargetPlayerId !== null) {
+        if (effectiveOpenTauntTargetPlayerId !== null) {
           e.preventDefault();
           setOpenTauntTargetPlayerId(null);
           return;
@@ -4783,7 +4820,7 @@ export default function App() {
         if (
           showAssetsModal ||
           openActionMenu !== 'none' ||
-          openTauntTargetPlayerId !== null ||
+          effectiveOpenTauntTargetPlayerId !== null ||
           isOnlineDecisionPendingAckRef.current
         ) {
           return;
@@ -4808,7 +4845,7 @@ export default function App() {
   }, [
     viewScreenState,
     openActionMenu,
-    openTauntTargetPlayerId,
+    effectiveOpenTauntTargetPlayerId,
     selectedTileIndex,
     showAssetsModal,
     showRulebookModal,
@@ -5163,6 +5200,8 @@ export default function App() {
   const handleOpenRulebookModal = useCallback(() => {
     setSelectedTileIndex(null);
     setOpenTauntTargetPlayerId(null);
+    setChatDrawerOpen(false);
+    setVoicePopoverOpen(false);
     setShowRulebookModal(true);
   }, []);
 
@@ -5234,16 +5273,15 @@ export default function App() {
   }, []);
 
   const handleToggleChatDrawer = useCallback(() => {
-    setChatDrawerOpen((prev) => {
-      const next = !prev;
-      if (next) {
-        setOpenActionMenu('none');
-        setOpenTauntTargetPlayerId(null);
-        setVoicePopoverOpen(false);
-        setUnreadChatCount(0);
-      }
-      return next;
-    });
+    const next = !chatDrawerOpenRef.current;
+    chatDrawerOpenRef.current = next;
+    setChatDrawerOpen(next);
+    if (next) {
+      setOpenActionMenu('none');
+      setOpenTauntTargetPlayerId(null);
+      setVoicePopoverOpen(false);
+      setUnreadChatCount(0);
+    }
   }, []);
 
   const handleVoicePopoverOpenChange = useCallback((open: boolean) => {
@@ -5361,7 +5399,7 @@ export default function App() {
   }, [isOnlineHost, pendingTakeoverId, pendingTakeoverExpiresAt]);
 
   const takeoverSecondsLeft = pendingTakeoverRequest
-    ? Math.max(0, Math.ceil((pendingTakeoverRequest.expiresAt - takeoverNowMs) / 1000))
+    ? Math.min(20, Math.max(0, Math.ceil((pendingTakeoverRequest.expiresAt - takeoverNowMs) / 1000)))
     : 0;
 
   const speakingParticipantIds = useMemo<Record<string, boolean>>(() => {
@@ -5613,7 +5651,7 @@ export default function App() {
                 : undefined
             }
             tauntCooldownUntil={online.tauntCooldownUntil}
-            openTauntTargetPlayerId={openTauntTargetPlayerId}
+            openTauntTargetPlayerId={effectiveOpenTauntTargetPlayerId}
             onChangeOpenTauntTargetPlayerId={handleChangeOpenTauntTargetPlayerId}
           />
 
@@ -5687,7 +5725,7 @@ export default function App() {
             />
           )}
 
-          {isOnlineMatch && isOnlineHost && pendingTakeoverRequest && (
+          {isOnlineMatch && isOnlineHost && viewScreenState === 'playing' && pendingTakeoverRequest && (
             <div
               role="dialog"
               aria-modal="false"
@@ -5925,10 +5963,7 @@ export default function App() {
               commitScreenState('playing');
             }
           }}
-          onOpenRulebook={() => {
-            setSelectedTileIndex(null);
-            setShowRulebookModal(true);
-          }}
+          onOpenRulebook={handleOpenRulebookModal}
           onResetCamera={() => {
             canvasRef.current?.resetCamera();
             if (isOnlineMatch) {
