@@ -90,12 +90,22 @@ test.describe('Online Resilience, Multiplayer Integrity & Timing Regressions', (
     const socketClosers: Array<() => void> = [];
 
     await hostPage.routeWebSocket(/\/ws/, (ws) => {
+      let closed = false;
       const server = ws.connectToServer();
       socketClosers.push(() => {
+        if (closed) return;
+        closed = true;
         ws.close();
         server.close();
       });
+      ws.onClose(() => {
+        closed = true;
+      });
+      server.onClose(() => {
+        closed = true;
+      });
       ws.onMessage((raw) => {
+        if (closed) return;
         try {
           const parsed = JSON.parse(String(raw)) as {
             type?: string;
@@ -112,8 +122,13 @@ test.describe('Online Resilience, Multiplayer Integrity & Timing Regressions', (
         server.send(raw);
       });
       server.onMessage((raw) => {
+        if (closed) return;
         if (holdNextReconnect) {
-          setTimeout(() => ws.send(raw), 600);
+          setTimeout(() => {
+            if (!closed) {
+              ws.send(raw);
+            }
+          }, 600);
           return;
         }
         ws.send(raw);

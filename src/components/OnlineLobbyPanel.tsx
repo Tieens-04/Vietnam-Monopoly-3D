@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Mic } from 'lucide-react';
 import { CHARACTER_PERSONAS } from '../game/avatarLogic';
 import { TokenArchetype } from '../game/onlineTypes';
 import { formatBusinessTourSpaced } from '../game/rules';
@@ -17,9 +18,17 @@ const TOKEN_SIGNATURE_HEX: Record<TokenArchetype, string> = {
 
 interface OnlineLobbyPanelProps {
   online: ReturnType<typeof useOnlineMultiplayer>;
+  voiceBarNode?: React.ReactNode;
+  onlineChatNode?: React.ReactNode;
+  speakingParticipantIds?: Record<string, boolean>;
 }
 
-export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) => {
+export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
+  online,
+  voiceBarNode,
+  onlineChatNode,
+  speakingParticipantIds,
+}) => {
   const [nickname, setNickname] = useState<string>(
     () => online.savedPlayerName || 'Tỷ Phú Mới'
   );
@@ -72,11 +81,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
 
     return (
       <div className="flex-1 min-h-0 flex flex-col">
-        <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3.5 sm:p-4 space-y-3">
-          {/* Top Room Code + Invite Link Strip */}
-          <div className="rounded-2xl bg-sky-50 border-2 border-sky-200 p-2.5 sm:p-3 flex flex-col sm:flex-row items-center justify-between gap-2.5">
-            <div className="flex items-center gap-3">
-              <div className="px-3 py-1.5 rounded-xl bg-white border-2 border-sky-300 shadow-xs text-center">
+        {/* Top Room Code + Invite Link + Voice Bar Strip (kept outside overflow-y-auto so Voice popover never clips) */}
+        <div className="relative z-20 shrink-0 px-3.5 sm:px-4 pt-2.5 pb-2 border-b border-sky-200/80 bg-sky-50/70">
+          <div className="rounded-2xl bg-sky-50 border-2 border-sky-200 p-2 sm:p-2.5 flex flex-col sm:flex-row items-center justify-between gap-2">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="px-3 py-1 rounded-xl bg-white border-2 border-sky-300 shadow-xs text-center shrink-0">
                 <div className="text-[10px] font-extrabold uppercase tracking-wider text-sky-700">
                   Mã Phòng Online
                 </div>
@@ -87,8 +96,8 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
                   {room.roomCode}
                 </div>
               </div>
-              <div className="text-xs font-bold text-slate-700 space-y-0.5">
-                <div>Gửi mã hoặc link mời để bạn bè tham gia chung bàn!</div>
+              <div className="text-xs font-bold text-slate-700 space-y-0.5 min-w-0">
+                <div className="truncate">Gửi mã hoặc link mời để bạn bè tham gia chung bàn!</div>
                 <div className="text-sky-700 font-extrabold">
                   {online.connectionStatus === 'connected'
                     ? '🟢 Kết nối ổn định'
@@ -98,23 +107,26 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
             </div>
 
             <div className="flex items-center gap-2 shrink-0 flex-wrap justify-center">
+              {voiceBarNode}
               <button
                 type="button"
                 onClick={() => void handleCopy('link')}
-                className="bt-btn-green px-3.5 py-2 rounded-xl text-xs font-black uppercase tracking-wide cursor-pointer whitespace-nowrap"
+                className="bt-btn-green px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wide cursor-pointer whitespace-nowrap"
               >
                 {copiedMode === 'link' ? '✓ Đã Chép Link!' : '📋 Copy Link Mời'}
               </button>
               <button
                 type="button"
                 onClick={() => void handleCopy('code')}
-                className="bt-btn-white px-3 py-2 rounded-xl text-xs font-extrabold uppercase tracking-wide cursor-pointer whitespace-nowrap"
+                className="bt-btn-white px-3 py-1.5 rounded-xl text-xs font-extrabold uppercase tracking-wide cursor-pointer whitespace-nowrap"
               >
                 {copiedMode === 'code' ? '✓ Đã Chép Mã' : 'Copy Mã'}
               </button>
             </div>
           </div>
+        </div>
 
+        <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3.5 sm:p-4 space-y-3">
           {online.errorMessage && (
             <div
               role="alert"
@@ -134,7 +146,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-stretch">
             {/* Left: Room Rules */}
-            <div className="lg:col-span-5 rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 space-y-2.5 flex flex-col justify-between">
+            <div
+              className={`${
+                onlineChatNode ? 'lg:col-span-4' : 'lg:col-span-5'
+              } rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 space-y-2.5 flex flex-col justify-between`}
+            >
               <div className="space-y-2.5">
                 <div className="pb-1.5 border-b border-sky-200 flex items-center justify-between">
                   <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
@@ -322,7 +338,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
             </div>
 
             {/* Right: Live Lobby Seat Roster + Personal Profile Switcher */}
-            <div className="lg:col-span-7 rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 flex flex-col justify-between gap-2.5">
+            <div
+              className={`${
+                onlineChatNode ? 'lg:col-span-4' : 'lg:col-span-7'
+              } rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 flex flex-col justify-between gap-2.5`}
+            >
               <div>
                 <div className="pb-1.5 border-b border-sky-200 flex items-center justify-between text-xs">
                   <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
@@ -335,13 +355,23 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
                   {room.seats.map((seat) => {
                     const persona = CHARACTER_PERSONAS[seat.tokenType];
                     const isYou = seat.seatIndex === online.yourSeatIndex;
+                    const seatParticipant = seat.occupiedByHuman
+                      ? room.participants.find((p) => p.seatIndex === seat.seatIndex)
+                      : undefined;
+                    const isSpeaking = Boolean(
+                      seatParticipant && speakingParticipantIds?.[seatParticipant.participantId]
+                    );
                     return (
                       <div
                         key={seat.seatIndex}
-                        className={`flex items-center gap-2.5 p-2 rounded-2xl border-2 shadow-xs ${
-                          isYou
-                            ? 'bg-amber-50/75 border-amber-300'
-                            : 'bg-white border-sky-100'
+                        data-testid={`bt-lobby-seat-${seat.seatIndex}`}
+                        data-speaking={isSpeaking ? 'true' : 'false'}
+                        className={`flex items-center gap-2.5 p-2 rounded-2xl border-2 shadow-xs transition-shadow ${
+                          isSpeaking
+                            ? 'bg-emerald-50/75 border-emerald-400 ring-2 ring-emerald-300/80 shadow-[0_0_16px_rgba(52,211,153,0.45)]'
+                            : isYou
+                              ? 'bg-amber-50/75 border-amber-300'
+                              : 'bg-white border-sky-100'
                         }`}
                       >
                         <span
@@ -349,16 +379,24 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
                           style={{ backgroundColor: seat.color }}
                         />
 
-                        <PlayerAvatar3D
-                          archetype={seat.tokenType}
-                          mood={seat.isHost ? 'celebrating' : seat.occupiedByHuman ? 'active' : 'idle'}
-                          phaseSeed={seat.seatIndex}
-                          isBot={!seat.occupiedByHuman && room.fillBots}
-                          showBotStamp={!seat.occupiedByHuman && room.fillBots}
-                          size="sm"
-                          className="!rounded-xl !border-2 !border-white"
-                          ariaLabel={persona.personaName}
-                        />
+                        <div
+                          className={`relative shrink-0 rounded-xl transition-shadow ${
+                            isSpeaking
+                              ? 'ring-4 ring-emerald-400 shadow-[0_0_16px_rgba(52,211,153,0.85)]'
+                              : ''
+                          }`}
+                        >
+                          <PlayerAvatar3D
+                            archetype={seat.tokenType}
+                            mood={seat.isHost ? 'celebrating' : seat.occupiedByHuman ? 'active' : 'idle'}
+                            phaseSeed={seat.seatIndex}
+                            isBot={!seat.occupiedByHuman && room.fillBots}
+                            showBotStamp={!seat.occupiedByHuman && room.fillBots}
+                            size="sm"
+                            className="!rounded-xl !border-2 !border-white"
+                            ariaLabel={persona.personaName}
+                          />
+                        </div>
 
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap">
@@ -394,7 +432,15 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
                           </div>
                         </div>
 
-                        <div className="shrink-0 text-right">
+                        <div className="shrink-0 text-right flex items-center gap-1.5">
+                          {seat.occupiedByHuman && seatParticipant?.micEnabled && (
+                            <span
+                              title="Micro đang bật"
+                              className="h-5 w-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 flex items-center justify-center shrink-0"
+                            >
+                              <Mic className="h-3 w-3" aria-hidden="true" />
+                            </span>
+                          )}
                           {seat.occupiedByHuman ? (
                             <span
                               className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase ${
@@ -425,7 +471,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
               {mySeat && (
                 <div className="pt-2.5 border-t border-sky-200 space-y-1.5">
                   <div className="text-xs font-extrabold text-sky-900">Hồ sơ của bạn trong phòng</div>
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <div
+                    className={`flex flex-col gap-2 ${
+                      onlineChatNode ? '' : 'sm:flex-row sm:items-center'
+                    }`}
+                  >
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
@@ -455,7 +505,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
                       </button>
                     </form>
 
-                    <div className="grid grid-cols-4 gap-1.5 sm:w-44 shrink-0">
+                    <div
+                      className={`grid grid-cols-4 gap-1.5 shrink-0 ${
+                        onlineChatNode ? 'w-full' : 'sm:w-44'
+                      }`}
+                    >
                       {ALL_TOKENS.map((tok) => {
                         const isMine = mySeat.tokenType === tok;
                         const takenByOther = room.seats.some(
@@ -496,6 +550,12 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({ online }) =>
                 </div>
               )}
             </div>
+
+            {onlineChatNode && (
+              <div className="lg:col-span-4 flex flex-col min-h-0">
+                {onlineChatNode}
+              </div>
+            )}
           </div>
         </div>
 

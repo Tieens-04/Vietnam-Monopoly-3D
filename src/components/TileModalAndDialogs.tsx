@@ -1417,6 +1417,7 @@ export const VictoryModal: React.FC<{
   isOnlineHost?: boolean;
   graphicsQualityTier?: GraphicsQualityTier;
   trapFocus?: boolean;
+  onlineChatNode?: React.ReactNode;
   onReturnToOnlineLobby?: () => void;
   onPlayAgain: () => void;
 }> = ({
@@ -1434,6 +1435,7 @@ export const VictoryModal: React.FC<{
   isOnlineHost = false,
   graphicsQualityTier = 'medium',
   trapFocus = true,
+  onlineChatNode,
   onReturnToOnlineLobby,
   onPlayAgain,
 }) => {
@@ -1611,6 +1613,12 @@ export const VictoryModal: React.FC<{
               })}
             </div>
           </div>
+
+          {isOnlineMatch && onlineChatNode && (
+            <div className="pt-1">
+              {onlineChatNode}
+            </div>
+          )}
         </div>
 
         <div className="shrink-0 px-5 sm:px-6 py-3.5 bg-sky-50/95 border-t border-sky-200">

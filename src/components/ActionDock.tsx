@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { MessageCircle } from 'lucide-react';
 import { GRAPHICS_TIER_LABELS } from '../game/graphicsQuality';
 import { formatBusinessTourCompact, JAIL_FINE } from '../game/rules';
 import {
@@ -56,6 +57,10 @@ interface ActionDockProps {
   onToggleSound: () => void;
   onOpenPause: () => void;
   onTriggerEmote: (emoteText: string) => void;
+  unreadChatCount?: number;
+  chatOpen?: boolean;
+  onToggleChat?: () => void;
+  voiceBarNode?: React.ReactNode;
 }
 
 const QUICK_EMOTES: Array<{ emoji: string; label: string }> = [
@@ -108,6 +113,10 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
   onToggleSound,
   onOpenPause,
   onTriggerEmote,
+  unreadChatCount = 0,
+  chatOpen = false,
+  onToggleChat,
+  voiceBarNode,
 }) => {
   const [localOpenMenu, setLocalOpenMenu] = useState<ActionDockMenuKind>('none');
   const openMenu = controlledOpenMenu ?? localOpenMenu;
@@ -247,6 +256,42 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
             <rect x="13.8" y="4.5" width="4.2" height="15" rx="1.6" />
           </svg>
         </button>
+
+        {/* Online Button 4 & 5: Room Chat Drawer Toggle + Compact Voice Bar (outside overflow-hidden/scroll) */}
+        {isOnlineMatch && (
+          <>
+            <button
+              type="button"
+              data-testid="bt-action-chat-btn"
+              onClick={(e) => {
+                if (e.detail > 0) e.currentTarget.blur();
+                setOpenMenu('none');
+                onToggleChat?.();
+              }}
+              aria-expanded={chatOpen}
+              aria-label={
+                unreadChatCount > 0
+                  ? `Trò chuyện phòng (${unreadChatCount} tin nhắn chưa đọc)`
+                  : 'Trò chuyện phòng'
+              }
+              title="Trò chuyện phòng"
+              className={`bt-utility-rail-btn pointer-events-auto relative h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
+                chatOpen ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
+              }`}
+            >
+              <MessageCircle className="h-5.5 w-5.5 sm:h-6 sm:w-6 stroke-[2.3]" aria-hidden="true" />
+              {unreadChatCount > 0 && (
+                <span
+                  data-testid="bt-chat-unread-badge"
+                  className="pointer-events-none absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 border-2 border-white text-[10px] font-mono-num font-black text-white flex items-center justify-center leading-none shadow-sm"
+                >
+                  {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                </span>
+              )}
+            </button>
+            {voiceBarNode}
+          </>
+        )}
       </div>
 
       {/* =================================================================

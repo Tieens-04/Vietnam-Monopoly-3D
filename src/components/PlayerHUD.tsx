@@ -32,6 +32,8 @@ interface PlayerHUDProps {
   botBubbles: Record<number, BotChatBubbleState>;
   localPlayerId?: number | null;
   playerEmotes?: Record<number, string>;
+  speakingPlayerIds?: Record<number, boolean>;
+  playerChatBubbles?: Record<number, { id: number; text: string; isTeam?: boolean }>;
   onDismissBubble: (botId: number) => void;
   onSelectTile: (tileIndex: number) => void;
 }
@@ -231,6 +233,8 @@ interface PlayerCornerCardProps {
   reducedMotion: boolean;
   matchMode: MatchMode;
   emoteText?: string;
+  isSpeaking?: boolean;
+  chatBubble?: { id: number; text: string; isTeam?: boolean };
   ownedProps: PropertyState[];
   netWorth: number;
   boardModifiers: MatchBoardModifiers;
@@ -250,6 +254,8 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
   reducedMotion,
   matchMode,
   emoteText,
+  isSpeaking = false,
+  chatBubble,
   ownedProps,
   netWorth,
   boardModifiers,
@@ -334,7 +340,15 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
           }}
         >
           {/* Large Square Character Portrait on Outer Corner Edge + Tilted BANKRUPT Rubber Stamp */}
-          <div className="relative shrink-0">
+          <div
+            data-testid={`player-avatar-ring-${player.id}`}
+            data-speaking={isSpeaking ? 'true' : 'false'}
+            className={`relative shrink-0 rounded-xl transition-shadow ${
+              isSpeaking
+                ? 'ring-4 ring-emerald-400 shadow-[0_0_16px_rgba(52,211,153,0.85)]'
+                : ''
+            }`}
+          >
             <PlayerAvatar3D
               archetype={player.tokenType}
               mood={mood}
@@ -522,6 +536,33 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
         </div>
       )}
 
+      {/* Live Online Chat Bubble (4s auto-dismiss) */}
+      {chatBubble && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid={`bt-hud-chat-bubble-p${player.id}`}
+          className={`pointer-events-none absolute z-30 max-w-[240px] sm:max-w-[266px] flex ${
+            corner.isRight ? 'right-0 justify-end' : 'left-0 justify-start'
+          } ${corner.isBottom ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
+        >
+          <div
+            className={`px-3 py-1.5 rounded-2xl border-2 shadow-lg text-xs font-extrabold leading-snug animate-pop-in break-words [overflow-wrap:anywhere] ${
+              chatBubble.isTeam
+                ? 'bg-sky-50 border-sky-400 text-sky-950'
+                : 'bg-white border-sky-300 text-slate-900'
+            }`}
+          >
+            {chatBubble.isTeam && (
+              <span className="mr-1 px-1.5 py-[0.5px] rounded-md bg-sky-600 text-white text-[10px] font-black align-middle">
+                [Đội]
+              </span>
+            )}
+            <span>{chatBubble.text}</span>
+          </div>
+        </div>
+      )}
+
       {/* Directional Bot AI Comic Speech Card */}
       {bubble &&
         badgeMeta &&
@@ -579,6 +620,8 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
   botBubbles,
   localPlayerId,
   playerEmotes,
+  speakingPlayerIds,
+  playerChatBubbles,
   onDismissBubble,
   onSelectTile,
 }) => {
@@ -613,6 +656,8 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
             reducedMotion={reducedMotion}
             matchMode={matchMode}
             emoteText={playerEmotes?.[player.id]}
+            isSpeaking={Boolean(speakingPlayerIds?.[player.id])}
+            chatBubble={playerChatBubbles?.[player.id]}
             ownedProps={ownedProps}
             netWorth={netWorth}
             boardModifiers={boardModifiers}

@@ -10,6 +10,7 @@ import {
   WorldTourPrompt,
 } from './components/BusinessTourActionModals';
 import { MonopolyCanvas, MonopolyCanvasHandle } from './components/MonopolyCanvas';
+import { OnlineChatDrawer } from './components/OnlineChatDrawer';
 import { setAvatarGraphicsTier } from './components/PlayerAvatar3D';
 import { PlayerHUD } from './components/PlayerHUD';
 import { StartModal } from './components/StartModal';
@@ -21,6 +22,7 @@ import {
   TileInspectorCard,
   VictoryModal,
 } from './components/TileModalAndDialogs';
+import { VoiceControlBar } from './components/VoiceControlBar';
 import {
   BOARD_TILES,
   CHANCE_CARDS,
@@ -127,13 +129,32 @@ import {
   TileKind,
   TurnPhase,
 } from './game/types';
-import type { OnlineVisualEvent } from './game/onlineTypes';
+import type {
+  ChatChannel,
+  OnlineVisualEvent,
+  RoomChatMessage,
+  RtcSignalPayload,
+} from './game/onlineTypes';
 import {
   loadSavedCinematicCameraPref,
   saveCinematicCameraPref,
 } from './three/cameraDirector';
 import { fetchBotQuip } from './utils/botQuipClient';
 import { useOnlineMultiplayer } from './utils/onlineClient';
+import {
+  VoiceInputMode,
+  VoiceMeshClient,
+  VoiceMeshSnapshot,
+} from './utils/voiceMeshClient';
+
+const DEFAULT_VOICE_SNAPSHOT: VoiceMeshSnapshot = {
+  micEnabled: false,
+  inputMode: 'open_mic',
+  pttPressed: false,
+  permissionStatus: 'idle',
+  localSpeaking: false,
+  peers: {},
+};
 
 function shuffleCards<T>(arr: T[]): T[] {
   const copy = [...arr];
@@ -336,6 +357,12 @@ export default function App() {
   const [botBubbles, setBotBubbles] = useState<Record<number, BotChatBubbleState>>({});
   const [offlinePlayerEmotes, setOfflinePlayerEmotes] = useState<Record<number, string>>({});
   const [onlinePlayerEmotes, setOnlinePlayerEmotes] = useState<Record<number, string>>({});
+  const [chatDrawerOpen, setChatDrawerOpen] = useState<boolean>(false);
+  const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
+  const [playerChatBubbles, setPlayerChatBubbles] = useState<
+    Record<number, { id: number; text: string; isTeam?: boolean }>
+  >({});
+  const [voiceState, setVoiceState] = useState<VoiceMeshSnapshot>(DEFAULT_VOICE_SNAPSHOT);
   const [onlinePauseOpen, setOnlinePauseOpen] = useState<boolean>(false);
   const [copiedInviteToast, setCopiedInviteToast] = useState<boolean>(false);
 
@@ -363,6 +390,16 @@ export default function App() {
   const canvasRef = useRef<MonopolyCanvasHandle | null>(null);
   const activeViewPlayerIdRef = useRef<number | null>(null);
   const viewPlayersForVisualRef = useRef<PlayerState[]>([]);
+  const viewScreenStateRef = useRef<GameScreenState>(screenState);
+  const onlineParticipantIdRef = useRef<string | null>(null);
+  const onlineRoomStatusRef = useRef<string | null>(null);
+  const chatDrawerOpenRef = useRef<boolean>(false);
+  const voiceClientRef = useRef<VoiceMeshClient | null>(null);
+  const pendingRtcSignalsRef = useRef<
+    Array<{ fromParticipantId: string; signal: RtcSignalPayload }>
+  >([]);
+  const lastReportedMicEnabledRef = useRef<boolean>(false);
+  const playerChatBubbleTimersRef = useRef<Record<number, number>>({});
   const prevRevealedCardKeyRef = useRef<string | null>(null);
   const prevCeremonyKeyRef = useRef<string | null>(null);
   const logIdRef = useRef<number>(logs.length + 1);
@@ -521,9 +558,135 @@ export default function App() {
     }
   }, []);
 
+  const handleIncomingRtcSignal = useCallback(
+    (fromParticipantId: string, signal: RtcSignalPayload) => {
+      const client = voiceClientRef.current;
+      if (client) {
+        void client.handleSignal(fromParticipantId, signal);
+        return;
+      }
+      if (pendingRtcSignalsRef.current.length < 50) {
+        pendingRtcSignalsRef.current.push({ fromParticipantId, signal });
+      }
+    },
+    []
+  );
+
+  const handleIncomingChatMessage = useCallback((msg: RoomChatMessage) => {
+    const isOwn =
+      Boolean(onlineParticipantIdRef.current) &&
+      msg.participantId === onlineParticipantIdRef.current;
+    if (!isOwn) {
+      soundEngine.playChatPop();
+    }
+
+    const inPlayingStatus = onlineRoomStatusRef.current === 'playing';
+    const isDrawerVisible =
+      inPlayingStatus && chatDrawerOpenRef.current && viewScreenStateRef.current === 'playing';
+
+    if (!isOwn && inPlayingStatus && !isDrawerVisible) {
+      setUnreadChatCount((prev) => prev + 1);
+    }
+
+    if (inPlayingStatus && !chatDrawerOpenRef.current && msg.playerId !== null) {
+      const playerId = msg.playerId;
+      const bubbleId = msg.id;
+      if (playerChatBubbleTimersRef.current[playerId]) {
+        window.clearTimeout(playerChatBubbleTimersRef.current[playerId]);
+      }
+      setPlayerChatBubbles((prev) => ({
+        ...prev,
+        [playerId]: {
+          id: bubbleId,
+          text: msg.text,
+          isTeam: msg.channel === 'TEAM',
+        },
+      }));
+      playerChatBubbleTimersRef.current[playerId] = window.setTimeout(() => {
+        delete playerChatBubbleTimersRef.current[playerId];
+        setPlayerChatBubbles((prev) => {
+          if (prev[playerId]?.id !== bubbleId) return prev;
+          const next = { ...prev };
+          delete next[playerId];
+          return next;
+        });
+      }, 4000);
+    }
+  }, []);
+
   const online = useOnlineMultiplayer(handleOnlineVisualEvent, {
     skipInitialAutoReconnect: isAutostart,
+    onRtcSignal: handleIncomingRtcSignal,
+    onChatMessage: handleIncomingChatMessage,
   });
+
+  const onlineRoomCode = online.roomSnapshot?.roomCode ?? null;
+  const onlineParticipantId = online.yourParticipantId;
+  const onlineParticipants = online.roomSnapshot?.participants ?? null;
+
+  onlineParticipantIdRef.current = onlineParticipantId;
+  onlineRoomStatusRef.current = online.roomSnapshot?.status ?? null;
+  chatDrawerOpenRef.current = chatDrawerOpen;
+
+  const sendRtcSignalRef = useRef(online.sendRtcSignal);
+  sendRtcSignalRef.current = online.sendRtcSignal;
+  const updateVoiceStateRef = useRef(online.updateVoiceState);
+  updateVoiceStateRef.current = online.updateVoiceState;
+
+  useEffect(() => {
+    if (!onlineRoomCode || !onlineParticipantId) {
+      voiceClientRef.current?.dispose();
+      voiceClientRef.current = null;
+      pendingRtcSignalsRef.current = [];
+      lastReportedMicEnabledRef.current = false;
+      setVoiceState(DEFAULT_VOICE_SNAPSHOT);
+      return;
+    }
+
+    const client = new VoiceMeshClient({
+      myParticipantId: onlineParticipantId,
+      sendSignal: (targetParticipantId, signal) => {
+        sendRtcSignalRef.current(targetParticipantId, signal);
+      },
+    });
+    voiceClientRef.current = client;
+    lastReportedMicEnabledRef.current = false;
+    setVoiceState(client.getSnapshot());
+
+    const unsubscribe = client.subscribe((snap) => {
+      setVoiceState(snap);
+      if (snap.micEnabled !== lastReportedMicEnabledRef.current) {
+        lastReportedMicEnabledRef.current = snap.micEnabled;
+        updateVoiceStateRef.current(snap.micEnabled);
+      }
+    });
+
+    if (pendingRtcSignalsRef.current.length > 0) {
+      const queued = pendingRtcSignalsRef.current.splice(0);
+      for (const item of queued) {
+        void client.handleSignal(item.fromParticipantId, item.signal);
+      }
+    }
+
+    return () => {
+      unsubscribe();
+      client.dispose();
+      if (voiceClientRef.current === client) {
+        voiceClientRef.current = null;
+      }
+      lastReportedMicEnabledRef.current = false;
+      setVoiceState(DEFAULT_VOICE_SNAPSHOT);
+    };
+  }, [onlineRoomCode, onlineParticipantId]);
+
+  useEffect(() => {
+    const client = voiceClientRef.current;
+    if (!client || !onlineParticipantId || !onlineParticipants) return;
+    const remoteConnectedIds = onlineParticipants
+      .filter((p) => p.connected === true && p.participantId !== onlineParticipantId)
+      .map((p) => p.participantId);
+    client.syncPeers(remoteConnectedIds);
+  }, [onlineRoomCode, onlineParticipantId, onlineParticipants]);
   const onlineMatch =
     online.roomSnapshot &&
     online.roomSnapshot.match &&
@@ -748,6 +911,30 @@ export default function App() {
     prevOnlineSyncedRef.current = online.isSynced;
   }, [isOnlineMatch, online.isSynced]);
 
+  const clearPlayerChatBubbles = useCallback(() => {
+    for (const timerId of Object.values(playerChatBubbleTimersRef.current)) {
+      window.clearTimeout(timerId);
+    }
+    playerChatBubbleTimersRef.current = {};
+    setPlayerChatBubbles({});
+  }, []);
+
+  useEffect(
+    () => () => {
+      for (const timerId of Object.values(playerChatBubbleTimersRef.current)) {
+        window.clearTimeout(timerId);
+      }
+      playerChatBubbleTimersRef.current = {};
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (chatDrawerOpen) {
+      setUnreadChatCount(0);
+    }
+  }, [chatDrawerOpen]);
+
   const prevOnlineStatusRef = useRef<string | null>(null);
   useEffect(() => {
     const nextStatus = online.roomSnapshot?.status ?? null;
@@ -760,6 +947,7 @@ export default function App() {
         window.clearTimeout(timerId);
       }
       onlineEmoteTimersRef.current = {};
+      clearPlayerChatBubbles();
       if (copyToastTimerRef.current !== null) {
         window.clearTimeout(copyToastTimerRef.current);
         copyToastTimerRef.current = null;
@@ -768,6 +956,8 @@ export default function App() {
       setShowAssetsModal(false);
       setOnlinePauseOpen(false);
       setOpenActionMenu('none');
+      setChatDrawerOpen(false);
+      setUnreadChatCount(0);
       setCopiedInviteToast(false);
       setBotBubbles({});
       setOnlinePlayerEmotes({});
@@ -787,6 +977,7 @@ export default function App() {
         window.clearTimeout(timerId);
       }
       onlineEmoteTimersRef.current = {};
+      clearPlayerChatBubbles();
       if (copyToastTimerRef.current !== null) {
         window.clearTimeout(copyToastTimerRef.current);
         copyToastTimerRef.current = null;
@@ -795,6 +986,8 @@ export default function App() {
       setShowAssetsModal(false);
       setSelectedTileIndex(null);
       setOpenActionMenu('none');
+      setChatDrawerOpen(false);
+      setUnreadChatCount(0);
       setCopiedInviteToast(false);
       setBotBubbles({});
       setOnlinePlayerEmotes({});
@@ -803,7 +996,7 @@ export default function App() {
       canvasRef.current?.cancelPendingAnimations();
     }
     prevOnlineStatusRef.current = nextStatus;
-  }, [online.roomSnapshot?.status]);
+  }, [clearPlayerChatBubbles, online.roomSnapshot?.status]);
 
   const isOnlineMatchRef = useRef(isOnlineMatch);
   isOnlineMatchRef.current = isOnlineMatch;
@@ -817,7 +1010,6 @@ export default function App() {
   viewActiveIdxRef.current = viewActivePlayerIndex;
   const viewTurnPhaseRef = useRef(viewTurnPhase);
   viewTurnPhaseRef.current = viewTurnPhase;
-  const viewScreenStateRef = useRef(viewScreenState);
   viewScreenStateRef.current = viewScreenState;
   const viewBoardModifiersRef = useRef(viewBoardModifiers);
   viewBoardModifiersRef.current = viewBoardModifiers;
@@ -4228,6 +4420,7 @@ export default function App() {
   useEffect(() => {
     if (viewScreenState !== 'playing') {
       setOpenActionMenu('none');
+      setChatDrawerOpen(false);
     }
   }, [viewScreenState]);
 
@@ -4853,12 +5046,137 @@ export default function App() {
 
   const handleOpenPause = useCallback(() => {
     setSelectedTileIndex(null);
+    setChatDrawerOpen(false);
     if (isOnlineMatchRef.current) {
       setOnlinePauseOpen(true);
     } else {
       commitScreenState('paused');
     }
   }, [commitScreenState]);
+
+  const handleChangeOpenActionMenu = useCallback((next: ActionDockMenuKind) => {
+    setOpenActionMenu(next);
+    if (next !== 'none') {
+      setChatDrawerOpen(false);
+    }
+  }, []);
+
+  const handleToggleChatDrawer = useCallback(() => {
+    setChatDrawerOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        setOpenActionMenu('none');
+        setUnreadChatCount(0);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSendChatMessage = useCallback(
+    (channel: ChatChannel, text: string) => {
+      online.sendChatMessage(channel, text);
+    },
+    [online.sendChatMessage]
+  );
+
+  const handleToggleVoiceMic = useCallback(() => {
+    void voiceClientRef.current?.toggleMic();
+  }, []);
+
+  const handleSetVoiceInputMode = useCallback((mode: VoiceInputMode) => {
+    voiceClientRef.current?.setInputMode(mode);
+  }, []);
+
+  const handleSetVoicePttPressed = useCallback((pressed: boolean) => {
+    void voiceClientRef.current?.setPushToTalkPressed(pressed);
+  }, []);
+
+  const handleSetVoicePeerMuted = useCallback((participantId: string, muted: boolean) => {
+    voiceClientRef.current?.setPeerMuted(participantId, muted);
+  }, []);
+
+  const handleSetVoicePeerVolume = useCallback((participantId: string, volume: number) => {
+    voiceClientRef.current?.setPeerVolume(participantId, volume);
+  }, []);
+
+  const canUseTeamChannel = Boolean(
+    online.roomSnapshot?.matchMode === 'TEAMS_2V2' && online.yourSeatIndex !== null
+  );
+
+  const speakingParticipantIds = useMemo<Record<string, boolean>>(() => {
+    const result: Record<string, boolean> = {};
+    if (online.yourParticipantId && voiceState.localSpeaking) {
+      result[online.yourParticipantId] = true;
+    }
+    for (const [participantId, peer] of Object.entries(voiceState.peers)) {
+      if (peer.isSpeaking && !peer.mutedLocally) {
+        result[participantId] = true;
+      }
+    }
+    return result;
+  }, [online.yourParticipantId, voiceState.localSpeaking, voiceState.peers]);
+
+  const speakingPlayerIds = useMemo<Record<number, boolean>>(() => {
+    const result: Record<number, boolean> = {};
+    const participants = online.roomSnapshot?.participants ?? [];
+    if (online.yourPlayerId !== null && voiceState.localSpeaking) {
+      result[online.yourPlayerId] = true;
+    }
+    for (const p of participants) {
+      if (p.playerId === null) continue;
+      if (speakingParticipantIds[p.participantId]) {
+        result[p.playerId] = true;
+      }
+    }
+    return result;
+  }, [
+    online.roomSnapshot?.participants,
+    online.yourPlayerId,
+    speakingParticipantIds,
+    voiceState.localSpeaking,
+  ]);
+
+  const lobbyVoiceBarNode =
+    online.roomSnapshot?.status === 'lobby' ? (
+      <VoiceControlBar
+        voiceState={voiceState}
+        participants={online.roomSnapshot.participants}
+        myParticipantId={online.yourParticipantId}
+        compact={false}
+        onToggleMic={handleToggleVoiceMic}
+        onSetInputMode={handleSetVoiceInputMode}
+        onSetPushToTalkPressed={handleSetVoicePttPressed}
+        onSetPeerMuted={handleSetVoicePeerMuted}
+        onSetPeerVolume={handleSetVoicePeerVolume}
+      />
+    ) : undefined;
+
+  const matchVoiceBarNode =
+    isOnlineMatch && online.roomSnapshot ? (
+      <VoiceControlBar
+        voiceState={voiceState}
+        participants={online.roomSnapshot.participants}
+        myParticipantId={online.yourParticipantId}
+        compact={true}
+        onToggleMic={handleToggleVoiceMic}
+        onSetInputMode={handleSetVoiceInputMode}
+        onSetPushToTalkPressed={handleSetVoicePttPressed}
+        onSetPeerMuted={handleSetVoicePeerMuted}
+        onSetPeerVolume={handleSetVoicePeerVolume}
+      />
+    ) : undefined;
+
+  const embeddedOnlineChatNode =
+    online.roomSnapshot &&
+    (online.roomSnapshot.status === 'lobby' || online.roomSnapshot.status === 'gameover') ? (
+      <OnlineChatDrawer
+        variant="embedded"
+        messages={online.chatMessages}
+        myParticipantId={online.yourParticipantId}
+        canUseTeamChannel={canUseTeamChannel}
+        onSendMessage={handleSendChatMessage}
+      />
+    ) : undefined;
 
   const canShowActiveModals =
     viewScreenState === 'playing' || (isOnlineMatch && viewScreenState === 'paused');
@@ -4992,6 +5310,9 @@ export default function App() {
           gpuLabel={detectedGpu.label}
           onChangeGraphicsQuality={handleChangeGraphicsQuality}
           online={online}
+          voiceBarNode={lobbyVoiceBarNode}
+          onlineChatNode={embeddedOnlineChatNode}
+          speakingParticipantIds={speakingParticipantIds}
           onStartGame={startNewGame}
           onOpenRulebook={handleOpenRulebookModal}
         />
@@ -5011,6 +5332,8 @@ export default function App() {
             botBubbles={botBubbles}
             localPlayerId={isOnlineMatch ? online.yourPlayerId : null}
             playerEmotes={isOnlineMatch ? onlinePlayerEmotes : offlinePlayerEmotes}
+            speakingPlayerIds={isOnlineMatch ? speakingPlayerIds : undefined}
+            playerChatBubbles={isOnlineMatch ? playerChatBubbles : undefined}
             onDismissBubble={dismissBotBubble}
             onSelectTile={handleCanvasTileClick}
           />
@@ -5033,7 +5356,11 @@ export default function App() {
             lastDice={viewLastDice}
             lastDiceSum={viewLastDiceSum}
             openMenu={openActionMenu}
-            onChangeOpenMenu={setOpenActionMenu}
+            onChangeOpenMenu={handleChangeOpenActionMenu}
+            unreadChatCount={unreadChatCount}
+            chatOpen={chatDrawerOpen}
+            onToggleChat={handleToggleChatDrawer}
+            voiceBarNode={matchVoiceBarNode}
             currencyStyle={currencyStyle}
             graphicsQualityPref={graphicsQualityPref}
             effectiveQualityTier={effectiveQualityTier}
@@ -5061,6 +5388,18 @@ export default function App() {
             onOpenPause={handleOpenPause}
             onTriggerEmote={handleTriggerEmote}
           />
+
+          {isOnlineMatch && viewScreenState === 'playing' && (
+            <OnlineChatDrawer
+              variant="drawer"
+              open={chatDrawerOpen}
+              onClose={() => setChatDrawerOpen(false)}
+              messages={online.chatMessages}
+              myParticipantId={online.yourParticipantId}
+              canUseTeamChannel={canUseTeamChannel}
+              onSendMessage={handleSendChatMessage}
+            />
+          )}
         </>
       )}
 
@@ -5287,6 +5626,7 @@ export default function App() {
           }
           graphicsQualityTier={effectiveQualityTier}
           trapFocus={!showRulebookModal}
+          onlineChatNode={isOnlineMatch ? embeddedOnlineChatNode : undefined}
           onReturnToOnlineLobby={() => {
             canvasRef.current?.cancelPendingAnimations();
             online.returnToLobby();

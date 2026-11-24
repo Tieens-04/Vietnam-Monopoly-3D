@@ -35,6 +35,9 @@ interface StartModalProps {
   gpuLabel?: string;
   onChangeGraphicsQuality: (next: GraphicsQualityPref) => void;
   online?: ReturnType<typeof useOnlineMultiplayer>;
+  voiceBarNode?: React.ReactNode;
+  onlineChatNode?: React.ReactNode;
+  speakingParticipantIds?: Record<string, boolean>;
   onStartGame: (
     configs: PlayerSetupConfig[],
     startingCash: number,
@@ -118,6 +121,9 @@ export const StartModal: React.FC<StartModalProps> = ({
   gpuLabel,
   onChangeGraphicsQuality,
   online,
+  voiceBarNode,
+  onlineChatNode,
+  speakingParticipantIds,
   onStartGame,
   onOpenRulebook,
 }) => {
@@ -354,10 +360,17 @@ export const StartModal: React.FC<StartModalProps> = ({
           aria-labelledby={
             online ? (lobbyMode === 'online' ? 'bt-tab-online' : 'bt-tab-offline') : undefined
           }
-          className="flex-1 min-h-0 flex flex-col overflow-hidden"
+          className={`flex-1 min-h-0 flex flex-col ${
+            lobbyMode === 'offline' ? 'overflow-hidden' : ''
+          }`}
         >
           {lobbyMode === 'online' && online ? (
-            <OnlineLobbyPanel online={online} />
+            <OnlineLobbyPanel
+              online={online}
+              voiceBarNode={voiceBarNode}
+              onlineChatNode={onlineChatNode}
+              speakingParticipantIds={speakingParticipantIds}
+            />
           ) : (
             <form onSubmit={handleSubmit} className="flex-1 min-h-0 flex flex-col">
               <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-2.5 sm:px-4 sm:py-2.5">
