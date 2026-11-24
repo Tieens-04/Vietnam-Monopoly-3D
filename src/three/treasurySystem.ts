@@ -9,27 +9,46 @@ import {
 } from '../game/currencyLogic';
 import { GraphicsQualityProfile } from '../game/graphicsQuality';
 import { getTileTransform } from '../game/rules';
-import { CurrencyStyleId, PlayerState } from '../game/types';
+import {
+  CurrencyStyleId,
+  GraphicsQualityTier,
+  PlayerState,
+} from '../game/types';
 import { mergeGroupMeshesByMaterial } from './models';
 import { computePhysicalTrayBounceY } from './physicsEngine';
+
+export interface TreasurySyncOptions {
+  debtPlayerId?: number | null;
+  reducedMotion?: boolean;
+  qualityTier?: GraphicsQualityTier;
+}
+
+export interface TreasuryEnqueueOptions {
+  qualityTier?: GraphicsQualityTier;
+  reducedMotion?: boolean;
+}
 
 export interface TreasurySystemController {
   group: THREE.Group;
   syncVaults: (
     players: PlayerState[],
     style: CurrencyStyleId,
-    activePlayerIndex?: number
+    activePlayerIndex?: number,
+    opts?: TreasurySyncOptions
   ) => void;
   enqueueTransfers: (
     events: CashFlowTransferEvent[],
     players: PlayerState[],
-    style: CurrencyStyleId
+    style: CurrencyStyleId,
+    opts?: TreasuryEnqueueOptions
   ) => void;
   update: (dt: number, elapsed: number) => void;
   hasActiveAnimations: () => boolean;
   getShaderTime: () => number;
   setQualityProfile: (
-    profile: Pick<GraphicsQualityProfile, 'shadowsEnabled' | 'usePhysicalClearcoat'>
+    profile: Pick<GraphicsQualityProfile, 'shadowsEnabled' | 'usePhysicalClearcoat'> & {
+      tier?: GraphicsQualityTier;
+    }
   ) => void;
   dispose: () => void;
 }
@@ -55,6 +74,7 @@ interface FlyingCurrencyParticle {
   restYaw: number;
   restitution: number;
   flutterPhase: number;
+  swirlAmp: number;
   targetTraySlot: number | null;
   impactTriggered: boolean;
 }
@@ -645,6 +665,10 @@ export function createTreasurySystem(
   const activeFlights: FlyingCurrencyParticle[] = [];
   let lastVaultSignature = '';
   let staticDirty = true;
+  let currentQualityTier: GraphicsQualityTier = isSoftwareGl ? 'low' : 'medium';
+  let currentReducedMotion = false;
+  let activeDebtSlot: number | null = null;
+  const prevBankruptBySlot: boolean[] = [false, false, false, false];
 
   // Scratch math objects for zero-GC per-frame updates
   const _trayMat = new THREE.Matrix4();
@@ -712,6 +736,12 @@ export function createTreasurySystem(
         tray.accentBarMat.emissive.setHex(0x1e293b);
         tray.accentBarMat.emissiveIntensity = 0.08;
         tray.feltMat.color.setHex(0x1e293b);
+      } else if (slot === activeDebtSlot) {
+        tray.accentBarMat.color.setHex(0xe11d48);
+        tray.accentBarMat.emissive.setHex(0xe11d48);
+        tray.accentBarMat.emissiveIntensity = 0.78;
+        tray.feltMat.color.setHex(0x2a1826);
+        appendTrayUnits(slot, player.cash, PLAYER_VAULT_SCALE, tray.recoilOffset);
       } else {
         tray.accentBarMat.color.set(player.color);
         tray.accentBarMat.emissive.set(player.color);
@@ -733,9 +763,38 @@ export function createTreasurySystem(
   const syncVaults = (
     players: PlayerState[],
     style: CurrencyStyleId,
-    activePlayerIndex = 0
+    activePlayerIndex = 0,
+    opts?: TreasurySyncOptions
   ) => {
-    const sig = `${style}|${activePlayerIndex}|${players
+    if (opts?.qualityTier) {
+      currentQualityTier = opts.qualityTier;
+    }
+    if (typeof opts?.reducedMotion === 'boolean') {
+      currentReducedMotion = opts.reducedMotion;
+    }
+
+    let nextDebtSlot: number | null = null;
+    if (opts?.debtPlayerId !== undefined && opts?.debtPlayerId !== null) {
+      const idx = players.findIndex(
+        (p) => p.id === opts.debtPlayerId && !p.bankrupt
+      );
+      nextDebtSlot = idx >= 0 && idx < 4 ? idx : null;
+    } else {
+      const negIdx = players.findIndex((p) => !p.bankrupt && p.cash < 0);
+      nextDebtSlot = negIdx >= 0 && negIdx < 4 ? negIdx : null;
+    }
+    activeDebtSlot = nextDebtSlot;
+
+    for (let slot = 0; slot < 4; slot++) {
+      const pl = players[slot];
+      const isNowBankrupt = Boolean(pl?.bankrupt);
+      if (isNowBankrupt && !prevBankruptBySlot[slot] && !currentReducedMotion) {
+        playerTrays[slot].recoilVelocity = -1.15;
+      }
+      prevBankruptBySlot[slot] = isNowBankrupt;
+    }
+
+    const sig = `${style}|${activePlayerIndex}|${activeDebtSlot ?? 'none'}|${currentQualityTier}|${currentReducedMotion ? 1 : 0}|${players
       .map((p) => `${p.id}:${Math.floor(p.cash)}:${p.bankrupt ? 1 : 0}:${p.color}`)
       .join(',')}`;
     if (sig === lastVaultSignature) return;
@@ -779,8 +838,13 @@ export function createTreasurySystem(
   const enqueueTransfers = (
     events: CashFlowTransferEvent[],
     players: PlayerState[],
-    style: CurrencyStyleId
+    style: CurrencyStyleId,
+    opts?: TreasuryEnqueueOptions
   ) => {
+    const tier = opts?.qualityTier ?? currentQualityTier;
+    const reduced = opts?.reducedMotion ?? currentReducedMotion;
+    const tierCap = tier === 'low' ? 6 : tier === 'medium' ? 10 : 14;
+
     for (const ev of events) {
       if (ev.amount <= 0) continue;
       const fromEp = resolveEndpoint(
@@ -800,13 +864,16 @@ export function createTreasurySystem(
       if (fromEp.traySlot !== null) {
         const srcTray =
           fromEp.traySlot === -1 ? bankTray : playerTrays[fromEp.traySlot];
-        if (srcTray) srcTray.recoilVelocity = -0.55;
+        if (srcTray) {
+          srcTray.recoilVelocity = ev.reason === 'bankrupt' ? -1.15 : -0.55;
+        }
       }
 
-      const unitCount = Math.max(
-        4,
-        Math.min(11, Math.ceil(ev.amount / 140_000) + 3)
+      const rawCount = Math.max(
+        3,
+        Math.min(tierCap, Math.ceil(ev.amount / 140_000) + 3)
       );
+      const unitCount = reduced ? Math.max(2, Math.round(rawCount * 0.5)) : rawCount;
       const chordDist = fromEp.vec.distanceTo(toEp.vec);
       const dirX = toEp.vec.x - fromEp.vec.x;
       const dirZ = toEp.vec.z - fromEp.vec.z;
@@ -814,16 +881,32 @@ export function createTreasurySystem(
       const perpX = -dirZ / lenXZ;
       const perpZ = dirX / lenXZ;
 
+      const isStartRibbon = ev.reason === 'start_salary';
+      const isTaxSwirl = ev.reason === 'tax';
+
       for (let i = 0; i < unitCount; i++) {
         if (activeFlights.length >= MAX_ACTIVE_FLIGHTS) {
           activeFlights.shift();
         }
-        const { category, hex, restitution } = chooseTransferPalette(
+        let { category, hex, restitution } = chooseTransferPalette(
           ev.amount,
           style,
           i
         );
-        const spread = ((i % 5) - 2) * 0.16;
+        if (isStartRibbon) {
+          if (i % 3 === 0 && (style === 'bullion' || style === 'mixed')) {
+            category = 'bullion';
+            hex = METALLIC_COLORS.BULLION_GOLD;
+            restitution = 0.26;
+          } else {
+            category = style === 'cash' ? 'bill' : 'coin';
+            hex = '#FACC15';
+            restitution = category === 'bill' ? 0.18 : 0.42;
+          }
+        }
+        const spread = isStartRibbon
+          ? Math.sin(i * 0.72) * (reduced ? 0.25 : 0.65)
+          : ((i % 5) - 2) * 0.16;
         const p0 = new THREE.Vector3(
           fromEp.vec.x + perpX * spread * 0.6,
           fromEp.vec.y + (i % 3) * 0.05,
@@ -848,15 +931,16 @@ export function createTreasurySystem(
           p0,
           p1,
           p2,
-          delay: i * 0.052,
+          delay: i * (isStartRibbon ? 0.038 : 0.052),
           elapsed: 0,
-          duration: 0.86 + (i % 3) * 0.055,
+          duration: (isStartRibbon ? 0.88 : 0.84) + (i % 3) * 0.055,
           spinSpeedX: category === 'bill' ? 2.4 : 9.5 + (i % 4) * 2.2,
           spinSpeedY: 4.2 + (i % 3) * 1.8,
           spinSpeedZ: category === 'bill' ? 3.1 : 7.8 + (i % 3) * 2.0,
           restYaw: Math.PI / 4 + ((i % 3) - 1) * 0.18,
           restitution,
           flutterPhase: (i * 1.37) % (Math.PI * 2),
+          swirlAmp: isTaxSwirl ? (reduced ? 0.14 : 0.42) : 0,
           targetTraySlot: toEp.traySlot,
           impactTriggered: false,
         });
@@ -892,11 +976,17 @@ export function createTreasurySystem(
         let flutterAmp = 0;
 
         if (t <= 0.76) {
-          // Airborne quadratic Bezier trajectory
+          // Airborne quadratic Bezier trajectory (with optional vortex swirl on Tax drain)
           const s = t / 0.76;
           _bezierA.lerpVectors(fl.p0, fl.p1, s);
           _bezierB.lerpVectors(fl.p1, fl.p2, s);
           _pos.lerpVectors(_bezierA, _bezierB, s);
+          if (fl.swirlAmp > 0) {
+            const r = fl.swirlAmp * (1 - s) * Math.sin(s * Math.PI);
+            const theta = s * Math.PI * 3.5 + fl.flutterPhase;
+            _pos.x += Math.cos(theta) * r;
+            _pos.z += Math.sin(theta) * r;
+          }
 
           _euler.set(
             s * fl.spinSpeedX,
@@ -999,10 +1089,28 @@ export function createTreasurySystem(
       commitPoolsToGpu();
       staticDirty = false;
     }
+
+    // 3. Debt pulse indicator on debtor's edge vault tray (disabled animation on Low/Reduced Motion to preserve 0 FPS idle)
+    if (activeDebtSlot !== null && playerTrays[activeDebtSlot]) {
+      const debtTray = playerTrays[activeDebtSlot];
+      if (!currentReducedMotion && currentQualityTier !== 'low') {
+        debtTray.accentBarMat.emissiveIntensity =
+          0.35 + 0.55 * (0.5 + 0.5 * Math.sin(elapsed * 5.2));
+      } else {
+        debtTray.accentBarMat.emissiveIntensity = 0.78;
+      }
+    }
   };
 
   const hasActiveAnimations = (): boolean => {
     if (activeFlights.length > 0 || staticDirty) return true;
+    if (
+      activeDebtSlot !== null &&
+      !currentReducedMotion &&
+      currentQualityTier !== 'low'
+    ) {
+      return true;
+    }
     for (const tr of [...playerTrays, bankTray]) {
       if (
         Math.abs(tr.recoilOffset) > 0.0004 ||
@@ -1017,10 +1125,19 @@ export function createTreasurySystem(
   const getShaderTime = (): number => uTimeShared.value;
 
   const setQualityProfile = (
-    profile: Pick<GraphicsQualityProfile, 'shadowsEnabled' | 'usePhysicalClearcoat'>
+    profile: Pick<GraphicsQualityProfile, 'shadowsEnabled' | 'usePhysicalClearcoat'> & {
+      tier?: GraphicsQualityTier;
+    }
   ) => {
     const wantShadows = !isSoftwareGl && profile.shadowsEnabled;
     const wantClearcoat = !isSoftwareGl && profile.usePhysicalClearcoat;
+    currentQualityTier =
+      profile.tier ??
+      (isSoftwareGl || (!profile.shadowsEnabled && !profile.usePhysicalClearcoat)
+        ? 'low'
+        : profile.usePhysicalClearcoat
+          ? 'high'
+          : 'medium');
     freezeIdleGlint = !wantClearcoat;
 
     for (const im of Object.values(pools)) {

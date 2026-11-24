@@ -120,7 +120,7 @@ test('detectCashFlowTransfers classifies rent, property investment, Start salary
   assert.equal(rentEvents[0].toPlayerId, 0);
   assert.equal(rentEvents[0].amount, 210_000);
 
-  // 3. Passing Start (+300K salary) -> BANK_TO_PLAYER
+  // 3. Passing Start (+300K salary) -> BANK_TO_PLAYER (start_salary)
   const afterStartPlayers = afterRentPlayers.map((p) =>
     p.id === 2 ? { ...p, laps: 1, cash: p.cash + 300_000 } : p
   );
@@ -134,8 +134,9 @@ test('detectCashFlowTransfers classifies rent, property investment, Start salary
   assert.equal(startEvents[0].kind, 'BANK_TO_PLAYER');
   assert.equal(startEvents[0].toPlayerId, 2);
   assert.equal(startEvents[0].amount, 300_000);
+  assert.equal(startEvents[0].reason, 'start_salary');
 
-  // 4. Paying Tax / Penalty (-89K on Tax tile 30) -> PLAYER_TO_BANK
+  // 4. Paying Tax / Penalty (-89K on Tax tile 30) -> PLAYER_TO_BANK (tax)
   const afterTaxPlayers = afterStartPlayers.map((p) =>
     p.id === 0 ? { ...p, position: 30, cash: p.cash - 89_000 } : p
   );
@@ -149,6 +150,25 @@ test('detectCashFlowTransfers classifies rent, property investment, Start salary
   assert.equal(taxEvents[0].kind, 'PLAYER_TO_BANK');
   assert.equal(taxEvents[0].fromPlayerId, 0);
   assert.equal(taxEvents[0].amount, 89_000);
+  assert.equal(taxEvents[0].reason, 'tax');
+
+  // 4b. Liquidating owned property (+135K) -> BANK_TO_PLAYER (refund)
+  const afterSellPlayers = afterTaxPlayers.map((p) =>
+    p.id === 0 ? { ...p, cash: p.cash + 135_000 } : p
+  );
+  const afterSellProps = {
+    ...afterBuyProps,
+    7: { tileIndex: 7, ownerId: null, level: 0 },
+  };
+  const sellEvents = detectCashFlowTransfers(
+    afterTaxPlayers,
+    afterSellPlayers,
+    afterBuyProps,
+    afterSellProps
+  );
+  assert.equal(sellEvents.length, 1);
+  assert.equal(sellEvents[0].kind, 'BANK_TO_PLAYER');
+  assert.equal(sellEvents[0].reason, 'refund');
 
   // 5. Birthday card: 3 opponents each pay 25K to Player 0 (+75K) -> 3 PLAYER_TO_PLAYER transfers!
   const afterBdayPlayers = afterTaxPlayers.map((p) => {

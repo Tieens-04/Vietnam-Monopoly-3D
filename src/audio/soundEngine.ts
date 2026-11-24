@@ -1,4 +1,4 @@
-import { CurrencyStyleId } from '../game/types';
+import { CurrencyStyleId, TacticalDiceChoice } from '../game/types';
 
 /**
  * Procedural Web Audio API Sound Synthesizer for 3D Monopoly.
@@ -491,6 +491,263 @@ export class SoundEngine {
     // 'mixed': crisp Polymer rustle followed by metallic coin clinks on tray landing
     triggerPaperRustle(2, 0);
     triggerCoinClinks(2, 0.1);
+  }
+
+  /** Shimmering golden chord burst when rolling Doubles */
+  public playDoublesBurst(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const notes = [523.25, 659.25, 783.99, 1046.5, 1174.66];
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = idx % 2 === 0 ? 'triangle' : 'sine';
+      const t = now + idx * 0.042;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.11, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+      osc.connect(g);
+      g.connect(this.getOutputNode(ctx));
+      osc.start(t);
+      osc.stop(t + 0.3);
+    });
+  }
+
+  /** Distinct ascending cue when triggering Tactical Even/Odd dice */
+  public playTacticalRollCue(choice: TacticalDiceChoice): void {
+    if (choice === 'NORMAL') return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const freqs = choice === 'EVEN' ? [587.33, 880.0] : [523.25, 739.99];
+    freqs.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = choice === 'EVEN' ? 'sine' : 'triangle';
+      const t = now + idx * 0.05;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.1, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      osc.connect(g);
+      g.connect(this.getOutputNode(ctx));
+      osc.start(t);
+      osc.stop(t + 0.18);
+    });
+  }
+
+  /** Low descending minor sigh when a player declares bankruptcy */
+  public playBankruptSlump(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [329.63, 261.63, 196.0].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sawtooth';
+      const t = now + idx * 0.12;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.065, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      osc.connect(g);
+      g.connect(this.getOutputNode(ctx));
+      osc.start(t);
+      osc.stop(t + 0.26);
+    });
+  }
+
+  /** Triumphant ascending 4-note arpeggio when upgrading a property to Landmark ★ (Lv4) */
+  public playLandmarkReveal(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = idx === 3 ? 'sine' : 'triangle';
+      const t = now + idx * 0.065;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(idx === 3 ? 0.14 : 0.1, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + (idx === 3 ? 0.42 : 0.22));
+      osc.connect(g);
+      g.connect(this.getOutputNode(ctx));
+      osc.start(t);
+      osc.stop(t + (idx === 3 ? 0.44 : 0.24));
+    });
+  }
+
+  /** Bright Vietnamese pentatonic chime when completing a color-group Monopoly */
+  public playMonopolyChime(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [783.99, 880.0, 1174.66].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      const t = now + idx * 0.075;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.11, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+      osc.connect(g);
+      g.connect(this.getOutputNode(ctx));
+      osc.start(t);
+      osc.stop(t + 0.3);
+    });
+  }
+
+  /** Deep low-frequency earthquake rumble + structural crunch decay (ch-13) */
+  public playEarthquakeImpact(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const subOsc = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    subOsc.type = 'sawtooth';
+    subOsc.frequency.setValueAtTime(110, now);
+    subOsc.frequency.exponentialRampToValueAtTime(42, now + 0.38);
+    subGain.gain.setValueAtTime(0.14, now);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+    subOsc.connect(subGain);
+    subGain.connect(this.getOutputNode(ctx));
+    subOsc.start(now);
+    subOsc.stop(now + 0.44);
+
+    const crunchOsc = ctx.createOscillator();
+    const crunchGain = ctx.createGain();
+    crunchOsc.type = 'triangle';
+    crunchOsc.frequency.setValueAtTime(185, now + 0.04);
+    crunchOsc.frequency.exponentialRampToValueAtTime(58, now + 0.34);
+    crunchGain.gain.setValueAtTime(0.1, now + 0.04);
+    crunchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+    crunchOsc.connect(crunchGain);
+    crunchGain.connect(this.getOutputNode(ctx));
+    crunchOsc.start(now + 0.04);
+    crunchOsc.stop(now + 0.38);
+  }
+
+  /** Sharp dual electric buzz/discharge on Power Outage (ch-14) */
+  public playPowerOutageZap(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [
+      [0, 640, 180, 0.12],
+      [0.11, 420, 95, 0.16],
+    ].forEach(([offset, fStart, fEnd, dur]) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sawtooth';
+      const t = now + offset;
+      osc.frequency.setValueAtTime(fStart, t);
+      osc.frequency.exponentialRampToValueAtTime(fEnd, t + dur);
+      g.gain.setValueAtTime(0.085, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(g);
+      g.connect(this.getOutputNode(ctx));
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    });
+  }
+
+  /** Crystalline ascending shimmer when deploying Protection Shield (ch-15) */
+  public playShieldDeploy(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [523.25, 783.99, 1318.5].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      const t = now + idx * 0.055;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.095, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      osc.connect(g);
+      g.connect(this.getOutputNode(ctx));
+      osc.start(t);
+      osc.stop(t + 0.2);
+    });
+  }
+
+  /** Metallic deflection ring + crystal burst when Protection Shield blocks sabotage */
+  public playShieldBlock(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [987.77, 659.25, 1479.98].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = idx === 2 ? 'sine' : 'triangle';
+      const t = now + idx * 0.06;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.11, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+      osc.connect(g);
+      g.connect(this.getOutputNode(ctx));
+      osc.start(t);
+      osc.stop(t + 0.22);
+    });
+  }
+
+  /** Ascending turbine swoosh + crisp departure ding for World Tour flight */
+  public playWorldTourTakeoff(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const turbine = ctx.createOscillator();
+    const turbineGain = ctx.createGain();
+    turbine.type = 'triangle';
+    turbine.frequency.setValueAtTime(220, now);
+    turbine.frequency.exponentialRampToValueAtTime(580, now + 0.32);
+    turbineGain.gain.setValueAtTime(0.08, now);
+    turbineGain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+    turbine.connect(turbineGain);
+    turbineGain.connect(this.getOutputNode(ctx));
+    turbine.start(now);
+    turbine.stop(now + 0.38);
+
+    const ding = ctx.createOscillator();
+    const dingGain = ctx.createGain();
+    ding.type = 'sine';
+    ding.frequency.setValueAtTime(880, now + 0.14);
+    dingGain.gain.setValueAtTime(0.11, now + 0.14);
+    dingGain.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+    ding.connect(dingGain);
+    dingGain.connect(this.getOutputNode(ctx));
+    ding.start(now + 0.14);
+    ding.stop(now + 0.44);
+  }
+
+  /** Stadium trumpet fanfare triad for World Championships host selection */
+  public playChampionshipFanfare(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = idx < 3 ? 'triangle' : 'sine';
+      const t = now + idx * 0.08;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(idx === 3 ? 0.13 : 0.09, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + (idx === 3 ? 0.3 : 0.18));
+      osc.connect(g);
+      g.connect(this.getOutputNode(ctx));
+      osc.start(t);
+      osc.stop(t + (idx === 3 ? 0.32 : 0.2));
+    });
   }
 }
 
