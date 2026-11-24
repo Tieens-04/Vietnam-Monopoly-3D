@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Mic } from 'lucide-react';
 import { CHARACTER_PERSONAS } from '../game/avatarLogic';
 import { BotDifficulty, TokenArchetype } from '../game/onlineTypes';
@@ -141,6 +141,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
     room && online.yourSeatIndex !== null
       ? room.seats.find((s) => s.seatIndex === online.yourSeatIndex) || null
       : null;
+  const seatsSignature =
+    room?.seats
+      .map((s) => `${s.seatIndex}:${s.occupiedByHuman ? s.participantId ?? 'human' : 'empty'}`)
+      .join('|') ?? '';
+  const prevSeatsSignatureRef = useRef<string>(seatsSignature);
 
   useEffect(() => {
     if (mySeat) {
@@ -150,14 +155,27 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
 
   useEffect(() => {
     if (!room || room.status !== 'lobby' || !isHost) {
-      setSwapModeActive(false);
-      setSwapSourceSeat(null);
+      if (swapModeActive) setSwapModeActive(false);
+      if (swapSourceSeat !== null) setSwapSourceSeat(null);
+      return;
+    }
+    if (!swapModeActive) {
+      if (swapSourceSeat !== null) setSwapSourceSeat(null);
       return;
     }
     if (swapSourceSeat !== null && swapSourceSeat >= room.maxPlayers) {
       setSwapSourceSeat(null);
     }
-  }, [room?.status, room?.maxPlayers, isHost, swapSourceSeat]);
+  }, [room?.status, room?.maxPlayers, isHost, swapModeActive, swapSourceSeat]);
+
+  useEffect(() => {
+    if (prevSeatsSignatureRef.current !== seatsSignature) {
+      prevSeatsSignatureRef.current = seatsSignature;
+      if (swapSourceSeat !== null) {
+        setSwapSourceSeat(null);
+      }
+    }
+  }, [seatsSignature, swapSourceSeat]);
 
   const handleCopy = async (kind: 'link' | 'code') => {
     if (!room) return;
@@ -230,6 +248,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
       }
       if (swapSourceSeat === seatIndex) {
         setSwapSourceSeat(null);
+        return;
+      }
+      const sourceSeatObj = room.seats.find((s) => s.seatIndex === swapSourceSeat);
+      const targetSeatObj = room.seats.find((s) => s.seatIndex === seatIndex);
+      if (!sourceSeatObj?.occupiedByHuman && !targetSeatObj?.occupiedByHuman) {
         return;
       }
       online.hostSwapSeats(swapSourceSeat, seatIndex);
@@ -607,22 +630,46 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
 
                     let seatClickHandler: (() => void) | undefined;
                     let seatClickDisabled = false;
-                    let seatActionHint: string | null = null;
+                    let seatActionLabel: string | null = null;
+                    let seatActionTitle: string | undefined;
 
                     if (isHost && swapModeActive) {
+                      const sourceSeatObj =
+                        swapSourceSeat !== null
+                          ? room.seats.find((s) => s.seatIndex === swapSourceSeat)
+                          : undefined;
+                      const bothEmpty =
+                        swapSourceSeat !== null &&
+                        swapSourceSeat !== seat.seatIndex &&
+                        !sourceSeatObj?.occupiedByHuman &&
+                        !seat.occupiedByHuman;
                       seatClickHandler = () => handleSwapSeatPick(seat.seatIndex);
-                      seatActionHint = isSwapSource
-                        ? 'Đang chọn'
-                        : isSwapTargetCandidate
-                          ? `Đổi với Ghế ${swapSourceSeat + 1}`
-                          : 'Chọn ghế';
+                      seatClickDisabled = bothEmpty;
+                      seatActionLabel = isSwapSource
+                        ? '🎯 Đang chọn (Hủy)'
+                        : bothEmpty
+                          ? '2 ghế cùng trống'
+                          : isSwapTargetCandidate
+                            ? `⇄ Đổi với ghế #${swapSourceSeat + 1}`
+                            : '⇄ Chọn đổi chỗ';
+                      seatActionTitle = bothEmpty
+                        ? 'Không thể hoán đổi hai ghế cùng đang trống'
+                        : undefined;
                     } else if (!seat.occupiedByHuman) {
                       seatClickHandler = () => online.moveToSeat(seat.seatIndex);
-                      seatActionHint = online.isSpectator ? 'Ngồi vào' : 'Chuyển sang';
+                      seatActionLabel = '👆 Vào ghế này';
+                      seatActionTitle = online.isSpectator
+                        ? `Tham gia ngồi vào Ghế ${seat.seatIndex + 1}`
+                        : `Chuyển sang Ghế ${seat.seatIndex + 1}`;
                     } else if (!isHost && !online.isSpectator && !isYou) {
                       seatClickHandler = () => online.requestSeatSwap(seat.seatIndex);
                       seatClickDisabled = !seat.connected || Boolean(pendingSwap);
-                      seatActionHint = seat.connected && !pendingSwap ? '⇄ Mời đổi' : null;
+                      seatActionLabel = '⇄ Mời đổi chỗ';
+                      seatActionTitle = !seat.connected
+                        ? 'Người chơi ở ghế này đang mất kết nối'
+                        : pendingSwap
+                          ? 'Đang có lời mời đổi chỗ chờ phản hồi'
+                          : `Gửi lời mời đổi ghế với ${seat.playerName}`;
                     }
 
                     const statusBadge = seat.occupiedByHuman ? (
@@ -653,101 +700,6 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                       </span>
                     );
 
-                    const mainContent = (
-                      <>
-                        <span
-                          className="w-1.5 self-stretch rounded-full shrink-0"
-                          style={{ backgroundColor: seat.color }}
-                        />
-
-                        <div
-                          className={`relative shrink-0 rounded-xl transition-shadow ${
-                            isSpeaking
-                              ? 'ring-4 ring-emerald-400 shadow-[0_0_16px_rgba(52,211,153,0.85)]'
-                              : ''
-                          }`}
-                        >
-                          <PlayerAvatar3D
-                            archetype={seat.tokenType}
-                            mood={
-                              seat.isHost
-                                ? 'celebrating'
-                                : seat.occupiedByHuman
-                                  ? 'active'
-                                  : 'idle'
-                            }
-                            phaseSeed={seat.seatIndex}
-                            isBot={!seat.occupiedByHuman && room.fillBots}
-                            showBotStamp={!seat.occupiedByHuman && room.fillBots}
-                            size="sm"
-                            className="!rounded-xl !border-2 !border-white"
-                            ariaLabel={persona.personaName}
-                          />
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1 flex-wrap">
-                            <span className="font-display text-sm font-black text-slate-900 truncate">
-                              {seat.playerName}
-                            </span>
-                            {seat.isHost && !seat.connected && (
-                              <span className="px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-[10px] font-black text-amber-800">
-                                👑 Chủ phòng
-                              </span>
-                            )}
-                            {isYou && (
-                              <span className="px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-[10px] font-black text-emerald-800">
-                                Bạn
-                              </span>
-                            )}
-                            {isTeams2v2 && (
-                              <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${
-                                  (seat.teamId ?? seat.seatIndex % 2) === 0
-                                    ? 'bg-sky-100 border-sky-300 text-sky-800'
-                                    : 'bg-rose-100 border-rose-300 text-rose-800'
-                                }`}
-                              >
-                                {(seat.teamId ?? seat.seatIndex % 2) === 0
-                                  ? 'Đội A (Xanh)'
-                                  : 'Đội B (Đỏ)'}
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[11px] font-semibold text-slate-500 truncate">
-                            Ghế {seat.seatIndex + 1} · {persona.personaName} · {seat.colorName}
-                          </div>
-                        </div>
-
-                        <div className="shrink-0 text-right flex flex-col items-end gap-1">
-                          <div className="flex items-center gap-1">
-                            {seat.occupiedByHuman && seatParticipant?.micEnabled && (
-                              <span
-                                title="Micro đang bật"
-                                className="h-5 w-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 flex items-center justify-center shrink-0"
-                              >
-                                <Mic className="h-3 w-3" aria-hidden="true" />
-                              </span>
-                            )}
-                            {statusBadge}
-                          </div>
-                          {seatActionHint && (
-                            <span
-                              className={`text-[10px] font-black uppercase ${
-                                isSwapSource
-                                  ? 'text-amber-700'
-                                  : isSwapTargetCandidate
-                                    ? 'text-sky-700'
-                                    : 'text-[#0284C7]'
-                              }`}
-                            >
-                              {seatActionHint}
-                            </span>
-                          )}
-                        </div>
-                      </>
-                    );
-
                     const showHostSeatControls = Boolean(
                       isHost &&
                         !swapModeActive &&
@@ -755,6 +707,8 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                         !isYou &&
                         seatParticipant
                     );
+
+                    const showActionRow = Boolean(seatClickHandler || showHostSeatControls);
 
                     return (
                       <div
@@ -769,58 +723,142 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                               : isYou
                                 ? 'bg-amber-50/75 border-amber-300'
                                 : seatClickHandler && !seatClickDisabled
-                                  ? 'bg-white border-sky-200 hover:border-sky-400'
+                                  ? 'bg-white border-sky-200'
                                   : 'bg-white border-sky-100'
                         }`}
                       >
-                        {seatClickHandler ? (
-                          <button
-                            type="button"
-                            disabled={seatClickDisabled}
-                            onClick={seatClickHandler}
-                            className={`w-full flex items-center gap-2.5 p-2 text-left transition-colors ${
-                              seatClickDisabled
-                                ? 'cursor-not-allowed opacity-75'
-                                : 'cursor-pointer hover:bg-sky-50/60'
-                            }`}
-                          >
-                            {mainContent}
-                          </button>
-                        ) : (
+                        <div data-testid={`bt-seat-card-${seat.seatIndex}`}>
                           <div className="w-full flex items-center gap-2.5 p-2">
-                            {mainContent}
-                          </div>
-                        )}
+                            <span
+                              className="w-1.5 self-stretch rounded-full shrink-0"
+                              style={{ backgroundColor: seat.color }}
+                            />
 
-                        {showHostSeatControls && seatParticipant && (
-                          <div className="flex items-center justify-end gap-1.5 px-2 pb-1.5 pt-1 border-t border-sky-100/90 bg-sky-50/40">
-                            <button
-                              type="button"
-                              data-testid={`bt-transfer-host-${seat.seatIndex}`}
-                              disabled={!seat.connected}
-                              aria-label={`Chuyển quyền Chủ phòng cho ${seat.playerName}`}
-                              title={
-                                seat.connected
-                                  ? `Chuyển quyền Chủ phòng cho ${seat.playerName}`
-                                  : 'Chỉ chuyển được cho người chơi đang kết nối'
-                              }
-                              onClick={() => online.transferHost(seatParticipant.participantId)}
-                              className="px-2 py-0.5 rounded-lg bg-amber-100 hover:bg-amber-200 border border-amber-300 text-[10px] font-black text-amber-900 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                            <div
+                              className={`relative shrink-0 rounded-xl transition-shadow ${
+                                isSpeaking
+                                  ? 'ring-4 ring-emerald-400 shadow-[0_0_16px_rgba(52,211,153,0.85)]'
+                                  : ''
+                              }`}
                             >
-                              👑 Chuyển Host
-                            </button>
-                            <button
-                              type="button"
-                              data-testid={`bt-kick-seat-${seat.seatIndex}`}
-                              aria-label={`Kick ${seat.playerName} khỏi phòng`}
-                              title={`Mời ${seat.playerName} khỏi phòng`}
-                              onClick={() => online.kickParticipant(seatParticipant.participantId)}
-                              className="px-2 py-0.5 rounded-lg bg-rose-100 hover:bg-rose-200 border border-rose-300 text-[10px] font-black text-rose-800 transition-colors cursor-pointer"
-                            >
-                              🚫 Kick
-                            </button>
+                              <PlayerAvatar3D
+                                archetype={seat.tokenType}
+                                mood={
+                                  seat.isHost
+                                    ? 'celebrating'
+                                    : seat.occupiedByHuman
+                                      ? 'active'
+                                      : 'idle'
+                                }
+                                phaseSeed={seat.seatIndex}
+                                isBot={!seat.occupiedByHuman && room.fillBots}
+                                showBotStamp={!seat.occupiedByHuman && room.fillBots}
+                                size="sm"
+                                className="!rounded-xl !border-2 !border-white"
+                                ariaLabel={persona.personaName}
+                              />
+                            </div>
+
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1 flex-wrap">
+                                <span className="font-display text-sm font-black text-slate-900 truncate">
+                                  {seat.playerName}
+                                </span>
+                                {seat.isHost && !seat.connected && (
+                                  <span className="px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-[10px] font-black text-amber-800">
+                                    👑 Chủ phòng
+                                  </span>
+                                )}
+                                {isYou && (
+                                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-[10px] font-black text-emerald-800">
+                                    Bạn
+                                  </span>
+                                )}
+                                {isTeams2v2 && (
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${
+                                      (seat.teamId ?? seat.seatIndex % 2) === 0
+                                        ? 'bg-sky-100 border-sky-300 text-sky-800'
+                                        : 'bg-rose-100 border-rose-300 text-rose-800'
+                                    }`}
+                                  >
+                                    {(seat.teamId ?? seat.seatIndex % 2) === 0
+                                      ? 'Đội A (Xanh)'
+                                      : 'Đội B (Đỏ)'}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[11px] font-semibold text-slate-500 truncate">
+                                Ghế {seat.seatIndex + 1} · {persona.personaName} · {seat.colorName}
+                              </div>
+                            </div>
+
+                            <div className="shrink-0 text-right flex items-center gap-1">
+                              {seat.occupiedByHuman && seatParticipant?.micEnabled && (
+                                <span
+                                  title="Micro đang bật"
+                                  className="h-5 w-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 flex items-center justify-center shrink-0"
+                                >
+                                  <Mic className="h-3 w-3" aria-hidden="true" />
+                                </span>
+                              )}
+                              {statusBadge}
+                            </div>
                           </div>
-                        )}
+
+                          {showActionRow && (
+                            <div className="flex items-center justify-end gap-1.5 flex-wrap px-2 pb-1.5 pt-1 border-t border-sky-100/90 bg-sky-50/40">
+                              {seatClickHandler && seatActionLabel && (
+                                <button
+                                  type="button"
+                                  data-testid={`bt-seat-action-${seat.seatIndex}`}
+                                  disabled={seatClickDisabled}
+                                  title={seatActionTitle}
+                                  onClick={seatClickHandler}
+                                  className={`px-2.5 py-0.5 rounded-lg border text-[10px] font-black transition-colors ${
+                                    isSwapSource
+                                      ? 'bg-amber-300 border-amber-500 text-slate-950 hover:bg-amber-200 cursor-pointer'
+                                      : isSwapTargetCandidate && !seatClickDisabled
+                                        ? 'bg-sky-500 border-sky-600 text-white hover:bg-sky-600 cursor-pointer'
+                                        : 'bg-sky-100 hover:bg-sky-200 border-sky-300 text-sky-900 cursor-pointer'
+                                  } disabled:opacity-45 disabled:cursor-not-allowed`}
+                                >
+                                  {seatActionLabel}
+                                </button>
+                              )}
+
+                              {showHostSeatControls && seatParticipant && (
+                                <>
+                                  <button
+                                    type="button"
+                                    data-testid={`bt-transfer-host-${seat.seatIndex}`}
+                                    disabled={!seat.connected}
+                                    aria-label={`Chuyển quyền Chủ phòng cho ${seat.playerName}`}
+                                    title={
+                                      seat.connected
+                                        ? `Chuyển quyền Chủ phòng cho ${seat.playerName}`
+                                        : 'Chỉ chuyển được cho người chơi đang kết nối'
+                                    }
+                                    onClick={() => online.transferHost(seatParticipant.participantId)}
+                                    className="px-2 py-0.5 rounded-lg bg-amber-100 hover:bg-amber-200 border border-amber-300 text-[10px] font-black text-amber-900 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    👑 Chuyển Host
+                                  </button>
+                                  <button
+                                    type="button"
+                                    data-testid={`bt-kick-seat-${seat.seatIndex}`}
+                                    aria-label={`Kick ${seat.playerName} khỏi phòng`}
+                                    title={`Mời ${seat.playerName} khỏi phòng`}
+                                    onClick={() => online.kickParticipant(seatParticipant.participantId)}
+                                    className="px-2 py-0.5 rounded-lg bg-rose-100 hover:bg-rose-200 border border-rose-300 text-[10px] font-black text-rose-800 transition-colors cursor-pointer"
+                                  >
+                                    🚫 Kick
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
