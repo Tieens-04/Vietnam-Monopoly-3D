@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  BotDifficulty,
   ChatChannel,
   ClientToServerMessage,
   OnlineGameAction,
@@ -286,7 +287,8 @@ export function useOnlineMultiplayer(
           msg.code === 'ROOM_NOT_FOUND' ||
           msg.code === 'SESSION_EXPIRED' ||
           msg.code === 'NOT_IN_ROOM' ||
-          msg.code === 'SESSION_REPLACED'
+          msg.code === 'SESSION_REPLACED' ||
+          msg.code === 'KICKED_BY_HOST'
         ) {
           clearActiveRoomState(msg.code !== 'SESSION_REPLACED');
           if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -411,6 +413,7 @@ export function useOnlineMultiplayer(
       maxPlayers: 2 | 3 | 4;
       startingCash: number;
       fillBots: boolean;
+      botDifficulty?: BotDifficulty;
       matchMode?: MatchMode;
       tacticalDiceEnabled?: boolean;
       festivalEnabled?: boolean;
@@ -424,6 +427,7 @@ export function useOnlineMultiplayer(
         maxPlayers: opts.maxPlayers,
         startingCash: opts.startingCash,
         fillBots: opts.fillBots,
+        botDifficulty: opts.botDifficulty,
         matchMode: opts.matchMode,
         tacticalDiceEnabled: opts.tacticalDiceEnabled,
         festivalEnabled: opts.festivalEnabled,
@@ -463,6 +467,7 @@ export function useOnlineMultiplayer(
       maxPlayers?: 2 | 3 | 4;
       startingCash?: number;
       fillBots?: boolean;
+      botDifficulty?: BotDifficulty;
       matchMode?: MatchMode;
       tacticalDiceEnabled?: boolean;
       festivalEnabled?: boolean;
@@ -478,6 +483,73 @@ export function useOnlineMultiplayer(
       sendMessage({ type: 'UPDATE_MY_PROFILE', ...patch });
     },
     [rememberPlayerName, sendMessage]
+  );
+
+  const moveToSeat = useCallback(
+    (targetSeatIndex: number): boolean => {
+      return sendMessage({ type: 'MOVE_TO_SEAT', targetSeatIndex });
+    },
+    [sendMessage]
+  );
+
+  const requestSeatSwap = useCallback(
+    (targetSeatIndex: number): boolean => {
+      return sendMessage({ type: 'REQUEST_SEAT_SWAP', targetSeatIndex });
+    },
+    [sendMessage]
+  );
+
+  const respondSeatSwap = useCallback(
+    (requestId: string, accept: boolean): boolean => {
+      return sendMessage({ type: 'RESPOND_SEAT_SWAP', requestId, accept });
+    },
+    [sendMessage]
+  );
+
+  const hostSwapSeats = useCallback(
+    (seatA: number, seatB: number): boolean => {
+      return sendMessage({ type: 'HOST_SWAP_SEATS', seatA, seatB });
+    },
+    [sendMessage]
+  );
+
+  const moveToSpectator = useCallback((): boolean => {
+    return sendMessage({ type: 'MOVE_TO_SPECTATOR' });
+  }, [sendMessage]);
+
+  const setReady = useCallback(
+    (ready: boolean): boolean => {
+      return sendMessage({ type: 'SET_READY', ready });
+    },
+    [sendMessage]
+  );
+
+  const transferHost = useCallback(
+    (targetParticipantId: string): boolean => {
+      return sendMessage({ type: 'TRANSFER_HOST', targetParticipantId });
+    },
+    [sendMessage]
+  );
+
+  const kickParticipant = useCallback(
+    (targetParticipantId: string): boolean => {
+      return sendMessage({ type: 'KICK_PARTICIPANT', targetParticipantId });
+    },
+    [sendMessage]
+  );
+
+  const requestBotTakeover = useCallback(
+    (targetPlayerId: number): boolean => {
+      return sendMessage({ type: 'REQUEST_BOT_TAKEOVER', targetPlayerId });
+    },
+    [sendMessage]
+  );
+
+  const respondBotTakeover = useCallback(
+    (requestId: string, accept: boolean): boolean => {
+      return sendMessage({ type: 'RESPOND_BOT_TAKEOVER', requestId, accept });
+    },
+    [sendMessage]
   );
 
   const startMatch = useCallback(() => {
@@ -548,9 +620,12 @@ export function useOnlineMultiplayer(
     return `${window.location.origin}/?room=${roomSnapshot.roomCode}`;
   }, [roomSnapshot]);
 
+  const isSpectator = Boolean(roomSnapshot && yourSeatIndex === null);
+
   return {
     connectionStatus,
     isSynced,
+    isSpectator,
     roomSnapshot,
     yourParticipantId,
     yourSeatIndex,
@@ -567,6 +642,16 @@ export function useOnlineMultiplayer(
     leaveRoom,
     updateLobbySettings,
     updateMyProfile,
+    moveToSeat,
+    requestSeatSwap,
+    respondSeatSwap,
+    hostSwapSeats,
+    moveToSpectator,
+    setReady,
+    transferHost,
+    kickParticipant,
+    requestBotTakeover,
+    respondBotTakeover,
     startMatch,
     returnToLobby,
     reclaimControl,

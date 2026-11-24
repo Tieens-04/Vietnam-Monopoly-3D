@@ -1067,3 +1067,155 @@ test('Phase 1 Task 5: LEFT_ROOM, leaveRoom(), and terminal room errors reset you
     env.restore();
   }
 });
+
+test('Phase 2 Task 5: KICKED_BY_HOST wipes localStorage session, roomSnapshot, yourParticipantId, chatMessages, and avoids reconnect loop', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const hook = mountHook(() => useOnlineMultiplayer());
+
+  try {
+    hook.current.joinRoom({ roomCode: 'KICK', playerName: 'Guest', tokenType: 'yacht' });
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'KICK',
+      sessionToken: 'token-kick-123456',
+      yourParticipantId: 'p_guest002',
+      yourSeatIndex: 1,
+      yourPlayerId: null,
+      snapshot: {
+        ...makeRoomSnapshot('KICK'),
+        chatHistory: [makeChatMessage({ id: 10, text: 'Hello before kick' })],
+      },
+    });
+
+    assert.equal(hook.current.roomSnapshot?.roomCode, 'KICK');
+    assert.equal(hook.current.yourParticipantId, 'p_guest002');
+    assert.equal(hook.current.yourSeatIndex, 1);
+    assert.equal(hook.current.chatMessages.length, 1);
+    assert.equal(env.getHref(), 'http://localhost:3099/?room=KICK');
+    assert.equal(
+      env.storage.get(SESSION_STORAGE_KEY),
+      JSON.stringify({ roomCode: 'KICK', sessionToken: 'token-kick-123456' })
+    );
+
+    ws.simulateMessage({
+      type: 'ERROR',
+      code: 'KICKED_BY_HOST',
+      message: 'Bạn đã bị chủ phòng mời khỏi phòng.',
+    });
+
+    assert.equal(env.storage.get(SESSION_STORAGE_KEY), undefined);
+    assert.equal(env.getHref(), 'http://localhost:3099/');
+    assert.equal(hook.current.roomSnapshot, null);
+    assert.equal(hook.current.yourParticipantId, null);
+    assert.equal(hook.current.yourSeatIndex, null);
+    assert.equal(hook.current.yourPlayerId, null);
+    assert.deepEqual(hook.current.chatMessages, []);
+    assert.equal(hook.current.isSynced, false);
+    assert.equal(hook.current.isSpectator, false);
+    assert.equal(hook.current.errorMessage, 'Bạn đã bị chủ phòng mời khỏi phòng.');
+
+    ws.simulateClose();
+    assert.equal(hook.current.connectionStatus, 'idle');
+    assert.equal(MockWebSocket.instances.length, 1);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+test('Phase 2 Task 5: isSpectator tracks roomSnapshot + yourSeatIndex and Phase 2 actions emit exact ClientToServerMessage payloads', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const hook = mountHook(() => useOnlineMultiplayer());
+
+  try {
+    assert.equal(hook.current.isSpectator, false);
+
+    // Calling Phase 2 action while offline/unsynced returns false
+    assert.equal(hook.current.setReady(true), false);
+
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      botDifficulty: 'hard',
+      matchMode: 'TEAMS_2V2',
+    });
+    const ws = MockWebSocket.instances.at(-1)!;
+    ws.simulateOpen();
+
+    assert.deepEqual(JSON.parse(ws.sent[0]), {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      botDifficulty: 'hard',
+      matchMode: 'TEAMS_2V2',
+    });
+
+    // Joined as spectator (yourSeatIndex === null)
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'SPEC',
+      sessionToken: 'token-spec-123456',
+      yourParticipantId: 'p_spec001',
+      yourSeatIndex: null,
+      yourPlayerId: null,
+      snapshot: makeRoomSnapshot('SPEC'),
+    });
+    assert.equal(hook.current.isSpectator, true);
+
+    // Moved onto seat 2 -> no longer spectator
+    ws.simulateMessage({
+      type: 'ROOM_SNAPSHOT',
+      yourParticipantId: 'p_spec001',
+      yourSeatIndex: 2,
+      yourPlayerId: null,
+      snapshot: makeRoomSnapshot('SPEC'),
+    });
+    assert.equal(hook.current.isSpectator, false);
+
+    ws.sent.length = 0;
+
+    hook.current.updateLobbySettings({ botDifficulty: 'easy' });
+    assert.equal(hook.current.moveToSeat(3), true);
+    assert.equal(hook.current.requestSeatSwap(1), true);
+    assert.equal(hook.current.respondSeatSwap('swap_abc', true), true);
+    assert.equal(hook.current.hostSwapSeats(0, 2), true);
+    assert.equal(hook.current.moveToSpectator(), true);
+    assert.equal(hook.current.setReady(true), true);
+    assert.equal(hook.current.transferHost('p_guest002'), true);
+    assert.equal(hook.current.kickParticipant('p_spec009'), true);
+    assert.equal(hook.current.requestBotTakeover(1), true);
+    assert.equal(hook.current.respondBotTakeover('takeover_xyz', false), true);
+
+    assert.deepEqual(
+      ws.sent.map((raw) => JSON.parse(raw)),
+      [
+        { type: 'UPDATE_LOBBY_SETTINGS', botDifficulty: 'easy' },
+        { type: 'MOVE_TO_SEAT', targetSeatIndex: 3 },
+        { type: 'REQUEST_SEAT_SWAP', targetSeatIndex: 1 },
+        { type: 'RESPOND_SEAT_SWAP', requestId: 'swap_abc', accept: true },
+        { type: 'HOST_SWAP_SEATS', seatA: 0, seatB: 2 },
+        { type: 'MOVE_TO_SPECTATOR' },
+        { type: 'SET_READY', ready: true },
+        { type: 'TRANSFER_HOST', targetParticipantId: 'p_guest002' },
+        { type: 'KICK_PARTICIPANT', targetParticipantId: 'p_spec009' },
+        { type: 'REQUEST_BOT_TAKEOVER', targetPlayerId: 1 },
+        { type: 'RESPOND_BOT_TAKEOVER', requestId: 'takeover_xyz', accept: false },
+      ]
+    );
+
+    ws.simulateMessage({ type: 'LEFT_ROOM' });
+    assert.equal(hook.current.isSpectator, false);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
