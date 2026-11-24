@@ -1,3 +1,4 @@
+import { BoardTauntKind, TilePingIntent } from '../game/onlineTypes';
 import { CurrencyStyleId, TacticalDiceChoice } from '../game/types';
 
 /**
@@ -747,6 +748,229 @@ export class SoundEngine {
       g.connect(this.getOutputNode(ctx));
       osc.start(t);
       osc.stop(t + (idx === 3 ? 0.32 : 0.2));
+    });
+  }
+
+  private scheduleNoiseBurst(
+    ctx: AudioContext,
+    startTime: number,
+    durationSec: number,
+    freqStart: number,
+    freqEnd: number,
+    qValue: number,
+    peakGain: number
+  ): void {
+    const sampleCount = Math.max(1, Math.floor(ctx.sampleRate * durationSec));
+    const noiseBuf = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
+    const ch = noiseBuf.getChannelData(0);
+    for (let i = 0; i < sampleCount; i++) {
+      ch[i] = (Math.random() * 2 - 1) * Math.sin((i / sampleCount) * Math.PI);
+    }
+
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(freqStart, startTime);
+    if (freqEnd !== freqStart) {
+      filter.frequency.exponentialRampToValueAtTime(freqEnd, startTime + durationSec);
+    }
+    filter.Q.setValueAtTime(qValue, startTime);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(peakGain, startTime);
+    g.gain.exponentialRampToValueAtTime(0.001, startTime + durationSec);
+
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(this.getOutputNode(ctx));
+    src.start(startTime);
+  }
+
+  /** Playful synthesized SFX for 3D board taunt projectiles */
+  public playBoardTauntSfx(kind: BoardTauntKind): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const out = this.getOutputNode(ctx);
+
+    if (kind === 'slipper') {
+      // Crisp rubber slap ("bốp") + comic light bounce
+      this.scheduleNoiseBurst(ctx, now, 0.055, 950, 520, 1.6, 0.15);
+
+      const thump = ctx.createOscillator();
+      const thumpGain = ctx.createGain();
+      thump.type = 'triangle';
+      thump.frequency.setValueAtTime(260, now);
+      thump.frequency.exponentialRampToValueAtTime(72, now + 0.085);
+      thumpGain.gain.setValueAtTime(0.19, now);
+      thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+      thump.connect(thumpGain);
+      thumpGain.connect(out);
+      thump.start(now);
+      thump.stop(now + 0.095);
+
+      const bounce = ctx.createOscillator();
+      const bounceGain = ctx.createGain();
+      bounce.type = 'triangle';
+      bounce.frequency.setValueAtTime(190, now + 0.1);
+      bounce.frequency.exponentialRampToValueAtTime(85, now + 0.15);
+      bounceGain.gain.setValueAtTime(0.07, now + 0.1);
+      bounceGain.gain.exponentialRampToValueAtTime(0.001, now + 0.155);
+      bounce.connect(bounceGain);
+      bounceGain.connect(out);
+      bounce.start(now + 0.1);
+      bounce.stop(now + 0.16);
+      return;
+    }
+
+    if (kind === 'tomato') {
+      // Wet squelchy splat ("bẹp")
+      this.scheduleNoiseBurst(ctx, now, 0.09, 1350, 340, 2.6, 0.14);
+
+      const squelch = ctx.createOscillator();
+      const squelchGain = ctx.createGain();
+      squelch.type = 'sawtooth';
+      squelch.frequency.setValueAtTime(320, now);
+      squelch.frequency.exponentialRampToValueAtTime(95, now + 0.1);
+      squelchGain.gain.setValueAtTime(0.075, now);
+      squelchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+      squelch.connect(squelchGain);
+      squelchGain.connect(out);
+      squelch.start(now);
+      squelch.stop(now + 0.115);
+
+      const drop = ctx.createOscillator();
+      const dropGain = ctx.createGain();
+      drop.type = 'sine';
+      drop.frequency.setValueAtTime(420, now + 0.035);
+      drop.frequency.exponentialRampToValueAtTime(680, now + 0.08);
+      dropGain.gain.setValueAtTime(0.055, now + 0.035);
+      dropGain.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
+      drop.connect(dropGain);
+      dropGain.connect(out);
+      drop.start(now + 0.035);
+      drop.stop(now + 0.09);
+      return;
+    }
+
+    if (kind === 'confetti') {
+      // Party popper ("bụp") + celebratory sparkle notes
+      const pop = ctx.createOscillator();
+      const popGain = ctx.createGain();
+      pop.type = 'triangle';
+      pop.frequency.setValueAtTime(165, now);
+      pop.frequency.exponentialRampToValueAtTime(520, now + 0.045);
+      popGain.gain.setValueAtTime(0.15, now);
+      popGain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+      pop.connect(popGain);
+      popGain.connect(out);
+      pop.start(now);
+      pop.stop(now + 0.055);
+
+      this.scheduleNoiseBurst(ctx, now + 0.015, 0.085, 2800, 1900, 1.4, 0.13);
+
+      [1046.5, 1318.5, 1567.98].forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = 'sine';
+        const t = now + 0.04 + idx * 0.04;
+        osc.frequency.setValueAtTime(freq, t);
+        g.gain.setValueAtTime(0.08, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+        osc.connect(g);
+        g.connect(out);
+        osc.start(t);
+        osc.stop(t + 0.15);
+      });
+      return;
+    }
+
+    // 'cash_stack': rapid banknote flutter + bright gold glint
+    if (kind === 'cash_stack') {
+      for (let k = 0; k < 4; k++) {
+        this.scheduleNoiseBurst(ctx, now + k * 0.036, 0.045, 2100 + k * 280, 2100 + k * 280, 2.4, 0.11);
+      }
+      const chime = ctx.createOscillator();
+      const chimeGain = ctx.createGain();
+      chime.type = 'sine';
+      chime.frequency.setValueAtTime(1318.5, now + 0.11);
+      chimeGain.gain.setValueAtTime(0.09, now + 0.11);
+      chimeGain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+      chime.connect(chimeGain);
+      chimeGain.connect(out);
+      chime.start(now + 0.11);
+      chime.stop(now + 0.31);
+    }
+  }
+
+  /** Distinct crisp ping tones for public 3D tile pings */
+  public playTilePingSfx(intent: TilePingIntent): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const out = this.getOutputNode(ctx);
+
+    if (intent === 'TARGET') {
+      const p1 = ctx.createOscillator();
+      const g1 = ctx.createGain();
+      p1.type = 'sine';
+      p1.frequency.setValueAtTime(880, now);
+      p1.frequency.exponentialRampToValueAtTime(1174.66, now + 0.065);
+      g1.gain.setValueAtTime(0.11, now);
+      g1.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+      p1.connect(g1);
+      g1.connect(out);
+      p1.start(now);
+      p1.stop(now + 0.085);
+
+      const p2 = ctx.createOscillator();
+      const g2 = ctx.createGain();
+      p2.type = 'sine';
+      p2.frequency.setValueAtTime(1318.5, now + 0.075);
+      g2.gain.setValueAtTime(0.12, now + 0.075);
+      g2.gain.exponentialRampToValueAtTime(0.001, now + 0.23);
+      p2.connect(g2);
+      g2.connect(out);
+      p2.start(now + 0.075);
+      p2.stop(now + 0.24);
+      return;
+    }
+
+    if (intent === 'DANGER') {
+      [740, 523.25].forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = 'triangle';
+        const t = now + idx * 0.085;
+        const dur = idx === 0 ? 0.08 : 0.15;
+        osc.frequency.setValueAtTime(freq, t);
+        g.gain.setValueAtTime(idx === 0 ? 0.11 : 0.12, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        osc.connect(g);
+        g.connect(out);
+        osc.start(t);
+        osc.stop(t + dur + 0.015);
+      });
+      return;
+    }
+
+    // 'TROPHY': bright uplifting triad
+    [783.99, 1046.5, 1567.98].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      const t = now + idx * 0.055;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.105, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.21);
+      osc.connect(g);
+      g.connect(out);
+      osc.start(t);
+      osc.stop(t + 0.22);
     });
   }
 }
