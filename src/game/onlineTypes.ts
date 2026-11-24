@@ -17,6 +17,38 @@ import {
 
 export type TokenArchetype = PlayerSetupConfig['tokenType'];
 export type OnlineRoomStatus = 'lobby' | 'playing' | 'gameover';
+export type ParticipantRole = 'player' | 'spectator';
+export type ChatChannel = 'ALL' | 'TEAM';
+
+export interface RoomParticipantSummary {
+  participantId: string;
+  playerName: string;
+  role: ParticipantRole;
+  seatIndex: number | null;
+  playerId: number | null;
+  tokenType: TokenArchetype | null;
+  connected: boolean;
+  isHost: boolean;
+  ready: boolean;
+  micEnabled: boolean;
+}
+
+export interface RoomChatMessage {
+  id: number;
+  participantId: string;
+  playerId: number | null;
+  senderName: string;
+  senderColor: string;
+  role: ParticipantRole;
+  channel: ChatChannel;
+  teamId?: TeamId;
+  text: string;
+  createdAt: number;
+}
+
+export type RtcSignalPayload =
+  | { kind: 'offer' | 'answer'; sdp: string }
+  | { kind: 'ice'; candidate: RTCIceCandidateInit };
 
 export interface LobbySeatInfo {
   seatIndex: number;
@@ -69,6 +101,8 @@ export interface OnlineRoomSnapshot {
   tacticalDiceEnabled?: boolean;
   festivalEnabled?: boolean;
   seats: LobbySeatInfo[];
+  participants: RoomParticipantSummary[];
+  chatHistory: RoomChatMessage[];
   hostSeatIndex: number;
   match: OnlineMatchSnapshot | null;
 }
@@ -145,6 +179,20 @@ export type ClientToServerMessage =
       actionId?: string;
     }
   | { type: 'SEND_EMOTE'; emoteText: string }
+  | {
+      type: 'SEND_CHAT_MESSAGE';
+      channel: ChatChannel;
+      text: string;
+    }
+  | {
+      type: 'RTC_SIGNAL';
+      targetParticipantId: string;
+      signal: RtcSignalPayload;
+    }
+  | {
+      type: 'UPDATE_VOICE_STATE';
+      micEnabled: boolean;
+    }
   | { type: 'PING' };
 
 export type OnlineSoundEffect =
@@ -193,6 +241,11 @@ export type OnlineVisualEvent =
       eventKind: BotQuipEventKind;
       status: 'loading' | 'ready';
       text: string;
+    }
+  | {
+      eventSeq: number;
+      kind: 'CHAT_MESSAGE';
+      message: RoomChatMessage;
     };
 
 export type ServerToClientMessage =
@@ -200,19 +253,26 @@ export type ServerToClientMessage =
       type: 'ROOM_JOINED';
       roomCode: string;
       sessionToken: string;
-      yourSeatIndex: number;
+      yourParticipantId: string;
+      yourSeatIndex: number | null;
       yourPlayerId: number | null;
       snapshot: OnlineRoomSnapshot;
     }
   | {
       type: 'ROOM_SNAPSHOT';
-      yourSeatIndex: number;
+      yourParticipantId: string;
+      yourSeatIndex: number | null;
       yourPlayerId: number | null;
       snapshot: OnlineRoomSnapshot;
     }
   | {
       type: 'GAME_EVENT';
       event: OnlineVisualEvent;
+    }
+  | {
+      type: 'RTC_SIGNAL';
+      fromParticipantId: string;
+      signal: RtcSignalPayload;
     }
   | { type: 'LEFT_ROOM' }
   | {

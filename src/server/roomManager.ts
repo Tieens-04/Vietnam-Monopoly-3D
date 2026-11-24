@@ -10,6 +10,7 @@ import {
   OnlineRoomStatus,
   OnlineSoundEffect,
   OnlineVisualEvent,
+  RoomParticipantSummary,
   ServerToClientMessage,
   TokenArchetype,
 } from '../game/onlineTypes';
@@ -144,7 +145,18 @@ function isValidTacticalDiceChoice(val: unknown): val is TacticalDiceChoice {
   return val === 'NORMAL' || val === 'EVEN' || val === 'ODD';
 }
 
+function generateParticipantId(existingHumans: HumanSeatRecord[] = []): string {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = `p_${crypto.randomBytes(4).toString('hex')}`;
+    if (!existingHumans.some((h) => h.participantId === candidate)) {
+      return candidate;
+    }
+  }
+  return `p_${crypto.randomBytes(4).toString('hex')}`;
+}
+
 interface HumanSeatRecord {
+  participantId: string;
   seatIndex: number;
   sessionToken: string;
   clientId: string | null;
@@ -154,6 +166,8 @@ interface HumanSeatRecord {
   disconnectedAt: number | null;
   explicitlyLeft: boolean;
   playerId: number | null;
+  ready: boolean;
+  micEnabled: boolean;
 }
 
 interface MatchRecord {
@@ -387,7 +401,29 @@ export class OnlineRoomManager {
     }
   }
 
-  private buildRoomSnapshot(room: RoomRecord): OnlineRoomSnapshot {
+  private buildParticipantsList(room: RoomRecord): RoomParticipantSummary[] {
+    return [...room.humans]
+      .filter((h) => !h.explicitlyLeft)
+      .sort((a, b) => a.seatIndex - b.seatIndex)
+      .map((h) => ({
+        participantId: h.participantId,
+        playerName: h.playerName,
+        role: 'player',
+        seatIndex: h.seatIndex,
+        playerId: h.playerId,
+        tokenType: h.tokenType,
+        connected: h.connected,
+        isHost: h.seatIndex === room.hostSeatIndex,
+        ready: h.ready,
+        micEnabled: h.micEnabled,
+      }));
+  }
+
+  private buildRoomSnapshot(
+    room: RoomRecord,
+    recipientParticipantId?: string
+  ): OnlineRoomSnapshot {
+    void recipientParticipantId;
     const usedByHumans = new Set(room.humans.map((h) => h.tokenType));
     const freeTokens = ALL_TOKENS.filter((t) => !usedByHumans.has(t));
     let freeTokenIdx = 0;
@@ -466,20 +502,22 @@ export class OnlineRoomManager {
       tacticalDiceEnabled: room.tacticalDiceEnabled,
       festivalEnabled: room.festivalEnabled,
       seats,
+      participants: this.buildParticipantsList(room),
+      chatHistory: [],
       hostSeatIndex: room.hostSeatIndex,
       match: matchSnap,
     };
   }
 
   private broadcastSnapshot(room: RoomRecord): void {
-    const snapshot = this.buildRoomSnapshot(room);
     for (const h of room.humans) {
-      if (h.connected && h.clientId) {
+      if (h.connected && h.clientId && !h.explicitlyLeft) {
         this.sendMessage(h.clientId, {
           type: 'ROOM_SNAPSHOT',
+          yourParticipantId: h.participantId,
           yourSeatIndex: h.seatIndex,
           yourPlayerId: h.playerId,
-          snapshot,
+          snapshot: this.buildRoomSnapshot(room, h.participantId),
         });
       }
     }
@@ -552,7 +590,9 @@ export class OnlineRoomManager {
       const tacticalDiceEnabled = Boolean(msg.tacticalDiceEnabled);
       const festivalEnabled = Boolean(msg.festivalEnabled);
       const sessionToken = crypto.randomBytes(18).toString('hex');
+      const participantId = generateParticipantId();
       const creator: HumanSeatRecord = {
+        participantId,
         seatIndex: 0,
         sessionToken,
         clientId,
@@ -562,6 +602,8 @@ export class OnlineRoomManager {
         disconnectedAt: null,
         explicitlyLeft: false,
         playerId: null,
+        ready: true,
+        micEnabled: false,
       };
 
       const room: RoomRecord = {
@@ -595,9 +637,10 @@ export class OnlineRoomManager {
         type: 'ROOM_JOINED',
         roomCode,
         sessionToken,
+        yourParticipantId: participantId,
         yourSeatIndex: 0,
         yourPlayerId: null,
-        snapshot: this.buildRoomSnapshot(room),
+        snapshot: this.buildRoomSnapshot(room, participantId),
       });
       return;
     }
@@ -634,9 +677,10 @@ export class OnlineRoomManager {
           type: 'ROOM_JOINED',
           roomCode: room.roomCode,
           sessionToken: existingSeat.sessionToken,
+          yourParticipantId: existingSeat.participantId,
           yourSeatIndex: existingSeat.seatIndex,
           yourPlayerId: existingSeat.playerId,
-          snapshot: this.buildRoomSnapshot(room),
+          snapshot: this.buildRoomSnapshot(room, existingSeat.participantId),
         });
         return;
       }
@@ -662,7 +706,9 @@ export class OnlineRoomManager {
 
       const tokenType = this.pickAvailableToken(room, msg.tokenType);
       const sessionToken = crypto.randomBytes(18).toString('hex');
+      const participantId = generateParticipantId(room.humans);
       const joiner: HumanSeatRecord = {
+        participantId,
         seatIndex: freeSeat,
         sessionToken,
         clientId,
@@ -672,6 +718,8 @@ export class OnlineRoomManager {
         disconnectedAt: null,
         explicitlyLeft: false,
         playerId: null,
+        ready: false,
+        micEnabled: false,
       };
 
       room.humans.push(joiner);
@@ -681,9 +729,10 @@ export class OnlineRoomManager {
         type: 'ROOM_JOINED',
         roomCode: room.roomCode,
         sessionToken,
+        yourParticipantId: participantId,
         yourSeatIndex: freeSeat,
         yourPlayerId: null,
-        snapshot: this.buildRoomSnapshot(room),
+        snapshot: this.buildRoomSnapshot(room, participantId),
       });
       this.broadcastSnapshot(room);
       return;
@@ -766,9 +815,10 @@ export class OnlineRoomManager {
         type: 'ROOM_JOINED',
         roomCode: room.roomCode,
         sessionToken: seat.sessionToken,
+        yourParticipantId: seat.participantId,
         yourSeatIndex: seat.seatIndex,
         yourPlayerId: seat.playerId,
-        snapshot: this.buildRoomSnapshot(room),
+        snapshot: this.buildRoomSnapshot(room, seat.participantId),
       });
       this.broadcastSnapshot(room);
       return;

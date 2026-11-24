@@ -3646,11 +3646,130 @@ test('Review Round 2 (BUG-04, BUG-01, BUG-05, BUG-07): per-player actionId scopi
   }
 });
 
+test('Participant identity: stable participantId across CREATE_ROOM, JOIN_ROOM, and RECONNECT_ROOM without leaking sessionToken', () => {
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
 
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
 
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'An',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
 
+    const created = latestByClient.get('c1');
+    assert.equal(created?.type, 'ROOM_JOINED');
+    if (!created || created.type !== 'ROOM_JOINED') return;
 
+    assert.match(created.yourParticipantId, /^p_[0-9a-f]{8}$/);
+    assert.equal(created.yourSeatIndex, 0);
+    assert.equal(created.snapshot.participants.length, 1);
+    assert.deepEqual(created.snapshot.chatHistory, []);
+    assert.deepEqual(created.snapshot.participants[0], {
+      participantId: created.yourParticipantId,
+      playerName: 'An',
+      role: 'player',
+      seatIndex: 0,
+      playerId: null,
+      tokenType: 'car',
+      connected: true,
+      isHost: true,
+      ready: true,
+      micEnabled: false,
+    });
+    assert.equal(JSON.stringify(created.snapshot).includes(created.sessionToken), false);
 
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: created.roomCode,
+      playerName: 'Bình',
+      tokenType: 'yacht',
+    });
 
+    const joined = (allByClient.get('c2') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(joined?.type, 'ROOM_JOINED');
+    if (!joined || joined.type !== 'ROOM_JOINED') return;
 
+    assert.match(joined.yourParticipantId, /^p_[0-9a-f]{8}$/);
+    assert.notEqual(joined.yourParticipantId, created.yourParticipantId);
+    assert.equal(joined.yourSeatIndex, 1);
+    assert.equal(joined.snapshot.participants.length, 2);
 
+    const c2Summary = joined.snapshot.participants.find(
+      (p) => p.participantId === joined.yourParticipantId
+    );
+    assert.deepEqual(c2Summary, {
+      participantId: joined.yourParticipantId,
+      playerName: 'Bình',
+      role: 'player',
+      seatIndex: 1,
+      playerId: null,
+      tokenType: 'yacht',
+      connected: true,
+      isHost: false,
+      ready: false,
+      micEnabled: false,
+    });
+
+    const joinedSnapJson = JSON.stringify(joined.snapshot);
+    assert.equal(joinedSnapJson.includes(created.sessionToken), false);
+    assert.equal(joinedSnapJson.includes(joined.sessionToken), false);
+
+    const c1AfterJoin = latestByClient.get('c1');
+    assert.equal(c1AfterJoin?.type, 'ROOM_SNAPSHOT');
+    if (!c1AfterJoin || c1AfterJoin.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(c1AfterJoin.yourParticipantId, created.yourParticipantId);
+    assert.equal(c1AfterJoin.snapshot.participants.length, 2);
+    assert.equal(JSON.stringify(c1AfterJoin.snapshot).includes(created.sessionToken), false);
+    assert.equal(JSON.stringify(c1AfterJoin.snapshot).includes(joined.sessionToken), false);
+
+    // Disconnect c2 -> participant stays in snapshot with connected=false and same participantId
+    manager.handleDisconnect('c2');
+    const c1AfterDisc = latestByClient.get('c1');
+    assert.equal(c1AfterDisc?.type, 'ROOM_SNAPSHOT');
+    if (!c1AfterDisc || c1AfterDisc.type !== 'ROOM_SNAPSHOT') return;
+    const c2Offline = c1AfterDisc.snapshot.participants.find(
+      (p) => p.participantId === joined.yourParticipantId
+    );
+    assert.equal(c2Offline?.connected, false);
+
+    // Reconnect c2 with sessionToken -> exact same participantId preserved
+    manager.handleClientMessage('c2-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: created.roomCode,
+      sessionToken: joined.sessionToken,
+    });
+    const rejoined = (allByClient.get('c2-re') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(rejoined?.type, 'ROOM_JOINED');
+    if (!rejoined || rejoined.type !== 'ROOM_JOINED') return;
+    assert.equal(rejoined.yourParticipantId, joined.yourParticipantId);
+    assert.equal(rejoined.yourSeatIndex, 1);
+    assert.equal(rejoined.snapshot.participants.length, 2);
+    assert.equal(
+      rejoined.snapshot.participants.find((p) => p.participantId === joined.yourParticipantId)
+        ?.connected,
+      true
+    );
+    const rejoinedSnapJson = JSON.stringify(rejoined.snapshot);
+    assert.equal(rejoinedSnapJson.includes(created.sessionToken), false);
+    assert.equal(rejoinedSnapJson.includes(joined.sessionToken), false);
+  } finally {
+    manager.dispose();
+  }
+});
