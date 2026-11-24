@@ -194,6 +194,9 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
     const isTeams2v2 = (room.matchMode ?? 'FFA') === 'TEAMS_2V2';
     const currentBotDifficulty: BotDifficulty = room.botDifficulty ?? 'normal';
     const spectators = room.spectators ?? [];
+    const sortedSeriesStandings = [...(room.seriesStandings ?? [])].sort(
+      (a, b) => b.seriesPoints - a.seriesPoints || b.wins - a.wins
+    );
     const pendingSwap = room.pendingSeatSwap ?? null;
     const isIncomingSwapRecipient = Boolean(
       pendingSwap && online.yourParticipantId && pendingSwap.toParticipantId === online.yourParticipantId
@@ -1050,6 +1053,95 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
               </div>
             )}
           </div>
+
+          {sortedSeriesStandings.length > 0 && (
+            <section
+              data-testid="bt-series-standings-card"
+              aria-label="Bảng điểm chuỗi trận"
+              className="rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 space-y-2.5"
+            >
+              <div className="pb-1.5 border-b border-sky-200 flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 min-w-0">
+                  <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
+                    🏆 Bảng Điểm Chuỗi Trận
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-full bg-sky-100 border border-sky-200 text-[10px] font-extrabold text-sky-800 whitespace-nowrap">
+                    {sortedSeriesStandings.length} người chơi
+                  </span>
+                </div>
+
+                {isHost && (
+                  <button
+                    type="button"
+                    data-testid="bt-reset-series-btn"
+                    onClick={online.resetSeriesScore}
+                    className="px-2.5 py-1 rounded-xl bg-white hover:bg-rose-50 border border-rose-300 text-[11px] font-black text-rose-700 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                  >
+                    🔄 Reset điểm
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {sortedSeriesStandings.map((entry, idx) => {
+                  const isMe = Boolean(
+                    online.yourParticipantId && entry.participantId === online.yourParticipantId
+                  );
+                  const tokenColor = entry.tokenType
+                    ? TOKEN_SIGNATURE_HEX[entry.tokenType]
+                    : '#0284C7';
+                  return (
+                    <div
+                      key={entry.participantId}
+                      data-testid={`bt-series-standing-row-${idx + 1}`}
+                      className={`rounded-xl px-3 py-2 border flex items-center justify-between gap-2 min-w-0 ${
+                        idx === 0
+                          ? 'bg-amber-50/90 border-amber-300'
+                          : isMe
+                            ? 'bg-sky-100/70 border-sky-300'
+                            : 'bg-white border-sky-100'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`font-mono-num text-xs font-black shrink-0 ${
+                            idx === 0 ? 'text-amber-700' : 'text-sky-700'
+                          }`}
+                        >
+                          #{idx + 1}
+                        </span>
+                        <span
+                          aria-hidden="true"
+                          className="h-2.5 w-2.5 rounded-full shrink-0 border border-white shadow-2xs"
+                          style={{ backgroundColor: tokenColor }}
+                        />
+                        <span className="text-xs font-extrabold text-slate-900 truncate">
+                          {entry.playerName}
+                        </span>
+                        {isMe && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[9px] font-black shrink-0">
+                            Bạn
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 text-[11px] font-black whitespace-nowrap">
+                        <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-mono-num">
+                          🏆 {entry.wins} Cúp
+                        </span>
+                        <span className="text-slate-500 font-semibold hidden sm:inline font-mono-num">
+                          {entry.matchesPlayed} trận
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-900 font-mono-num">
+                          {entry.seriesPoints} điểm
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
         </div>
 
         {/* Pinned Bottom Action Bar (Leave Room & Ready / Start Online Match Always Visible!) */}

@@ -5962,6 +5962,9 @@ export default function App() {
           players={viewPlayers}
           properties={viewProperties}
           turnCount={viewTurnCount}
+          roomCode={isOnlineMatch ? online.roomSnapshot?.roomCode : undefined}
+          postMatchAwards={isOnlineMatch ? onlineMatch?.postMatchAwards : undefined}
+          seriesStandings={isOnlineMatch ? online.roomSnapshot?.seriesStandings : undefined}
           isOnlineMatch={isOnlineMatch}
           isOnlineHost={isOnlineHost}
           graphicsQualityTier={effectiveQualityTier}

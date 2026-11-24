@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { BOARD_TILES, COLOR_GROUP_META } from '../game/boardData';
-import { TilePingIntent } from '../game/onlineTypes';
+import { PostMatchAward, SeriesStandingEntry, TilePingIntent } from '../game/onlineTypes';
 import {
   calculateBuyoutPrice,
   calculateNetWorth,
@@ -31,6 +31,13 @@ import {
 import { CityLandmarkBadge } from './CityLandmarkBadge';
 import { PlayerAvatar3D } from './PlayerAvatar3D';
 import { resolveDeedGroupPalette } from '../three/textures';
+import { whenAllGameFontsLoaded } from '../utils/fontLoader';
+import {
+  copyVictoryCardToClipboard,
+  downloadVictoryCardPng,
+  renderVictoryCardCanvas,
+  type VictoryCardExportData,
+} from '../utils/victoryCardExport';
 
 function getFocusableElements(container: HTMLElement): HTMLElement[] {
   const selector = [
@@ -1490,6 +1497,9 @@ export const VictoryModal: React.FC<{
   players: PlayerState[];
   properties: Record<number, PropertyState>;
   turnCount: number;
+  roomCode?: string;
+  postMatchAwards?: PostMatchAward[];
+  seriesStandings?: SeriesStandingEntry[];
   isOnlineMatch?: boolean;
   isOnlineHost?: boolean;
   graphicsQualityTier?: GraphicsQualityTier;
@@ -1508,6 +1518,9 @@ export const VictoryModal: React.FC<{
   players,
   properties,
   turnCount,
+  roomCode,
+  postMatchAwards,
+  seriesStandings,
   isOnlineMatch = false,
   isOnlineHost = false,
   graphicsQualityTier = 'medium',
@@ -1518,6 +1531,29 @@ export const VictoryModal: React.FC<{
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocusTrap(dialogRef, trapFocus);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportFeedback, setExportFeedback] = useState<string | null>(null);
+  const exportFeedbackTimerRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (exportFeedbackTimerRef.current !== null) {
+        window.clearTimeout(exportFeedbackTimerRef.current);
+      }
+    },
+    []
+  );
+
+  const showExportFeedback = (message: string) => {
+    if (exportFeedbackTimerRef.current !== null) {
+      window.clearTimeout(exportFeedbackTimerRef.current);
+    }
+    setExportFeedback(message);
+    exportFeedbackTimerRef.current = window.setTimeout(() => {
+      exportFeedbackTimerRef.current = null;
+      setExportFeedback(null);
+    }, 4200);
+  };
 
   const worthOf = (p: PlayerState): number =>
     effectiveNetWorthByPlayerId && p.id in effectiveNetWorthByPlayerId
@@ -1546,10 +1582,81 @@ export const VictoryModal: React.FC<{
         .reduce((acc, p) => acc + worthOf(p), 0)
     : 0;
 
+  const sortedSeriesStandings = useMemo(
+    () =>
+      [...(seriesStandings ?? [])].sort(
+        (a, b) => b.seriesPoints - a.seriesPoints || b.wins - a.wins
+      ),
+    [seriesStandings]
+  );
+
+  const buildExportData = (): VictoryCardExportData => {
+    const exportWinnerName = isTeamVictory
+      ? `Đội ${winningTeamId === 0 ? 'A (Xanh)' : 'B (Đỏ)'}`
+      : winner.name;
+    const exportVictoryLabel =
+      victoryLabel ||
+      (victoryCondition === 'TIME_LIMIT'
+        ? `Hết giờ (20:00) · ${turnCount} Lượt Đấu`
+        : `Chung cuộc · ${turnCount} Lượt Đấu`);
+
+    return {
+      roomCode,
+      winnerName: exportWinnerName,
+      victoryLabel: exportVictoryLabel,
+      rankedPlayers: ranked.map((pl, idx) => ({
+        rank: idx + 1,
+        name: pl.name,
+        color: pl.color,
+        netWorthText: pl.bankrupt ? 'PHÁ SẢN' : formatBusinessTourSpaced(worthOf(pl)),
+        isWinner: isTeamVictory
+          ? !pl.bankrupt && pl.teamId === winningTeamId
+          : pl.id === winner.id,
+      })),
+      awards: postMatchAwards ?? [],
+      seriesStandings: sortedSeriesStandings,
+    };
+  };
+
+  const cleanCode = roomCode?.trim().toLowerCase();
+  const exportFilename = cleanCode
+    ? `co-ty-phu-${cleanCode}-tong-ket.png`
+    : 'co-ty-phu-tong-ket.png';
+
+  const handleCopyVictoryCard = async () => {
+    if (exportBusy) return;
+    setExportBusy(true);
+    try {
+      await whenAllGameFontsLoaded().catch(() => undefined);
+      const canvas = renderVictoryCardCanvas(buildExportData());
+      const outcome = await copyVictoryCardToClipboard(canvas, exportFilename);
+      showExportFeedback(
+        outcome === 'copied'
+          ? 'Đã copy ảnh vào Clipboard!'
+          : 'Trình duyệt không hỗ trợ copy ảnh — đã tự tải file PNG!'
+      );
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const handleDownloadVictoryCard = async () => {
+    if (exportBusy) return;
+    setExportBusy(true);
+    try {
+      await whenAllGameFontsLoaded().catch(() => undefined);
+      const canvas = renderVictoryCardCanvas(buildExportData());
+      downloadVictoryCardPng(canvas, exportFilename);
+      showExportFeedback('Đã tải xuống ảnh PNG tổng kết!');
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
   return (
     <div
       data-testid="victory-modal"
-      className="fixed inset-0 z-30 flex items-center justify-center p-3 sm:p-4 bg-slate-950/34 pointer-events-auto"
+      className="fixed inset-0 z-30 flex items-center justify-center p-2.5 sm:p-4 bg-slate-950/34 pointer-events-auto"
     >
       <ConfettiOverlay graphicsQualityTier={graphicsQualityTier} />
       <div
@@ -1558,16 +1665,17 @@ export const VictoryModal: React.FC<{
         role="dialog"
         aria-modal="true"
         aria-labelledby="victory-modal-title"
-        className="relative z-40 w-full max-w-lg max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in"
+        className="relative z-40 w-full max-w-xl max-h-[calc(100dvh-1.25rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in"
       >
-        <div className="shrink-0 bt-header-sky px-6 py-4 sm:py-5 text-center">
+        <div className="shrink-0 bt-header-sky px-4 sm:px-6 py-3 sm:py-4 text-center">
           <div className="text-xs font-extrabold uppercase tracking-wider text-white/90">
             Chung Cuộc · {turnCount} Lượt Đấu
             {victoryCondition === 'TIME_LIMIT' ? ' · Hết giờ (20:00)' : ''}
+            {roomCode ? ` · Phòng ${roomCode}` : ''}
           </div>
           <h2
             id="victory-modal-title"
-            className="font-display text-2xl sm:text-3xl font-black uppercase text-[#FEF08A] mt-1"
+            className="font-display text-xl sm:text-3xl font-black uppercase text-[#FEF08A] mt-1"
           >
             {isTeamVictory
               ? `🏆 Đội ${winningTeamId === 0 ? 'A (Xanh)' : 'B (Đỏ)'} Chiến Thắng!`
@@ -1583,7 +1691,7 @@ export const VictoryModal: React.FC<{
           )}
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-5 sm:p-6 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 sm:p-5 space-y-3.5">
           {isTeamVictory && (
             <div className="grid grid-cols-2 gap-2">
               <div
@@ -1691,6 +1799,131 @@ export const VictoryModal: React.FC<{
             </div>
           </div>
 
+          {postMatchAwards && postMatchAwards.length > 0 && (
+            <div
+              data-testid="bt-post-match-awards"
+              className="rounded-2xl bg-amber-50/85 border border-amber-200 p-3 space-y-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-display text-xs font-black uppercase tracking-wide text-amber-900">
+                  🎖️ Danh hiệu Hài hước
+                </h3>
+                <span className="text-[10px] font-extrabold text-amber-700">
+                  Khoảnh khắc nổi bật
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {postMatchAwards.map((award) => (
+                  <div
+                    key={award.id}
+                    data-testid={`bt-post-match-award-${award.id}`}
+                    className="rounded-xl bg-white border border-amber-200/90 p-2.5 flex items-start gap-2 shadow-2xs min-w-0"
+                    style={{
+                      borderLeftWidth: '4px',
+                      borderLeftColor: award.playerColor || '#F5B800',
+                    }}
+                  >
+                    <span className="text-lg leading-none shrink-0 mt-0.5" aria-hidden="true">
+                      {award.icon}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="text-xs font-black text-slate-900 truncate">
+                          {award.title}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-900 font-mono-num text-[10px] font-black shrink-0">
+                          {award.valueLabel}
+                        </span>
+                      </div>
+                      <div className="text-[11px] font-extrabold text-sky-800 truncate">
+                        {award.playerName}
+                      </div>
+                      <div className="text-[10px] font-semibold text-slate-500 leading-snug">
+                        {award.subtitle}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {sortedSeriesStandings.length > 0 && (
+            <div
+              data-testid="bt-victory-series-standings"
+              className="rounded-2xl bg-sky-50 border border-sky-200 overflow-hidden"
+            >
+              <div className="id-subheader-strip px-3.5 py-1.5 flex items-center justify-between text-[11px] font-black uppercase">
+                <span>🏆 Chuỗi trận phòng đấu</span>
+                <span>Cúp · Điểm</span>
+              </div>
+              <div className="divide-y divide-sky-100">
+                {sortedSeriesStandings.map((entry, idx) => (
+                  <div
+                    key={entry.participantId}
+                    data-testid={`bt-victory-series-row-${idx + 1}`}
+                    className={`px-3.5 py-2 flex items-center justify-between gap-2 text-xs ${
+                      idx === 0 ? 'bg-amber-50/80' : 'bg-white/75'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-mono-num font-black text-sky-800 shrink-0">
+                        #{idx + 1}
+                      </span>
+                      <span className="font-extrabold text-slate-900 truncate">
+                        {entry.playerName}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 font-mono-num font-black whitespace-nowrap">
+                      <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px]">
+                        🏆 {entry.wins} Cúp
+                      </span>
+                      <span className="text-slate-500 font-semibold text-[11px] hidden sm:inline">
+                        {entry.matchesPlayed} trận
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-900 text-[11px]">
+                        {entry.seriesPoints} điểm
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-2xl bg-sky-50/80 border border-sky-200 p-2.5 space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                data-testid="bt-copy-victory-card-btn"
+                disabled={exportBusy}
+                onClick={() => void handleCopyVictoryCard()}
+                className="bt-btn-cyan py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wide cursor-pointer disabled:opacity-55 whitespace-nowrap"
+              >
+                📋 Copy Ảnh
+              </button>
+              <button
+                type="button"
+                data-testid="bt-download-victory-card-btn"
+                disabled={exportBusy}
+                onClick={() => void handleDownloadVictoryCard()}
+                className="bt-btn-gold text-slate-950 py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wide cursor-pointer disabled:opacity-55 whitespace-nowrap"
+              >
+                ⬇️ Tải Ảnh PNG
+              </button>
+            </div>
+            {exportFeedback && (
+              <div
+                role="status"
+                aria-live="polite"
+                data-testid="bt-victory-export-feedback"
+                className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] font-extrabold text-emerald-800 text-center"
+              >
+                {exportFeedback}
+              </div>
+            )}
+          </div>
+
           {isOnlineMatch && onlineChatNode && (
             <div className="pt-1">
               {onlineChatNode}
@@ -1698,7 +1931,7 @@ export const VictoryModal: React.FC<{
           )}
         </div>
 
-        <div className="shrink-0 px-5 sm:px-6 py-3.5 bg-sky-50/95 border-t border-sky-200">
+        <div className="shrink-0 px-4 sm:px-6 py-2.5 sm:py-3.5 bg-sky-50/95 border-t border-sky-200">
           {isOnlineMatch ? (
             <div className="space-y-2">
               {isOnlineHost && onReturnToOnlineLobby ? (
@@ -1706,7 +1939,7 @@ export const VictoryModal: React.FC<{
                   type="button"
                   data-start="true"
                   onClick={onReturnToOnlineLobby}
-                  className="bt-btn-green w-full py-3 rounded-full font-black text-base sm:text-lg uppercase tracking-wider cursor-pointer whitespace-nowrap"
+                  className="bt-btn-green w-full py-2.5 sm:py-3 rounded-full font-black text-sm sm:text-lg uppercase tracking-wider cursor-pointer whitespace-normal sm:whitespace-nowrap leading-tight"
                 >
                   🔄 Về Sảnh Phòng Chơi Tiếp
                 </button>
@@ -1718,7 +1951,7 @@ export const VictoryModal: React.FC<{
               <button
                 type="button"
                 onClick={onPlayAgain}
-                className="id-btn-crimson w-full py-2.5 rounded-full font-extrabold text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
+                className="id-btn-crimson w-full py-2 sm:py-2.5 rounded-full font-extrabold text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
               >
                 Rời Phòng
               </button>
@@ -1728,7 +1961,7 @@ export const VictoryModal: React.FC<{
               type="button"
               data-start="true"
               onClick={onPlayAgain}
-              className="bt-btn-green w-full py-3 rounded-full font-black text-base sm:text-lg uppercase tracking-wider cursor-pointer whitespace-nowrap"
+              className="bt-btn-green w-full py-2.5 sm:py-3 rounded-full font-black text-sm sm:text-lg uppercase tracking-wider cursor-pointer whitespace-nowrap"
             >
               Chơi Ván Mới
             </button>
