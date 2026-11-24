@@ -560,7 +560,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
         </div>
 
         {/* Pinned Bottom Action Bar (Leave Room & Start Online Match Always Visible!) */}
-        <div className="bt-lobby-compact-cta shrink-0 px-3.5 sm:px-4 py-2 bg-sky-50/95 border-t border-sky-200/90 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2">
+        <div className="bt-lobby-compact-cta shrink-0 px-3.5 sm:px-4 py-2 bg-sky-50/95 border-t border-sky-200/90 rounded-b-[25px] sm:rounded-b-none flex flex-wrap sm:flex-nowrap items-center justify-between gap-2">
           <button
             type="button"
             onClick={online.leaveRoom}

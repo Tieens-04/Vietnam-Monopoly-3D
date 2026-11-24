@@ -71,7 +71,7 @@ test.describe('Phase 1 Online Room Chat & WebRTC Voice Integration', () => {
       await expect(hostLobbyMicBtn).toHaveAttribute('aria-pressed', 'false');
       expect(await getUserMediaCallCount(hostPage)).toBe(0);
 
-      // Voice popover in lobby must render unclipped inside viewport
+      // Voice popover in lobby must render unclipped inside viewport (desktop 1280x800 and short landscape 844x390)
       await hostPage.getByTestId('bt-voice-popover-btn').click();
       const hostLobbyPopover = hostPage.getByTestId('bt-voice-popover');
       await expect(hostLobbyPopover).toBeVisible();
@@ -83,6 +83,23 @@ test.describe('Phase 1 Online Room Chat & WebRTC Voice Integration', () => {
       );
       await hostPage.keyboard.press('Escape');
       await expect(hostLobbyPopover).toHaveCount(0);
+
+      await hostPage.setViewportSize({ width: 844, height: 390 });
+      await hostPage.getByTestId('bt-voice-popover-btn').click();
+      await expect(hostLobbyPopover).toBeVisible();
+      const lobbyOverflowStyle = await hostPage
+        .getByTestId('bt-casual-lobby')
+        .evaluate((el) => window.getComputedStyle(el).overflow);
+      expect(lobbyOverflowStyle).not.toBe('hidden');
+      assertWithinViewport(
+        await hostLobbyPopover.boundingBox(),
+        844,
+        390,
+        'Lobby Voice Control Popover at 844x390'
+      );
+      await hostPage.keyboard.press('Escape');
+      await expect(hostLobbyPopover).toHaveCount(0);
+      await hostPage.setViewportSize({ width: 1280, height: 800 });
 
       // 2. Guest joins the room by code / invite query
       await guestPage.goto(`/?room=${roomCode}`);
@@ -184,9 +201,11 @@ test.describe('Phase 1 Online Room Chat & WebRTC Voice Integration', () => {
       await hostPage.waitForTimeout(400);
       await expect(hostPage.getByTestId('bt-chat-messages-list')).not.toContainText(guestTeamMsg);
 
-      // 7. In-match Voice Popover opens unclipped and shows remote peer KhachMoiB
-      await hostPage.getByTestId('bt-action-chat-btn').click();
+      // 7. Mutual exclusion & unclipped in-match Voice Popover: opening Voice Popover closes open Chat Drawer and vice versa
+      await expect(hostPage.getByTestId('bt-online-chat-panel')).toBeVisible();
       await hostPage.getByTestId('bt-voice-popover-btn').click();
+      await expect(hostPage.getByTestId('bt-online-chat-panel')).toHaveCount(0);
+
       const hostMatchPopover = hostPage.getByTestId('bt-voice-popover');
       await expect(hostMatchPopover).toBeVisible();
       await expect(hostMatchPopover).toContainText('KhachMoiB');
@@ -196,6 +215,10 @@ test.describe('Phase 1 Online Room Chat & WebRTC Voice Integration', () => {
         800,
         'Match Voice Control Popover'
       );
+
+      await hostPage.getByTestId('bt-action-chat-btn').click();
+      await expect(hostPage.getByTestId('bt-online-chat-panel')).toBeVisible();
+      await expect(hostMatchPopover).toHaveCount(0);
 
       // 8. Host's 4s HUD chat bubble auto-dismisses cleanly after ~4000ms
       await expect(hostBubbleOnGuestHud).toHaveCount(0, { timeout: 6_000 });

@@ -358,6 +358,7 @@ export default function App() {
   const [offlinePlayerEmotes, setOfflinePlayerEmotes] = useState<Record<number, string>>({});
   const [onlinePlayerEmotes, setOnlinePlayerEmotes] = useState<Record<number, string>>({});
   const [chatDrawerOpen, setChatDrawerOpen] = useState<boolean>(false);
+  const [voicePopoverOpen, setVoicePopoverOpen] = useState<boolean>(false);
   const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
   const [playerChatBubbles, setPlayerChatBubbles] = useState<
     Record<number, { id: number; text: string; isTeam?: boolean }>
@@ -398,7 +399,7 @@ export default function App() {
   const pendingRtcSignalsRef = useRef<
     Array<{ fromParticipantId: string; signal: RtcSignalPayload }>
   >([]);
-  const lastReportedMicEnabledRef = useRef<boolean>(false);
+  const lastReportedMicEnabledRef = useRef<boolean | null>(null);
   const playerChatBubbleTimersRef = useRef<Record<number, number>>({});
   const prevRevealedCardKeyRef = useRef<string | null>(null);
   const prevCeremonyKeyRef = useRef<string | null>(null);
@@ -638,7 +639,7 @@ export default function App() {
       voiceClientRef.current?.dispose();
       voiceClientRef.current = null;
       pendingRtcSignalsRef.current = [];
-      lastReportedMicEnabledRef.current = false;
+      lastReportedMicEnabledRef.current = null;
       setVoiceState(DEFAULT_VOICE_SNAPSHOT);
       return;
     }
@@ -656,8 +657,11 @@ export default function App() {
     const unsubscribe = client.subscribe((snap) => {
       setVoiceState(snap);
       if (snap.micEnabled !== lastReportedMicEnabledRef.current) {
-        lastReportedMicEnabledRef.current = snap.micEnabled;
-        updateVoiceStateRef.current(snap.micEnabled);
+        if (updateVoiceStateRef.current(snap.micEnabled)) {
+          lastReportedMicEnabledRef.current = snap.micEnabled;
+        } else {
+          lastReportedMicEnabledRef.current = null;
+        }
       }
     });
 
@@ -674,7 +678,7 @@ export default function App() {
       if (voiceClientRef.current === client) {
         voiceClientRef.current = null;
       }
-      lastReportedMicEnabledRef.current = false;
+      lastReportedMicEnabledRef.current = null;
       setVoiceState(DEFAULT_VOICE_SNAPSHOT);
     };
   }, [onlineRoomCode, onlineParticipantId]);
@@ -687,6 +691,34 @@ export default function App() {
       .map((p) => p.participantId);
     client.syncPeers(remoteConnectedIds);
   }, [onlineRoomCode, onlineParticipantId, onlineParticipants]);
+
+  useEffect(() => {
+    if (!online.isSynced) {
+      lastReportedMicEnabledRef.current = null;
+      return;
+    }
+    const client = voiceClientRef.current;
+    if (!client || !onlineRoomCode || !onlineParticipantId) return;
+    const currentMicEnabled = client.getSnapshot().micEnabled;
+    const serverParticipant = onlineParticipants?.find(
+      (p) => p.participantId === onlineParticipantId
+    );
+    if (
+      lastReportedMicEnabledRef.current === null &&
+      serverParticipant &&
+      serverParticipant.micEnabled === currentMicEnabled
+    ) {
+      lastReportedMicEnabledRef.current = currentMicEnabled;
+      return;
+    }
+    if (lastReportedMicEnabledRef.current !== currentMicEnabled) {
+      if (updateVoiceStateRef.current(currentMicEnabled)) {
+        lastReportedMicEnabledRef.current = currentMicEnabled;
+      } else {
+        lastReportedMicEnabledRef.current = null;
+      }
+    }
+  }, [online.isSynced, onlineRoomCode, onlineParticipantId, onlineParticipants]);
   const onlineMatch =
     online.roomSnapshot &&
     online.roomSnapshot.match &&
@@ -957,6 +989,7 @@ export default function App() {
       setOnlinePauseOpen(false);
       setOpenActionMenu('none');
       setChatDrawerOpen(false);
+      setVoicePopoverOpen(false);
       setUnreadChatCount(0);
       setCopiedInviteToast(false);
       setBotBubbles({});
@@ -987,6 +1020,7 @@ export default function App() {
       setSelectedTileIndex(null);
       setOpenActionMenu('none');
       setChatDrawerOpen(false);
+      setVoicePopoverOpen(false);
       setUnreadChatCount(0);
       setCopiedInviteToast(false);
       setBotBubbles({});
@@ -4422,6 +4456,9 @@ export default function App() {
       setOpenActionMenu('none');
       setChatDrawerOpen(false);
     }
+    if (viewScreenState === 'paused' || viewScreenState === 'gameover') {
+      setVoicePopoverOpen(false);
+    }
   }, [viewScreenState]);
 
   /* ==========================================
@@ -5047,6 +5084,7 @@ export default function App() {
   const handleOpenPause = useCallback(() => {
     setSelectedTileIndex(null);
     setChatDrawerOpen(false);
+    setVoicePopoverOpen(false);
     if (isOnlineMatchRef.current) {
       setOnlinePauseOpen(true);
     } else {
@@ -5058,6 +5096,7 @@ export default function App() {
     setOpenActionMenu(next);
     if (next !== 'none') {
       setChatDrawerOpen(false);
+      setVoicePopoverOpen(false);
     }
   }, []);
 
@@ -5066,10 +5105,19 @@ export default function App() {
       const next = !prev;
       if (next) {
         setOpenActionMenu('none');
+        setVoicePopoverOpen(false);
         setUnreadChatCount(0);
       }
       return next;
     });
+  }, []);
+
+  const handleVoicePopoverOpenChange = useCallback((open: boolean) => {
+    setVoicePopoverOpen(open);
+    if (open) {
+      setChatDrawerOpen(false);
+      setOpenActionMenu('none');
+    }
   }, []);
 
   const handleSendChatMessage = useCallback(
@@ -5143,6 +5191,8 @@ export default function App() {
         participants={online.roomSnapshot.participants}
         myParticipantId={online.yourParticipantId}
         compact={false}
+        popoverOpen={voicePopoverOpen}
+        onPopoverOpenChange={handleVoicePopoverOpenChange}
         onToggleMic={handleToggleVoiceMic}
         onSetInputMode={handleSetVoiceInputMode}
         onSetPushToTalkPressed={handleSetVoicePttPressed}
@@ -5158,6 +5208,8 @@ export default function App() {
         participants={online.roomSnapshot.participants}
         myParticipantId={online.yourParticipantId}
         compact={true}
+        popoverOpen={voicePopoverOpen}
+        onPopoverOpenChange={handleVoicePopoverOpenChange}
         onToggleMic={handleToggleVoiceMic}
         onSetInputMode={handleSetVoiceInputMode}
         onSetPushToTalkPressed={handleSetVoicePttPressed}

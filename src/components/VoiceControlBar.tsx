@@ -17,6 +17,8 @@ export interface VoiceControlBarProps {
   participants: RoomParticipantSummary[];
   myParticipantId: string | null;
   compact?: boolean;
+  popoverOpen?: boolean;
+  onPopoverOpenChange?: (open: boolean) => void;
   onToggleMic: () => void;
   onSetInputMode: (mode: VoiceInputMode) => void;
   onSetPushToTalkPressed: (pressed: boolean) => void;
@@ -73,18 +75,38 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
   participants,
   myParticipantId,
   compact = false,
+  popoverOpen: controlledPopoverOpen,
+  onPopoverOpenChange,
   onToggleMic,
   onSetInputMode,
   onSetPushToTalkPressed,
   onSetPeerMuted,
   onSetPeerVolume,
 }) => {
-  const [popoverOpen, setPopoverOpen] = useState(false);
-  const [popoverPositionClass, setPopoverPositionClass] = useState<string>(
-    compact ? 'right-full mr-2.5 top-1/2 -translate-y-1/2' : 'top-full mt-2 right-0'
+  const [localPopoverOpen, setLocalPopoverOpen] = useState(false);
+  const isControlledPopover = controlledPopoverOpen !== undefined;
+  const popoverOpen = isControlledPopover ? controlledPopoverOpen : localPopoverOpen;
+  const popoverOpenRef = useRef(popoverOpen);
+  popoverOpenRef.current = popoverOpen;
+  const onPopoverOpenChangeRef = useRef(onPopoverOpenChange);
+  onPopoverOpenChangeRef.current = onPopoverOpenChange;
+
+  const setPopoverOpen = useCallback(
+    (updater: boolean | ((prev: boolean) => boolean)) => {
+      const next =
+        typeof updater === 'function' ? updater(popoverOpenRef.current) : updater;
+      if (!isControlledPopover) {
+        setLocalPopoverOpen(next);
+      }
+      onPopoverOpenChangeRef.current?.(next);
+    },
+    [isControlledPopover]
   );
 
+  const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
+
   const containerRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const popoverBtnRef = useRef<HTMLButtonElement>(null);
   const keyboardPttActiveRef = useRef(false);
   const pointerPttActiveRef = useRef(false);
@@ -116,7 +138,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
     ) {
       setPopoverOpen(true);
     }
-  }, [voiceState.permissionStatus]);
+  }, [voiceState.permissionStatus, setPopoverOpen]);
 
   // Keyboard Push-to-Talk (KeyV) + safe release on mode change, blur, visibility loss, or unmount
   useEffect(() => {
@@ -215,9 +237,9 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
       document.removeEventListener('pointerdown', handleOutsidePointerDown);
       window.removeEventListener('keydown', handleEscape, { capture: true });
     };
-  }, [popoverOpen]);
+  }, [popoverOpen, setPopoverOpen]);
 
-  // Smart quadrant placement so the popover stays inside viewport in both ActionDock & Lobby
+  // Viewport-clamped positioning relative to containerRef so the popover stays inside viewport even inside transformed parents
   useLayoutEffect(() => {
     if (!popoverOpen) return;
 
@@ -225,30 +247,55 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
       const container = containerRef.current;
       if (!container || typeof window === 'undefined') return;
       const rect = container.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const margin = 8;
 
       if (compact) {
-        const horiz =
-          rect.left >= window.innerWidth - rect.right
-            ? 'right-full mr-2.5'
-            : 'left-full ml-2.5';
-        const vert =
-          rect.top < 150
-            ? 'top-0'
-            : window.innerHeight - rect.bottom < 150
-              ? 'bottom-0'
-              : 'top-1/2 -translate-y-1/2';
-        setPopoverPositionClass(`${horiz} ${vert}`);
+        const popoverWidth = Math.min(304, Math.max(220, vw - 84));
+        const maxH = Math.max(140, Math.min(368, vh - margin * 2));
+        const measuredH = Math.min(maxH, popoverRef.current?.scrollHeight || maxH);
+        const hasMoreLeft = rect.left >= vw - rect.right;
+        const rawLeft = hasMoreLeft ? rect.left - popoverWidth - 10 : rect.right + 10;
+        const clampedLeft = Math.max(margin, Math.min(rawLeft, vw - popoverWidth - margin));
+        const desiredTop = rect.top + rect.height / 2 - measuredH / 2;
+        const clampedTop = Math.max(margin, Math.min(desiredTop, vh - measuredH - margin));
+
+        setPopoverStyle({
+          left: `${Math.round(clampedLeft - rect.left)}px`,
+          top: `${Math.round(clampedTop - rect.top)}px`,
+          width: `${Math.round(popoverWidth)}px`,
+          maxHeight: `${Math.round(maxH)}px`,
+        });
         return;
       }
 
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const spaceAbove = rect.top;
-      const vert = spaceBelow >= 270 || spaceBelow >= spaceAbove ? 'top-full mt-2' : 'bottom-full mb-2';
-      const horiz =
-        rect.right >= 300 && (rect.left > window.innerWidth / 2 || window.innerWidth - rect.left < 300)
-          ? 'right-0'
-          : 'left-0';
-      setPopoverPositionClass(`${vert} ${horiz}`);
+      const popoverWidth = Math.min(304, Math.max(220, vw - margin * 2));
+      const spaceBelow = vh - rect.bottom - margin - 8;
+      const spaceAbove = rect.top - margin - 8;
+      const openBelow = spaceBelow >= 220 || spaceBelow >= spaceAbove;
+      const preferRightAlign = rect.left > vw / 2 || vw - rect.left < popoverWidth + margin;
+      const rawLeft = preferRightAlign ? rect.right - popoverWidth : rect.left;
+      const clampedLeft = Math.max(margin, Math.min(rawLeft, vw - popoverWidth - margin));
+
+      if (openBelow) {
+        const topViewport = rect.bottom + 8;
+        const maxH = Math.max(140, Math.min(368, vh - topViewport - margin));
+        setPopoverStyle({
+          left: `${Math.round(clampedLeft - rect.left)}px`,
+          top: `${Math.round(topViewport - rect.top)}px`,
+          width: `${Math.round(popoverWidth)}px`,
+          maxHeight: `${Math.round(maxH)}px`,
+        });
+      } else {
+        const maxH = Math.max(140, Math.min(368, rect.top - margin - 8));
+        setPopoverStyle({
+          left: `${Math.round(clampedLeft - rect.left)}px`,
+          bottom: `${Math.round(rect.height + 8)}px`,
+          width: `${Math.round(popoverWidth)}px`,
+          maxHeight: `${Math.round(maxH)}px`,
+        });
+      }
     };
 
     updatePlacement();
@@ -256,7 +303,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
     return () => {
       window.removeEventListener('resize', updatePlacement);
     };
-  }, [popoverOpen, compact]);
+  }, [popoverOpen, compact, participants.length, voiceState.permissionStatus]);
 
   const remoteParticipants = useMemo(
     () => participants.filter((p) => p.participantId !== myParticipantId),
@@ -484,12 +531,12 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
 
       {popoverOpen && (
         <div
+          ref={popoverRef}
           data-testid="bt-voice-popover"
           role="dialog"
           aria-label="Cài đặt Thoại Nhóm"
-          className={`absolute ${popoverPositionClass} z-50 w-72 sm:w-76 ${
-            compact ? 'max-w-[calc(100vw-5.25rem)]' : 'max-w-[calc(100vw-1.75rem)]'
-          } max-h-[min(23rem,calc(100dvh-5rem))] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto`}
+          style={popoverStyle}
+          className="absolute z-50 flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
         >
           <div className="shrink-0 bt-header-sky px-3.5 py-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 min-w-0">

@@ -444,6 +444,10 @@
   .bt-lobby-mouse-hint {
     display: none !important;
   }
+  .bt-lobby-compact-cta {
+    border-bottom-left-radius: 25px;
+    border-bottom-right-radius: 25px;
+  }
   .bt-lobby-crest {
     width: 2.15rem;
     height: 2.15rem;

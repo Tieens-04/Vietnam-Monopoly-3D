@@ -272,10 +272,10 @@ export const StartModal: React.FC<StartModalProps> = ({
         aria-modal="true"
         aria-labelledby="start-modal-title"
         data-testid="bt-casual-lobby"
-        className="w-full max-w-5xl shrink-0 my-auto bt-casual-modal rounded-[28px] overflow-hidden animate-pop-in flex flex-col max-h-[calc(100dvh-1.25rem)] sm:max-h-[calc(100dvh-2rem)]"
+        className="w-full max-w-5xl shrink-0 my-auto bt-casual-modal rounded-[28px] animate-pop-in flex flex-col max-h-[calc(100dvh-1.25rem)] sm:max-h-[calc(100dvh-2rem)]"
       >
         {/* Playful Glossy Sky-Cyan Game Lobby Banner */}
-        <div className="bt-lobby-compact-header shrink-0 bt-header-sky px-3.5 sm:px-6 py-2 sm:py-2.5 flex items-center justify-between gap-2.5">
+        <div className="bt-lobby-compact-header shrink-0 bt-header-sky rounded-t-[25px] px-3.5 sm:px-6 py-2 sm:py-2.5 flex items-center justify-between gap-2.5">
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             <BusinessTourCrestSvg />
             <div className="min-w-0">
@@ -743,7 +743,7 @@ export const StartModal: React.FC<StartModalProps> = ({
               </div>
 
               {/* Pinned Chunky Glossy 3D Lime-Green Start Match CTA (Always Visible!) */}
-              <div className="bt-lobby-compact-cta shrink-0 px-3.5 sm:px-4 py-2 bg-sky-50/95 border-t border-sky-200/90 flex flex-col items-center gap-1.5">
+              <div className="bt-lobby-compact-cta shrink-0 px-3.5 sm:px-4 py-2 bg-sky-50/95 border-t border-sky-200/90 rounded-b-[25px] sm:rounded-b-none flex flex-col items-center gap-1.5">
                 {validationError && (
                   <p
                     role="alert"
@@ -765,7 +765,7 @@ export const StartModal: React.FC<StartModalProps> = ({
         </div>
 
         {/* Clean inline control hint inside dialog (desktop/tablet with pointer/keyboard) */}
-        <p className="bt-lobby-mouse-hint hidden sm:block shrink-0 px-4 py-1.5 border-t border-sky-200/80 bg-sky-100/70 text-[11px] sm:text-xs font-extrabold text-slate-800 text-center select-none">
+        <p className="bt-lobby-mouse-hint hidden sm:block shrink-0 px-4 py-1.5 border-t border-sky-200/80 bg-sky-100/70 rounded-b-[25px] text-[11px] sm:text-xs font-extrabold text-slate-800 text-center select-none">
           Kéo chuột Xoay bàn cờ 3D · Cuộn chuột Thu phóng · Nhấn ô đất Xem chi tiết
           {lobbyMode === 'offline' ? ' · Phím Space Đổ xúc xắc' : ''}
         </p>
