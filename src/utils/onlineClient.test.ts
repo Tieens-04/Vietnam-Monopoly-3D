@@ -320,6 +320,7 @@ function makeRoomSnapshot(roomCode: string): OnlineRoomSnapshot {
     pendingSeatSwap: null,
     pendingTakeoverRequest: null,
     chatHistory: [],
+    seriesStandings: [],
     match: null,
   };
 }

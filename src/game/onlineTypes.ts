@@ -20,6 +20,42 @@ export type OnlineRoomStatus = 'lobby' | 'playing' | 'gameover';
 export type ParticipantRole = 'player' | 'spectator';
 export type ChatChannel = 'ALL' | 'TEAM';
 export type BotDifficulty = 'easy' | 'normal' | 'hard';
+export type BoardTauntKind = 'slipper' | 'tomato' | 'confetti' | 'cash_stack';
+export type TilePingIntent = 'TARGET' | 'DANGER' | 'TROPHY';
+
+export interface PlayerMatchStats {
+  jailVisits: number;
+  maxSingleRentCollected: number;
+  totalRentCollected: number;
+  totalRentPaid: number;
+  sabotageCount: number;
+  worldTourFlights: number;
+}
+
+export interface PostMatchAward {
+  id:
+    | 'CHUA_DAO_HOANG'
+    | 'TRUM_THU_HO'
+    | 'THANH_PHA_HOAI'
+    | 'NHA_TAI_TRO_VANG'
+    | 'PHUOT_THU';
+  icon: string;
+  title: string;
+  subtitle: string;
+  playerId: number;
+  playerName: string;
+  playerColor: string;
+  valueLabel: string;
+}
+
+export interface SeriesStandingEntry {
+  participantId: string;
+  playerName: string;
+  tokenType: TokenArchetype | null;
+  wins: number;
+  matchesPlayed: number;
+  seriesPoints: number;
+}
 
 export interface PendingSeatSwapRequest {
   requestId: string;
@@ -109,6 +145,7 @@ export interface OnlineMatchSnapshot {
   pendingDebtQueue?: PendingDebt[];
   debtReturnToPlayerIndex?: number | null;
   matchWinnerResult: MatchWinnerResult | null;
+  postMatchAwards?: PostMatchAward[];
   logs: GameLogEntry[];
   landingCueText: string | null;
 }
@@ -129,6 +166,7 @@ export interface OnlineRoomSnapshot {
   pendingSeatSwap: PendingSeatSwapRequest | null;
   pendingTakeoverRequest: PendingBotTakeoverRequest | null;
   chatHistory: RoomChatMessage[];
+  seriesStandings: SeriesStandingEntry[];
   hostSeatIndex: number;
   match: OnlineMatchSnapshot | null;
 }
@@ -231,6 +269,17 @@ export type ClientToServerMessage =
       type: 'UPDATE_VOICE_STATE';
       micEnabled: boolean;
     }
+  | {
+      type: 'SEND_BOARD_TAUNT';
+      targetPlayerId: number;
+      tauntKind: BoardTauntKind;
+    }
+  | {
+      type: 'SEND_TILE_PING';
+      tileIndex: number;
+      intent: TilePingIntent;
+    }
+  | { type: 'RESET_SERIES_SCORE' }
   | { type: 'PING' };
 
 export type OnlineSoundEffect =
@@ -284,6 +333,24 @@ export type OnlineVisualEvent =
       eventSeq: number;
       kind: 'CHAT_MESSAGE';
       message: RoomChatMessage;
+    }
+  | {
+      eventSeq: number;
+      kind: 'BOARD_TAUNT';
+      fromPlayerId: number;
+      fromPlayerName: string;
+      targetPlayerId: number;
+      tauntKind: BoardTauntKind;
+    }
+  | {
+      eventSeq: number;
+      kind: 'TILE_PING';
+      participantId: string;
+      playerId: number | null;
+      senderName: string;
+      senderColor: string;
+      tileIndex: number;
+      intent: TilePingIntent;
     };
 
 export type ServerToClientMessage =

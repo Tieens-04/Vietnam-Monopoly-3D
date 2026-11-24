@@ -811,6 +811,7 @@ export class OnlineRoomManager {
           }
         : null,
       chatHistory,
+      seriesStandings: [],
       hostSeatIndex: room.hostSeatIndex,
       match: matchSnap,
     };
