@@ -912,10 +912,12 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
             player.id,
             cashNeededFromSales,
             properties,
-            boardModifiers
+            boardModifiers,
+            players,
+            matchMode
           )
         : null,
-    [boardModifiers, cashNeededFromSales, pendingDebt, player.id, properties]
+    [boardModifiers, cashNeededFromSales, matchMode, pendingDebt, player.id, players, properties]
   );
 
   const selectedRefund = useMemo(
@@ -1383,6 +1385,8 @@ export const VictoryModal: React.FC<{
   victoryCondition?: VictoryConditionKind;
   matchMode?: MatchMode;
   winningTeamId?: TeamId;
+  effectiveNetWorthByPlayerId?: Record<number, number>;
+  effectiveCashByPlayerId?: Record<number, number>;
   players: PlayerState[];
   properties: Record<number, PropertyState>;
   turnCount: number;
@@ -1397,6 +1401,8 @@ export const VictoryModal: React.FC<{
   victoryCondition,
   matchMode = 'FFA',
   winningTeamId,
+  effectiveNetWorthByPlayerId,
+  effectiveCashByPlayerId,
   players,
   properties,
   turnCount,
@@ -1409,24 +1415,31 @@ export const VictoryModal: React.FC<{
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocusTrap(dialogRef, trapFocus);
 
+  const worthOf = (p: PlayerState): number =>
+    effectiveNetWorthByPlayerId && p.id in effectiveNetWorthByPlayerId
+      ? effectiveNetWorthByPlayerId[p.id]
+      : calculateNetWorth(p, properties);
+
   const ranked = rankPlayersForVictory(
     players,
     properties,
     winner.id,
     matchMode,
-    winningTeamId
+    winningTeamId,
+    effectiveNetWorthByPlayerId,
+    effectiveCashByPlayerId
   );
 
   const isTeamVictory = matchMode === 'TEAMS_2V2' && winningTeamId !== undefined;
   const teamATotal = isTeamVictory
     ? players
         .filter((p) => p.teamId === 0)
-        .reduce((acc, p) => acc + calculateNetWorth(p, properties), 0)
+        .reduce((acc, p) => acc + worthOf(p), 0)
     : 0;
   const teamBTotal = isTeamVictory
     ? players
         .filter((p) => p.teamId === 1)
-        .reduce((acc, p) => acc + calculateNetWorth(p, properties), 0)
+        .reduce((acc, p) => acc + worthOf(p), 0)
     : 0;
 
   return (
@@ -1508,7 +1521,7 @@ export const VictoryModal: React.FC<{
             </div>
             <div className="divide-y divide-sky-100">
               {ranked.map((pl, i) => {
-                const worth = calculateNetWorth(pl, properties);
+                const worth = worthOf(pl);
                 const isChamp = isTeamVictory
                   ? !pl.bankrupt && pl.teamId === winningTeamId
                   : pl.id === winner.id;

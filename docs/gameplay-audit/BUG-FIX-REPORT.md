@@ -1,0 +1,107 @@
+# BUG FIX REPORT — Gameplay Bug Remediation (11/11 Resolved)
+
+- **Ngày hoàn tất:** 2026-11-24
+- **Base commit:** `main` @ `515feab` (working tree chưa commit theo yêu cầu — chờ nghiệm thu)
+- **Phạm vi:** Khắc phục trọn vẹn **11/11 lỗi** (`0 × P0`, `4 × P1`, `3 × P2`, `4 × P3` sau khi nâng `BUG-04` P2→P1 và `BUG-05` P3→P1), cộng **1 điểm gia cố Wave 3 (`Audit Hardening`)** và **7 lỗi biên thực tế phát hiện & vá trong vòng Independent Review (Round 2)** (kèm 5 regression tests mới → tổng **106/106** unit/sim tests + **45/45** headed E2E sau bản vá cuối).
+- **Quy trình áp dụng:** Systematic Debugging + strict TDD (viết test tái hiện → xác nhận **RED** → triển khai bản vá tối thiểu → xác nhận **GREEN** → chạy cổng kiểm thử sau từng Wave).
+
+---
+
+## 1. Bảng Tổng Hợp 11 Lỗi Đã Khắc Phục
+
+| Đợt | Thứ tự | Bug ID | Severity (Cập nhật) | Phạm vi | File sửa chính | Regression Test (RED → GREEN) | Trạng thái |
+|---|---|---|---|---|---|---|---|
+| Wave 1 | 1 | **BUG-02** | **P1 – High** | Online Seat & Turn Order | `src/server/roomManager.ts` (`startMatch`) | `roomManager.test.ts` (`BUG-02: startMatch preserves lobby seat order...`), `e2e/online-resilience.spec.ts` | **FIXED & VERIFIED** |
+| Wave 1 | 2 | **BUG-01** | **P1 – High** | Online AFK Takeover | `src/server/roomManager.ts` (`tickOneSecond`, `handleHumanGameAction`, `RECONNECT_ROOM`, `RECLAIM_CONTROL`) | `roomManager.test.ts` (`BUG-01: AFK takeover counts full missed turns...`), `scripts/gameplay-audit/probes.ts`, `pw-online-and-matrix-audit.ts` | **FIXED & VERIFIED** |
+| Wave 1 | 3 | **BUG-06** | **P3 – Low** | Online Invalid Phase Feedback | `src/server/roomManager.ts` (`handleHumanGameAction`, `executeAction`) | `roomManager.test.ts` (`BUG-06: Server responds with ERROR INVALID_STATE...`), `e2e/online-resilience.spec.ts` | **FIXED & VERIFIED** |
+| Wave 1 | 4 | **BUG-04** | **P1 – High** *(↑ từ P2)* | Stale Action & Reconnect | `src/game/onlineTypes.ts`, `src/server/roomManager.ts`, `src/utils/onlineClient.ts`, `src/App.tsx`, `src/components/ActionDock.tsx` | `roomManager.test.ts` (`BUG-04`, `Review Round 2`), `onlineClient.test.ts` (`BUG-30c & BUG-04`, `BUG-04 Review Round 2`), `e2e/online-resilience.spec.ts`, `pw-online-and-matrix-audit.ts` | **FIXED & VERIFIED** |
+| Wave 1 | 5 | **BUG-05** | **P1 – High** *(↑ từ P3)* | Sudden Death & Pending Debt | `src/game/types.ts`, `src/game/rules.ts`, `src/server/roomManager.ts`, `src/App.tsx`, `src/components/TileModalAndDialogs.tsx` | `rules.test.ts` (`BUG-05 (Audit)`, `BUG-05 Review Round 2`), `roomManager.test.ts` (`BUG-05 (Audit)`, `Review Round 2`), `scripts/gameplay-audit/probes.ts` | **FIXED & VERIFIED** |
+| Wave 2 | 6 | **BUG-11** | **P2 – Medium** | Tactical Dice Reset (Online/Offline) | `src/game/rules.ts`, `src/App.tsx`, `src/components/ActionDock.tsx` | `rules.test.ts` (`BUG-11`), `e2e/online-resilience.spec.ts`, `pw-online-and-matrix-audit.ts` | **FIXED & VERIFIED** |
+| Wave 2 | 7 | **BUG-03** | **P2 – Medium** | Offline Monotonic Gameplay Clock | `src/game/gameplayClock.ts` *(mới)*, `src/App.tsx` | `gameplayClock.test.ts` (4 tests), `e2e/online-resilience.spec.ts`, `pw-fps-and-clock-benchmark.ts` | **FIXED & VERIFIED** |
+| Wave 2 | 8 | **BUG-10** | **P2 – Medium** | Animation Sync at Low FPS & Occluded Tab | `src/game/graphicsQuality.ts`, `src/components/MonopolyCanvas.tsx`, `src/App.tsx` | `graphicsQuality.test.ts` (3 tests), `e2e/online-resilience.spec.ts`, `pw-fps-and-clock-benchmark.ts` (60/30/15/5/2.5 FPS + Hidden Tab) | **FIXED & VERIFIED** |
+| Wave 3 | 9 | **BUG-08** | **P3 – Low** | Auto-Sale in TEAMS_2V2 | `src/game/rules.ts`, `src/server/roomManager.ts`, `src/App.tsx`, `src/components/TileModalAndDialogs.tsx` | `rules.test.ts` (`BUG-08`), `scripts/gameplay-audit/probes.ts`, `sim.ts --all-190` (`B4`) | **FIXED & VERIFIED** |
+| Wave 3 | 10 | **BUG-07** | **P3 – Low** | Offline vs Online Invalid Payload Parity | `src/game/rules.ts`, `src/App.tsx`, `src/server/roomManager.ts` | `rules.test.ts` (`BUG-07`), `roomManager.test.ts` (`Audit Hardening`, `Review Round 2`) | **FIXED & VERIFIED** |
+| Wave 3 | 11 | **BUG-09** | **P3 – Low (Latent)** | State-Aware Online Bot Watchdog | `src/server/roomManager.ts` (`scheduleBotTurnIfNeeded`, `runBotWatchdogIfNeeded`, `waitRoomBeat`, `tickOneSecond`) | `roomManager.test.ts` (`BUG-09`), `scripts/gameplay-audit/probes.ts` | **FIXED & VERIFIED** |
+
+---
+
+## 2. Chi Tiết Kỹ Thuật Từng Bản Vá
+
+### 2.1 Wave 1 — Gameplay Integrity & Multiplayer
+
+#### BUG-02 (P1) — Thứ tự ghế và lượt chơi (`startMatch`)
+- **Nguyên nhân gốc:** `OnlineRoomManager.startMatch()` (`src/server/roomManager.ts`) từng dựng danh sách `players` bằng 2 vòng lặp tách biệt (đẩy hết toàn bộ người thật lên trước rồi mới chèn Bot vào cuối). Khi phòng `TEAMS_2V2` có người thật ngồi ghế `0` & `2` (ghế `1` & `3` bù Bot), thứ tự lượt bị biến thành `[Team 0, Team 0, Team 1, Team 1]` thay vì luân phiên `[Team 0, Team 1, Team 0, Team 1]`, đồng thời lệch chỉ số HUD, khay tiền 3D và `yourPlayerId`.
+- **Giải pháp:** Hợp nhất thành 1 vòng lặp duy nhất theo thứ tự ghế thực tế `for (let seatIdx = 0; seatIdx < room.maxPlayers; seatIdx++)`. Gán `h.playerId = id` theo vị trí ghế thực, giữ nguyên thứ tự chọn token/tên Bot khớp `buildRoomSnapshot`, `teamId = (seatIdx % 2)` cho `TEAMS_2V2`, và cấp `id` liên tiếp khi `fillBots = false` (vẫn bảo toàn thứ tự ghế thực).
+- **Trường hợp biên đã kiểm:** 2v2 người ở `(0,2)`, 2v2 người ở `(1,3)` (Bot ghế 0 đi trước), FFA 3P có `fillBots=true` ghế trống giữa, FFA 4P `fillBots=false` ghế không liên tục, quyền sở hữu BĐS và `RECONNECT_ROOM` theo `sessionToken`.
+
+#### BUG-01 (P1) — AFK Takeover đếm sai theo sub-phase
+- **Nguyên nhân gốc:** `tickOneSecond()` cộng dồn `missedTurnsByPlayer[id] += 1` mỗi lần hết giờ một *sub-phase* (`AWAIT_ROLL`, `REROLL_DECISION`, `BUY_DECISION`, ...). Chỉ cần hết giờ 2 pha trong **cùng Lượt 1** (~62s), bộ đếm đã chạm `2` và chuyển giao Bot kèm log sai `"AFK 2 lượt liên tiếp"`.
+- **Định nghĩa chuẩn 1 lượt AFK:** Lượt thuộc về chính người chơi đó (`turnCount`, loại trừ nhắc nợ ngoại lượt từ thẻ Sinh Nhật `ch-10` khi `debtReturnToPlayerIndex !== activePlayerIndex`) và người chơi có **0 hành động hợp lệ** trong toàn bộ `turnCount` đó.
+- **Giải pháp:** Bổ sung `lastMissedTurnCountByPlayer` và `lastHumanActionTurnCountByPlayer` vào `MatchRecord`. Ghi nhận tương tác người chơi chỉ khi `executeAction` chấp nhận hành động hợp lệ (`accepted === true`, dùng `actionTurnCount` chụp trước khi hàm thay đổi `turnCount`); giới hạn tăng `missedTurnsByPlayer[id]` tối đa 1 lần cho mỗi `turnCount` và chỉ tăng khi người chơi chưa có tương tác hợp lệ nào trong `turnCount` đó. Khi `RECONNECT_ROOM`, server đặt lại `missedTurnsByPlayer[id] = 0` và xóa `lastMissedTurnCountByPlayer[id]` nhưng **bảo toàn `lastHumanActionTurnCountByPlayer[id]`** để không làm mất ghi nhận tương tác một phần trong cùng lượt; khi `RECLAIM_CONTROL`, server đặt lại `missedTurnsByPlayer[id] = 0`, xóa `lastMissedTurnCountByPlayer[id]` và **ghi nhận `lastHumanActionTurnCountByPlayer[id] = match.turnCount`**; đồng thời cả hai nhánh đều hủy `botActionTimer` đang chờ và gọi `ensureSubPhaseTimeFloor(match, 18)` khi khôi phục quyền người chơi ở pha quyết định.
+- **Trường hợp biên đã kiểm:** Xúc xắc chiến thuật 3 sub-phase hết giờ liên tiếp trong Lượt 1 (`missed === 1`, `isBot === false`), tương tác một phần trong lượt (tự đổ rồi hết giờ mua → `missed === 0`), đổ đôi, mất kết nối + reconnect, `RECLAIM_CONTROL` rồi AFK lại đủ 2 lượt mới tiếp quản ở Lượt 5.
+
+#### BUG-06 (P3) — Phản hồi lỗi `INVALID_STATE` cho `GAME_ACTION` lệch phase
+- **Nguyên nhân gốc:** Nhiều câu lệnh kiểm tra `match.turnPhase` trong `handleHumanGameAction` và `executeAction` chỉ `return;` im lặng, khiến client (`submitOnlineDecision`) bị khóa nút 6 giây chờ `errorSeq` tăng hoặc snapshot mới.
+- **Giải pháp:** Chuyển `executeAction` trả về `boolean` và gắn `rejectInvalidState()` (`this.sendError(clientId, 'INVALID_STATE', 'Trạng thái lượt vừa thay đổi, vui lòng thử lại.')`) cho mọi nhánh lệch phase (kể cả khi server đang `ROLLING_DICE` / `MOVING_TOKEN`) và `INVALID_ACTION` cho `PAY_JAIL_FINE` / `USE_JAIL_CARD` không hợp lệ.
+
+#### BUG-04 (P1) — Stale Action, Duplicate Action và Reconnect Replay
+- **Nguyên nhân gốc:** `onlineClient.ts` đẩy cả `GAME_ACTION` vào `pendingQueueRef` khi socket đóng và xả ngay tại `ws.onopen` ngay sau `RECONNECT_ROOM` (trước khi nhận snapshot đồng bộ mới). Phía server cũng chưa xác thực ngữ cảnh quyết định của action.
+- **Giải pháp (nâng cấp so với kế hoạch sơ bộ để xử lý trùng phase trong cùng 1 lượt khi ra Đôi):**
+  1. **Protocol (`src/game/onlineTypes.ts`):** Bổ sung `decisionRevision?: number` vào `OnlineMatchSnapshot` và các trường tùy chọn `expectedTurnCount`, `expectedPhase`, `expectedDecisionRevision`, `actionId` vào thông điệp `GAME_ACTION`.
+  2. **Server Authority (`src/server/roomManager.ts`):** `decisionRevision` tăng đơn điệu qua `setTurnPhase()` tại mọi lần chuyển pha (và `PAY_JAIL_FINE` / `USE_JAIL_CARD`), **không** tăng trên các sự kiện nhiễu (tick đồng hồ, disconnect/reconnect, emote, bot quip). Lưu `processedActionIds` theo khóa gắn từng người chơi `${seat.playerId}:${actionId}` trong hàng đợi FIFO tối đa `256` mã để chống replay (`DUPLICATE_ACTION`) mà không va chạm giữa nhiều người chơi, kiểm tra chặt kiểu dữ liệu (`BAD_MESSAGE`) và ngữ cảnh (`STALE_ACTION`).
+  3. **Client Guard (`src/utils/onlineClient.ts`, `src/App.tsx`, `src/components/ActionDock.tsx`):** Giới hạn `pendingQueueRef` **chỉ** cho 3 thông điệp khởi tạo phòng (`CREATE_ROOM`, `JOIN_ROOM`, `RECONNECT_ROOM`). Bổ sung trạng thái `isSynced` (chỉ chuyển `true` sau khi nhận `ROOM_JOINED` hoặc `ROOM_SNAPSHOT` tươi; đặt `false` khi socket đóng và giữ `connectionStatus = 'reconnecting'` cho tới khi đồng bộ xong) cùng guard `if (wsRef.current !== ws) return;` trong `ws.onopen` / `ws.onmessage` / `ws.onclose` để socket cũ đóng trễ không làm mất đồng bộ socket mới. Mọi `GAME_ACTION` / `SEND_EMOTE` phát lúc chưa `OPEN && isSynced` bị hủy ngay (không xếp hàng). Khóa nút `ActionDock`, phím `Space`/`Enter` và `bt-reclaim-control-btn` theo `isOnlineConnectedAndSynced`.
+
+#### BUG-05 (P1) — Xác định người chiến thắng `TIME_LIMIT` khi còn khoản nợ
+- **Nguyên nhân gốc:** Khi `matchTimeLeft` về `0` đúng lúc đang `DEBT_RESOLUTION`, cả Offline lẫn Online đều chấm `evaluateTimeLimitWinner` bằng tổng tiền mặt + BĐS thô mà bỏ qua `pendingDebt` và `pendingDebtQueue`.
+- **Giải pháp (không tự ý tạo luật phá sản mới):**
+  1. Thêm `computeEffectiveNetWorths(players, properties, pendingDebts?, fallbackDebtorId?)` trong `src/game/rules.ts`: xử lý tuần tự FIFO toàn bộ `[pendingDebt, ...pendingDebtQueue]` (khử trùng lặp theo tham chiếu đối tượng để không trừ 2 lần), định giá BĐS theo đúng Spec §3.6 (`100%` vốn đầu tư), khấu trừ tối đa theo tổng tài sản còn lại của con nợ (`transfer = Math.min(debt.amount, remainingDebtorNw)`), cộng đúng phần thu được cho chủ nợ nếu không phải nợ Ngân hàng (`creditorId !== null`), xử lý đúng nhiều con nợ / nhiều chủ nợ / không đủ tài sản mà không đột biến trạng thái phá sản hay quyền sở hữu.
+  2. Gắn cả `effectiveNetWorthByPlayerId` và `effectiveCashByPlayerId` vào `MatchWinnerResult` (`src/game/types.ts`) để cả Offline, Online, `rankPlayersForVictory` (kèm tie-break tiền mặt sau nợ & `b.laps - a.laps`) và `VictoryModal` (bảng xếp hạng cá nhân lẫn tổng Đội Xanh/Đỏ 2v2) hiển thị và xếp hạng thống nhất tuyệt đối.
+  3. Xóa sạch `pendingDebt`, `pendingDebtQueue`, `debtReturnToPlayerIndex`, `drawnCard`, `pendingTacticalCard`, `landingCueText` khi chuyển `GAME_OVER` ở `roomManager.ts` (khớp với `App.tsx`).
+
+---
+
+### 2.2 Wave 2 — Gameplay Timing & Animation
+
+#### BUG-11 (P2) — Reset lựa chọn Xúc Xắc Chiến Thuật (`EVEN`/`ODD` → `NORMAL`)
+- **Nguyên nhân gốc:** Ở chế độ Online, `selectedDiceChoice` không được reset khi sang lượt mới, khi vào Đảo Hoang (`inJail === true`) hoặc khi hết lượt Chẵn/Lẻ (`evenOddCharges <= 0`), khiến cú bấm `bt-jail-roll-btn` đầu tiên gửi `diceChoice: 'EVEN'` và bị server từ chối `INVALID_ACTION`.
+- **Giải pháp:** Xuất hàm thuần `normalizeTacticalDiceChoice()` trong `src/game/rules.ts`; bổ sung `useEffect` reset về `'NORMAL'` theo `[viewTurnCount, viewActivePlayerIndex, onlineDecisionRevision, viewCurrentInJail, viewTacticalDiceEnabled]` và khi `viewCurrentEvenOddCharges <= 0` trong `src/App.tsx`; chuẩn hóa `effectiveChoice` trong `handleRollDice`; bảo vệ `aria-pressed` và style active trên `ActionDock.tsx` khi `evenOddCharges <= 0`.
+
+#### BUG-03 (P2) — Đồng hồ Offline đơn điệu (`performance.now()`)
+- **Nguyên nhân gốc:** Cả hai `useEffect` đồng hồ trong `src/App.tsx` đưa `turnPhase` vào dependency array và dựng lại `setInterval(1000)` mỗi lần đổi pha, làm rơi toàn bộ phần lẻ mili-giây chưa đủ 1 giây và gây trôi chậm `28.3%` (`26s / 92s`).
+- **Giải pháp:** Tạo module chuyên biệt `src/game/gameplayClock.ts` (`createMonotonicCountdownClock`) dùng mốc thời gian đơn điệu `performance.now()` tích lũy `carryMs` tách biệt hoàn toàn giữa `matchClockRef` (đồng hồ trận 20:00) và `turnClockRef` (đồng hồ lượt 45s). Loại bỏ `turnPhase` khỏi dependency array của cả 2 `useEffect`, chạy nhịp đồng bộ `200ms` kết hợp sự kiện `visibilitychange`, đóng băng sạch khi Pause / `RulebookModal` (đồng bộ timestamp khi đóng/mở) / animation (chỉ đóng băng đồng hồ lượt trong animation, đồng hồ trận vẫn chạy chuẩn), flush `turnClock` khi `commitTurnPhase` rời pha active, nâng cấp `ensureFloor(minSeconds, nowMs, wasActive)` để bảo toàn `carryMs` qua mọi lần chuyển pha và reset đúng lúc khi sang lượt/trận mới.
+
+#### BUG-10 (P2 — Ưu tiên kiến trúc cho giai đoạn nâng cấp 3D) — Tách Gameplay Animation Time & Fallback Scheduler
+- **Nguyên nhân gốc:** `MonopolyCanvas.tsx` dùng chung trần kẹp `animDt = Math.min(rawDt, 0.06)` (phục vụ ổn định lò xo camera/hiệu ứng hình ảnh) cho cả tiến độ `diceAnim.elapsed` và `hopAnim.stepElapsed`. Khi FPS < `16.7` hoặc RAF bị OS throttle xuống `1–2.4 Hz`, gameplay animation bị slow-motion `3.5×–16.7×` và tụt hậu hoàn toàn so với server Online.
+- **Giải pháp kiến trúc sạch (không tạo thêm `WebGLRenderer`, giữ nguyên Demand-Driven Rendering & Low/Medium/High iGPU):**
+  1. **`computeBoardFrameDeltas()` (`src/game/graphicsQuality.ts`):** Tách rạch ròi `gameplayAnimDt` (bám thời gian thực `Math.min(effectiveRaw, 10.0)`, bằng `0` khi Pause, kẹp `<= 0.05s` ở frame đầu sau Resume để tránh nhảy cóc) khỏi `visualAnimDt` (`<= 0.06s` hardware / `<= 0.35s` software) và `simDt` (`<= 0.08s`).
+  2. **Single-Flight RAF Watchdog (`createBoardFrameScheduler` trong `src/game/graphicsQuality.ts`):** Dùng `scheduleToken` đơn điệu dùng chung giữa `requestAnimationFrame` và fallback timer (`rafFallbackMs = 500ms` — cao hơn chu kỳ `400ms` @ `2.5 FPS` + jitter vsync để các mức `60 / 30 / 15 / 5 / 2.5 FPS` chạy 100% trên RAF thuần mà không ép vẽ WebGL ngoài vsync lên iGPU). Timer dự phòng **chỉ được bật** khi `hasPendingGameplayPromises()` là `true`, tự hủy ngay khi RAF chạy hoặc khi `cancel()` / `dispose()` / Pause, đảm bảo tuyệt đối **không thực thi tick trùng nhau** và **0 timer thừa lúc nghỉ (idle 0 FPS trên mức Low)**; đồng thời `handleVisibilityChange` đồng bộ `lastTimeMs` khi chuyển từ idle sang `background_sim` và `MonopolyCanvas` chốt `justResumedFromPauseRef` chống rò thời gian Pause ngay cả khi Pause→Resume diễn ra giữa 2 frame FPS thấp.
+  3. **Bảo toàn thứ tự `onStep` & Callback idempotent (`src/components/MonopolyCanvas.tsx`):** `diceAnim.elapsed` và `hopAnim` (`remainingHopDt` tiêu thụ theo vòng lặp `while`) dùng độc quyền `gameplayAnimDt`, bắn lần lượt đầy đủ từng `onStep(stepIdx, tileIdx)` theo đúng thứ tự ngay cả khi 1 frame vượt qua nhiều ô (giữ nguyên lương qua Bắt Đầu & SFX), bảo vệ tái nhập nếu `onStep` hủy animation, bọc `resolveOnce()` chống gọi đôi và thêm cleanup tự động khi Online resync (`prevOnlineSyncedRef` trong `src/App.tsx`), Pause, Reset và Unmount.
+
+---
+
+### 2.3 Wave 3 — Gameplay Consistency & Bot Reliability
+
+#### BUG-08 (P3) — Thuật toán `computeOptimalAutoSale` hỗ trợ đồng đội 2v2
+- **Nguyên nhân gốc:** `computeOptimalAutoSale` (`src/game/rules.ts`) thiếu tham số `players` và `matchMode`, dẫn tới không nhận diện bộ màu độc quyền và cụm Resort kết hợp với đồng đội trong `TEAMS_2V2`.
+- **Giải pháp:** Bổ sung tham số tùy chọn `players?: PlayerState[], matchMode: MatchMode = 'FFA'`, dùng `getTeamOwnerIds(playerId, players, matchMode)` khi đếm `ownedResortCount` và truyền `players, matchMode` vào `ownsFullColorGroup`. Cập nhật đủ 5 điểm gọi (`roomManager.ts` ×2, `App.tsx` ×2, `TileModalAndDialogs.tsx` ×1 kèm dependency `useMemo`).
+
+#### BUG-07 (P3) — Đồng nhất xử lý payload mua/nâng cấp/mua đứt/đăng cai Cúp không hợp lệ giữa Offline và Online
+- **Nguyên nhân gốc:** Ở Offline (`App.tsx`), `handleBuyProperty`, `handleOnTileUpgrade`, `handleConfirmChampionship` và `handleConfirmBuyout` từng gọi `completeTurnAfterAction(player)` (và xóa `isFreeChampionship`) khi nhận đầu vào không hợp lệ, trong khi Online (`roomManager.ts`) giữ nguyên modal để người chơi chọn lại (và ở Round 1, `performConfirmBuyout` cũng còn thiếu nhánh trả `false` + `INVALID_ACTION` cho human khi buyout không hợp lệ).
+- **Giải pháp:** Dùng chung 3 hàm kiểm tra `validateInitialPropertyPurchase`, `validateChampionshipHostSelection` và `canBuyoutProperty` trong `src/game/rules.ts` cho cả Offline và Online. Ở Offline, các hành động không hợp lệ của người chơi thật chỉ `return;` (giữ nguyên phase quyết định và cờ `isFreeChampionship` y hệt Online; chỉ giữ fallback kết thúc lượt nếu là Bot để tránh deadlock); ở Online, `performConfirmBuyout` trả `boolean` và gửi `ERROR: INVALID_ACTION` cho client khi buyout không hợp lệ (giữ nguyên luật Spec §3.4 kết thúc lượt ngay sau mọi lượt mua đứt hợp lệ).
+
+#### BUG-09 (P3 – Latent) — State-Aware Bot Watchdog
+- **Nguyên nhân gốc:** `tickOneSecond` không có nhánh phục hồi cho lượt Bot nếu `botActionTimer` bị rơi/mất.
+- **Giải pháp:** Xây dựng theo dõi vòng đời thực thi Bot trong `RoomRecord`:
+  - Phân biệt rõ 4 trạng thái: (1) đang thực thi đồng bộ (`botActionExecuting`), (2) đang chờ chuỗi async (`inFlightBeatCount > 0` đếm trực tiếp trên `waitRoomBeat` hoặc pha `ROLLING_DICE`/`MOVING_TOKEN`), (3) đang chờ lịch hợp lệ (`botActionTimer !== null` khớp `botScheduledMeta` `{epoch, turnCount, decisionRevision, playerId, phase}` và chưa quá hạn thời gian thực), và (4) bị rơi/quá hạn.
+  - Chặn tuyệt đối 2 hành động Bot đồng thời; hủy sạch timer cũ khỏi `pendingTimers` qua `clearBotActionTimer`; giới hạn cứng tối đa `2` lần phục hồi theo khóa quyết định (`botWatchdogAttempts <= 2`: lần 1 đặt lịch lại qua `scheduleBotTurnIfNeeded`, lần 2 chỉ chạy `executeSafeTimeoutAction` nếu đồng hồ lượt đã hết) để không thể sinh vòng lặp vô hạn; dọn sạch ở `clearMatchTimers` khi đổi trận, `GAME_OVER` hoặc `dispose()`.
+
+#### Audit Hardening & Independent Review Fixes (Round 2)
+- **Round 1 (`Audit Hardening`):** Chuyển 5 hàm `perform*` (`Buy`, `Upgrade`, `Championship`, `TacticalCard`, `SellAndPayDebt`) trả về `boolean` (`false` khi gửi `INVALID_ACTION`) và xác thực đồng bộ `SELECT_WORLD_TOUR` để thao tác bị từ chối không reset `missedTurnsByPlayer` hay ghi vào `processedActionIds`.
+- **Round 2 (Independent Agent Review — 7 lỗi thực tế phát hiện & vá theo TDD RED → GREEN):**
+  1. **`BUG-10` (RAF Fallback & GPU Efficiency):** Nâng `rafFallbackMs` mặc định từ `120ms` → `500ms` để `5 FPS` (`200ms`) và `2.5 FPS` (`400ms`) chạy thuần RAF thay vì bị fallback cắt ngang ép vẽ ngoài vsync (`23` frames thay vì `35` ở 5 FPS; `14` frames thay vì `34` ở 2.5 FPS; giảm `-65%` WebGL draws ở tab bị che từ `94 → 33`).
+  2. **`BUG-10` (Visibility Idle Leak & Low-FPS Pause/Resume):** Sửa `handleVisibilityChange` đồng bộ `lastTimeMs = nowFn() - 16` khi chuyển từ idle sang `background_sim`, và thêm `justResumedFromPauseRef` trong `MonopolyCanvas.tsx` để Pause→Resume giữa hai frame `2.5 FPS` không rò thời gian Pause vào `gameplayAnimDt`.
+  3. **`BUG-04` (Per-Player `actionId` Scoping & Stale WS Close):** Đổi khóa `processedActionIds` sang `${seat.playerId}:${actionId}` chống va chạm `DUPLICATE_ACTION` giữa hai người chơi khác nhau, và thêm guard `if (wsRef.current !== ws) return;` trong `ws.onopen` / `ws.onmessage` / `ws.onclose` của `onlineClient.ts` để socket cũ đóng trễ không làm mất `isSynced` của socket mới.
+  4. **`BUG-01` (Reconnect Partial-Turn Credit & Decision Time Floor):** Giữ nguyên `lastHumanActionTurnCountByPlayer` khi `RECONNECT_ROOM`, ghi nhận tương tác khi `RECLAIM_CONTROL`, và gọi `ensureSubPhaseTimeFloor(match, 18)` khi khôi phục quyền người thật từ Bot takeover ở pha quyết định để không hết giờ ngay sau ≤1s.
+  5. **`BUG-05` (Leaderboard Cash & Laps Tie-Breaker Parity):** Bổ sung `effectiveCashByPlayerId` vào `MatchWinnerResult`, `evaluateTimeLimitWinner`, `rankPlayersForVictory` (kèm tie-break `b.laps - a.laps`) và `VictoryModal` để bảng xếp hạng khớp 100% với quy tắc chấm Sudden Death khi đồng điểm Net Worth sau nợ.
+  6. **`BUG-03` (Sub-Second Carry on Active Phase Transitions & Rulebook Sync):** Nâng cấp `ensureFloor(minSeconds, nowMs, wasActive)` trong `gameplayClock.ts`, flush `turnClock` khi `commitTurnPhase` rời pha active và đồng bộ timestamp hai đồng hồ khi mở/đóng `RulebookModal`.
+  7. **`BUG-07` (`performConfirmBuyout` / `handleConfirmBuyout` Parity + Flaky `BUG-09` Test):** Chuyển `performConfirmBuyout` trả về `boolean` + `INVALID_ACTION` (và chỉ auto-end cho Bot ở Offline `handleConfirmBuyout`), đồng thời thay `waitMs(180/220/350)` dễ flake trong test `BUG-09` bằng `waitUntil(...)` tất định.

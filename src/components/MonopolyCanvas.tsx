@@ -15,6 +15,7 @@ import {
   getVaultWorldAnchor,
 } from '../game/currencyLogic';
 import {
+  computeBoardFrameDeltas,
   createBoardFrameScheduler,
   detectBrowserGpu,
   GraphicsQualityProfile,
@@ -390,6 +391,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
     const isPausedRef = useRef<boolean>(isPaused);
     isPausedRef.current = isPaused;
+    const prevIsPausedPropRef = useRef<boolean>(isPaused);
+    const justResumedFromPauseRef = useRef<boolean>(false);
 
     const prevCinematicRef = useRef(cinematicCamera);
     const cinematicCameraRef = useRef(cinematicCamera);
@@ -433,6 +436,16 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
     useEffect(() => {
       applyQualityTierRef.current?.(graphicsQualityTier);
     }, [graphicsQualityTier]);
+
+    useEffect(() => {
+      if (isPaused) {
+        justResumedFromPauseRef.current = false;
+      } else if (prevIsPausedPropRef.current) {
+        // Latch pause->resume transition even if it occurred between two low-FPS frames
+        justResumedFromPauseRef.current = true;
+      }
+      prevIsPausedPropRef.current = isPaused;
+    }, [isPaused]);
 
     useEffect(() => {
       if (isBoardOccluded) {
@@ -532,6 +545,12 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       animateDiceRoll: (die1: number, die2: number, speedMultiplier: number) => {
         manualOrbitOverrideRef.current = false;
         return new Promise<void>((resolve) => {
+          let settled = false;
+          const resolveOnce = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
           if (activeDiceAnimRef.current) {
             const prevResolve = activeDiceAnimRef.current.resolve;
             activeDiceAnimRef.current = null;
@@ -539,17 +558,17 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           }
           const dice = diceMeshesRef.current;
           if (!dice) {
-            resolve();
+            resolveOnce();
             return;
           }
 
           const trajectory = simulateDeterministicDiceRoll(die1, die2);
           activeDiceAnimRef.current = {
             elapsed: 0,
-            duration: Math.max(0.62, trajectory.duration / speedMultiplier),
+            duration: Math.max(0.62, trajectory.duration / Math.max(0.25, speedMultiplier)),
             trajectory,
             nextCollisionIdx: 0,
-            resolve,
+            resolve: resolveOnce,
           };
           wakeRenderRef.current?.();
         });
@@ -562,6 +581,12 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       ) => {
         manualOrbitOverrideRef.current = false;
         return new Promise<void>((resolve) => {
+          let settled = false;
+          const resolveOnce = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
           const nowMs =
             typeof performance !== 'undefined' ? performance.now() : Date.now();
           if (activeHopAnimRef.current) {
@@ -590,7 +615,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           }
           const token = tokenGroupsRef.current.get(playerId);
           if (!token || tilePath.length === 0) {
-            resolve();
+            resolveOnce();
             return;
           }
 
@@ -638,11 +663,11 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             path: tilePath,
             stepIndex: 0,
             stepElapsed: 0,
-            stepDuration: stepDurationSec,
+            stepDuration: Math.max(0.01, stepDurationSec),
             fromVec: token.position.clone(),
             toVec,
             onStep,
-            resolve,
+            resolve: resolveOnce,
           };
           wakeRenderRef.current?.();
         });
@@ -1561,6 +1586,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       const syncSceneFromState = (
         simDt: number,
         animDt: number,
+        gameplayAnimDt: number,
         elapsed: number
       ): boolean => {
         const currentPlayers = playersRef.current;
@@ -2063,7 +2089,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         if (diceAnim && diceMeshes && !isPausedRef.current) {
           hasActiveMotion = true;
           sceneShadowCastersMoved = true;
-          diceAnim.elapsed += animDt;
+          diceAnim.elapsed += gameplayAnimDt;
           const t = Math.min(1, diceAnim.elapsed / diceAnim.duration);
 
           let playedCollisionSfx = false;
@@ -2107,7 +2133,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             activeHopAnimRef.current = null;
             done();
           } else {
-            let remainingHopDt = animDt;
+            let remainingHopDt = gameplayAnimDt;
             while (remainingHopDt > 0 && activeHopAnimRef.current === hopAnim) {
               const needed = Math.max(0, hopAnim.stepDuration - hopAnim.stepElapsed);
               const consume = Math.min(remainingHopDt, needed);
@@ -2128,6 +2154,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
               if (u >= 1) {
                 hopAnim.onStep?.(hopAnim.stepIndex, targetTileIdx);
+                if (activeHopAnimRef.current !== hopAnim) break;
                 hopAnim.stepIndex += 1;
 
                 if (hopAnim.stepIndex >= hopAnim.path.length) {
@@ -2418,6 +2445,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         return isPausedRef.current ? false : hasActiveMotion;
       };
 
+      let wasPausedPrevFrame = isPausedRef.current;
       const frameScheduler = createBoardFrameScheduler({
         isSoftwareGl,
         isDocumentHidden: () => typeof document !== 'undefined' && document.hidden,
@@ -2459,12 +2487,16 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         onFrame: (rawDt) => {
           const docHidden = typeof document !== 'undefined' && document.hidden;
           const pausedNow = isPausedRef.current;
-          const simDt = pausedNow ? 0 : Math.min(rawDt, 0.08);
-          const animDt = pausedNow
-            ? 0
-            : docHidden
-              ? Math.min(rawDt, 2.0)
-              : Math.min(rawDt, isSoftwareGl ? 0.35 : 0.06);
+          const resumedFromPause = wasPausedPrevFrame || justResumedFromPauseRef.current;
+          justResumedFromPauseRef.current = false;
+          const { simDt, visualAnimDt, gameplayAnimDt } = computeBoardFrameDeltas({
+            rawDtSec: rawDt,
+            isPaused: pausedNow,
+            wasPausedPrevFrame: resumedFromPause,
+            isDocumentHidden: docHidden,
+            isSoftwareGl,
+          });
+          wasPausedPrevFrame = pausedNow;
           elapsedSec += simDt;
 
           controlsChangedThisFrame = false;
@@ -2473,7 +2505,12 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
             renderer.domElement.style.cursor = 'grab';
           }
           prevFrameCamPos.copy(camera.position);
-          const sceneMoving = syncSceneFromState(simDt, animDt, elapsedSec);
+          const sceneMoving = syncSceneFromState(
+            simDt,
+            visualAnimDt,
+            gameplayAnimDt,
+            elapsedSec
+          );
           const camMovedVisibly =
             prevFrameCamPos.distanceToSquared(camera.position) > 0.0025;
           const cameraOrbitActive = isOrbitDragging || camMovedVisibly;

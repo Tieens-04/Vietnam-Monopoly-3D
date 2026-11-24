@@ -38,7 +38,6 @@ import {
   calculateTaxAmount,
   canBuyoutProperty,
   canUpgradeProperty,
-  CHAMPIONSHIP_FEE,
   clearDisownedModifiers,
   clearTileOutage,
   computeForwardSteps,
@@ -58,7 +57,6 @@ import {
   getNextActivePlayerIndex,
   getValidTacticalCardTargets,
   isPurchasableTile,
-  isValidInitialPurchaseLevel,
   isValidTileIndex,
   isValidUpgradeTargetLevel,
   isValidWorldTourTarget,
@@ -73,6 +71,8 @@ import {
   shouldGrantImmediateDoublesRoll,
   START_SALARY,
   TURN_COUNTDOWN_SECONDS,
+  validateChampionshipHostSelection,
+  validateInitialPropertyPurchase,
   WORLD_TOUR_FEE,
   WORLD_TOUR_TILE_INDEX,
 } from '../game/rules';
@@ -162,6 +162,9 @@ interface MatchRecord {
   activePlayerIndex: number;
   turnPhase: TurnPhase;
   turnCount: number;
+  decisionRevision: number;
+  processedActionIds: Set<string>;
+  processedActionIdOrder: string[];
   lastDice: [number, number] | null;
   lastDiceSum: number;
   lastRentPaid: number;
@@ -183,6 +186,18 @@ interface MatchRecord {
   chanceDeck: LuckCard[];
   nextLogId: number;
   missedTurnsByPlayer: Record<number, number>;
+  lastMissedTurnCountByPlayer: Record<number, number>;
+  lastHumanActionTurnCountByPlayer: Record<number, number>;
+}
+
+interface BotScheduledMeta {
+  epoch: number;
+  turnCount: number;
+  decisionRevision: number;
+  playerId: number;
+  phase: TurnPhase;
+  scheduledAt: number;
+  expectedDelayMs: number;
 }
 
 interface RoomRecord {
@@ -201,6 +216,11 @@ interface RoomRecord {
   eventSeq: number;
   pendingTimers: Set<ReturnType<typeof setTimeout>>;
   botActionTimer: ReturnType<typeof setTimeout> | null;
+  botScheduledMeta: BotScheduledMeta | null;
+  botActionExecuting: boolean;
+  inFlightBeatCount: number;
+  botWatchdogKey: string | null;
+  botWatchdogAttempts: number;
   cleanupTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -258,15 +278,25 @@ export class OnlineRoomManager {
     this.lastEmoteAtByClient.clear();
   }
 
+  private clearBotActionTimer(room: RoomRecord): void {
+    if (room.botActionTimer) {
+      clearTimeout(room.botActionTimer);
+      room.pendingTimers.delete(room.botActionTimer);
+      room.botActionTimer = null;
+    }
+    room.botScheduledMeta = null;
+  }
+
   private clearMatchTimers(room: RoomRecord): void {
     for (const t of room.pendingTimers) {
       clearTimeout(t);
     }
     room.pendingTimers.clear();
-    if (room.botActionTimer) {
-      clearTimeout(room.botActionTimer);
-      room.botActionTimer = null;
-    }
+    this.clearBotActionTimer(room);
+    room.botActionExecuting = false;
+    room.inFlightBeatCount = 0;
+    room.botWatchdogKey = null;
+    room.botWatchdogAttempts = 0;
   }
 
   private clearRoomTimers(room: RoomRecord): void {
@@ -293,8 +323,12 @@ export class OnlineRoomManager {
   }
 
   private waitRoomBeat(room: RoomRecord, rawMs: number, epoch: number): Promise<boolean> {
+    room.inFlightBeatCount += 1;
     return new Promise((resolve) => {
       this.scheduleRoomTimeout(room, rawMs, () => {
+        if (room.matchEpoch === epoch) {
+          room.inFlightBeatCount = Math.max(0, room.inFlightBeatCount - 1);
+        }
         resolve(room.matchEpoch === epoch && room.status === 'playing');
       });
     });
@@ -400,6 +434,7 @@ export class OnlineRoomManager {
           activePlayerIndex: room.match.activePlayerIndex,
           turnPhase: room.match.turnPhase,
           turnCount: room.match.turnCount,
+          decisionRevision: room.match.decisionRevision,
           lastDice: room.match.lastDice,
           lastDiceSum: room.match.lastDiceSum,
           lastRentPaid: room.match.lastRentPaid,
@@ -545,6 +580,11 @@ export class OnlineRoomManager {
         eventSeq: 0,
         pendingTimers: new Set(),
         botActionTimer: null,
+        botScheduledMeta: null,
+        botActionExecuting: false,
+        inFlightBeatCount: 0,
+        botWatchdogKey: null,
+        botWatchdogAttempts: 0,
         cleanupTimer: null,
       };
 
@@ -702,9 +742,21 @@ export class OnlineRoomManager {
         if (player) {
           player.onlineConnected = true;
           room.match.missedTurnsByPlayer[player.id] = 0;
+          delete room.match.lastMissedTurnCountByPlayer[player.id];
           if (player.onlineBotTakeover && !player.bankrupt) {
             player.isBot = false;
             player.onlineBotTakeover = false;
+            const current = room.match.players[room.match.activePlayerIndex];
+            if (current?.id === player.id) {
+              this.clearBotActionTimer(room);
+              if (
+                room.match.turnPhase !== 'ROLLING_DICE' &&
+                room.match.turnPhase !== 'MOVING_TOKEN' &&
+                room.match.turnPhase !== 'GAME_OVER'
+              ) {
+                this.ensureSubPhaseTimeFloor(room.match, 18);
+              }
+            }
             this.addLog(room, `🟢 ${player.name} đã kết nối lại ván đấu!`, player.color, 'positive');
           }
         }
@@ -877,11 +929,19 @@ export class OnlineRoomManager {
       player.onlineBotTakeover = false;
       player.onlineConnected = true;
       room.match.missedTurnsByPlayer[player.id] = 0;
+      delete room.match.lastMissedTurnCountByPlayer[player.id];
+      room.match.lastHumanActionTurnCountByPlayer[player.id] = room.match.turnCount;
 
       const current = room.match.players[room.match.activePlayerIndex];
-      if (current?.id === player.id && room.botActionTimer) {
-        clearTimeout(room.botActionTimer);
-        room.botActionTimer = null;
+      if (current?.id === player.id) {
+        this.clearBotActionTimer(room);
+        if (
+          room.match.turnPhase !== 'ROLLING_DICE' &&
+          room.match.turnPhase !== 'MOVING_TOKEN' &&
+          room.match.turnPhase !== 'GAME_OVER'
+        ) {
+          this.ensureSubPhaseTimeFloor(room.match, 18);
+        }
       }
       this.addLog(
         room,
@@ -927,7 +987,12 @@ export class OnlineRoomManager {
         this.sendError(clientId, 'BAD_MESSAGE', 'Hành động trò chơi không hợp lệ.');
         return;
       }
-      this.handleHumanGameAction(room, seat, clientId, msg.action);
+      this.handleHumanGameAction(room, seat, clientId, msg.action, {
+        expectedTurnCount: msg.expectedTurnCount,
+        expectedPhase: msg.expectedPhase,
+        expectedDecisionRevision: msg.expectedDecisionRevision,
+        actionId: msg.actionId,
+      });
     }
   }
 
@@ -1081,67 +1146,69 @@ export class OnlineRoomManager {
 
     const players: PlayerState[] = [];
     const usedTokens = new Set<TokenArchetype>(orderedHumans.map((h) => h.tokenType));
-    const occupiedSeats = new Set(orderedHumans.map((h) => h.seatIndex));
-    const emptySeats: number[] = [];
-    for (let s = 0; s < room.maxPlayers; s++) {
-      if (!occupiedSeats.has(s)) emptySeats.push(s);
+    const humanBySeat = new Map<number, HumanSeatRecord>();
+    for (const h of orderedHumans) {
+      humanBySeat.set(h.seatIndex, h);
     }
-
-    for (let i = 0; i < orderedHumans.length; i++) {
-      const h = orderedHumans[i];
-      const meta = TOKEN_COLORS[h.tokenType];
-      h.playerId = i;
-      players.push({
-        id: i,
-        name: h.playerName,
-        isBot: false,
-        color: meta.color,
-        colorName: meta.colorName,
-        tokenType: h.tokenType,
-        cash: room.startingCash,
-        position: 0,
-        laps: 0,
-        inJail: false,
-        jailTurns: 0,
-        jailFreeCards: 0,
-        doublesStreak: 0,
-        pendingWorldTour: false,
-        bankrupt: false,
-        teamId: room.matchMode === 'TEAMS_2V2' ? ((h.seatIndex % 2) as TeamId) : undefined,
-        evenOddCharges: room.tacticalDiceEnabled ? DEFAULT_EVEN_ODD_CHARGES : 0,
-        rerollCharges: room.tacticalDiceEnabled ? DEFAULT_REROLL_CHARGES : 0,
-        onlineConnected: h.connected,
-        onlineBotTakeover: false,
-      });
-    }
-
     const remainingTokens = ALL_TOKENS.filter((t) => !usedTokens.has(t));
-    for (let b = 0; b < botSlotsNeeded; b++) {
-      const tok = remainingTokens[b] || ALL_TOKENS[(orderedHumans.length + b) % ALL_TOKENS.length];
-      const meta = TOKEN_COLORS[tok];
-      const persona = CHARACTER_PERSONAS[tok];
-      const botId = players.length;
-      const botSeat = emptySeats[b] ?? botId;
-      players.push({
-        id: botId,
-        name: persona.botDefaultName,
-        isBot: true,
-        color: meta.color,
-        colorName: meta.colorName,
-        tokenType: tok,
-        cash: room.startingCash,
-        position: 0,
-        laps: 0,
-        inJail: false,
-        jailTurns: 0,
-        jailFreeCards: 0,
-        doublesStreak: 0,
-        pendingWorldTour: false,
-        bankrupt: false,
-        teamId: room.matchMode === 'TEAMS_2V2' ? ((botSeat % 2) as TeamId) : undefined,
-        evenOddCharges: room.tacticalDiceEnabled ? DEFAULT_EVEN_ODD_CHARGES : 0,
-        rerollCharges: room.tacticalDiceEnabled ? DEFAULT_REROLL_CHARGES : 0,
-      });
+    let botTokenIdx = 0;
+
+    for (let seatIdx = 0; seatIdx < room.maxPlayers; seatIdx++) {
+      const h = humanBySeat.get(seatIdx);
+      const teamId = room.matchMode === 'TEAMS_2V2' ? ((seatIdx % 2) as TeamId) : undefined;
+
+      if (h) {
+        const id = players.length;
+        const meta = TOKEN_COLORS[h.tokenType];
+        h.playerId = id;
+        players.push({
+          id,
+          name: h.playerName,
+          isBot: false,
+          color: meta.color,
+          colorName: meta.colorName,
+          tokenType: h.tokenType,
+          cash: room.startingCash,
+          position: 0,
+          laps: 0,
+          inJail: false,
+          jailTurns: 0,
+          jailFreeCards: 0,
+          doublesStreak: 0,
+          pendingWorldTour: false,
+          bankrupt: false,
+          teamId,
+          evenOddCharges: room.tacticalDiceEnabled ? DEFAULT_EVEN_ODD_CHARGES : 0,
+          rerollCharges: room.tacticalDiceEnabled ? DEFAULT_REROLL_CHARGES : 0,
+          onlineConnected: h.connected,
+          onlineBotTakeover: false,
+        });
+      } else if (room.fillBots) {
+        const id = players.length;
+        const tok = remainingTokens[botTokenIdx++] || ALL_TOKENS[seatIdx % ALL_TOKENS.length];
+        const meta = TOKEN_COLORS[tok];
+        const persona = CHARACTER_PERSONAS[tok];
+        players.push({
+          id,
+          name: persona.botDefaultName,
+          isBot: true,
+          color: meta.color,
+          colorName: meta.colorName,
+          tokenType: tok,
+          cash: room.startingCash,
+          position: 0,
+          laps: 0,
+          inJail: false,
+          jailTurns: 0,
+          jailFreeCards: 0,
+          doublesStreak: 0,
+          pendingWorldTour: false,
+          bankrupt: false,
+          teamId,
+          evenOddCharges: room.tacticalDiceEnabled ? DEFAULT_EVEN_ODD_CHARGES : 0,
+          rerollCharges: room.tacticalDiceEnabled ? DEFAULT_REROLL_CHARGES : 0,
+        });
+      }
     }
 
     const initModifiers = createDefaultBoardModifiers(
@@ -1172,6 +1239,9 @@ export class OnlineRoomManager {
       activePlayerIndex: 0,
       turnPhase: 'AWAIT_ROLL',
       turnCount: 1,
+      decisionRevision: 1,
+      processedActionIds: new Set<string>(),
+      processedActionIdOrder: [],
       lastDice: null,
       lastDiceSum: 0,
       lastRentPaid: 0,
@@ -1193,21 +1263,94 @@ export class OnlineRoomManager {
       chanceDeck: shuffleCards(CHANCE_CARDS),
       nextLogId: initLogs.length + 1,
       missedTurnsByPlayer: {},
+      lastMissedTurnCountByPlayer: {},
+      lastHumanActionTurnCountByPlayer: {},
     };
 
     this.broadcastSnapshot(room);
     this.scheduleBotTurnIfNeeded(room);
   }
 
+  private setTurnPhase(match: MatchRecord, nextPhase: TurnPhase): void {
+    match.turnPhase = nextPhase;
+    match.decisionRevision += 1;
+  }
+
+  private recordProcessedActionId(match: MatchRecord, actionId: string): void {
+    if (match.processedActionIds.has(actionId)) return;
+    match.processedActionIds.add(actionId);
+    match.processedActionIdOrder.push(actionId);
+    if (match.processedActionIdOrder.length > 256) {
+      const oldest = match.processedActionIdOrder.shift();
+      if (oldest) match.processedActionIds.delete(oldest);
+    }
+  }
+
   private handleHumanGameAction(
     room: RoomRecord,
     seat: HumanSeatRecord,
     clientId: string,
-    action: OnlineGameAction
+    action: OnlineGameAction,
+    meta?: {
+      expectedTurnCount?: unknown;
+      expectedPhase?: unknown;
+      expectedDecisionRevision?: unknown;
+      actionId?: unknown;
+    }
   ): void {
     const match = room.match;
     if (room.status !== 'playing' || !match || seat.playerId === null) {
       this.sendError(clientId, 'INVALID_STATE', 'Phòng chưa ở trạng thái đang chơi.');
+      return;
+    }
+
+    const expectedTurnCount = meta?.expectedTurnCount;
+    const expectedPhase = meta?.expectedPhase;
+    const expectedDecisionRevision = meta?.expectedDecisionRevision;
+    const actionId = meta?.actionId;
+
+    if (
+      expectedTurnCount !== undefined &&
+      (typeof expectedTurnCount !== 'number' ||
+        !Number.isInteger(expectedTurnCount) ||
+        expectedTurnCount < 1)
+    ) {
+      this.sendError(clientId, 'BAD_MESSAGE', 'Thông tin lượt chơi kỳ vọng không hợp lệ.');
+      return;
+    }
+    if (expectedPhase !== undefined && typeof expectedPhase !== 'string') {
+      this.sendError(clientId, 'BAD_MESSAGE', 'Thông tin trạng thái kỳ vọng không hợp lệ.');
+      return;
+    }
+    if (
+      expectedDecisionRevision !== undefined &&
+      (typeof expectedDecisionRevision !== 'number' ||
+        !Number.isInteger(expectedDecisionRevision) ||
+        expectedDecisionRevision < 1)
+    ) {
+      this.sendError(clientId, 'BAD_MESSAGE', 'Thông tin phiên quyết định không hợp lệ.');
+      return;
+    }
+    if (
+      actionId !== undefined &&
+      (typeof actionId !== 'string' || actionId.trim().length === 0 || actionId.length > 64)
+    ) {
+      this.sendError(clientId, 'BAD_MESSAGE', 'Mã định danh hành động không hợp lệ.');
+      return;
+    }
+
+    const scopedActionKey =
+      typeof actionId === 'string' ? `${seat.playerId}:${actionId}` : null;
+    if (scopedActionKey && match.processedActionIds.has(scopedActionKey)) {
+      this.sendError(clientId, 'DUPLICATE_ACTION', 'Hành động này đã được xử lý trước đó.');
+      return;
+    }
+    if (expectedTurnCount !== undefined && expectedTurnCount !== match.turnCount) {
+      this.sendError(
+        clientId,
+        'STALE_ACTION',
+        'Lượt chơi đã thay đổi, thao tác cũ đã được hủy.'
+      );
       return;
     }
 
@@ -1220,30 +1363,75 @@ export class OnlineRoomManager {
       this.sendError(clientId, 'BOT_CONTROLLED', 'Lượt này đang do Bot điều khiển.');
       return;
     }
+    if (
+      expectedDecisionRevision !== undefined &&
+      expectedDecisionRevision !== match.decisionRevision
+    ) {
+      this.sendError(
+        clientId,
+        'STALE_ACTION',
+        'Trạng thái quyết định đã thay đổi, thao tác cũ đã được hủy.'
+      );
+      return;
+    }
+    if (expectedPhase !== undefined && expectedPhase !== match.turnPhase) {
+      this.sendError(
+        clientId,
+        'STALE_ACTION',
+        'Trạng thái lượt đã thay đổi, thao tác cũ đã được hủy.'
+      );
+      return;
+    }
     if (match.turnPhase === 'ROLLING_DICE' || match.turnPhase === 'MOVING_TOKEN') {
+      this.sendError(clientId, 'INVALID_STATE', 'Trạng thái lượt vừa thay đổi, vui lòng thử lại.');
       return;
     }
 
-    match.missedTurnsByPlayer[activePlayer.id] = 0;
-    this.executeAction(room, action, clientId);
+    const actionTurnCount = match.turnCount;
+    const accepted = this.executeAction(room, action, clientId);
+    if (accepted) {
+      if (scopedActionKey) {
+        this.recordProcessedActionId(match, scopedActionKey);
+      }
+      match.missedTurnsByPlayer[activePlayer.id] = 0;
+      delete match.lastMissedTurnCountByPlayer[activePlayer.id];
+      match.lastHumanActionTurnCountByPlayer[activePlayer.id] = actionTurnCount;
+    }
   }
 
-  private executeAction(room: RoomRecord, action: OnlineGameAction, clientId?: string): void {
+  private executeAction(room: RoomRecord, action: OnlineGameAction, clientId?: string): boolean {
     const match = room.match;
-    if (!match || room.status !== 'playing') return;
+    if (!match || room.status !== 'playing') {
+      if (clientId) {
+        this.sendError(clientId, 'INVALID_STATE', 'Phòng chưa ở trạng thái đang chơi.');
+      }
+      return false;
+    }
 
     const activePlayer = match.players[match.activePlayerIndex];
-    if (!activePlayer || activePlayer.bankrupt) return;
+    if (!activePlayer || activePlayer.bankrupt) {
+      if (clientId) {
+        this.sendError(clientId, 'INVALID_STATE', 'Trạng thái lượt vừa thay đổi, vui lòng thử lại.');
+      }
+      return false;
+    }
+
+    const rejectInvalidState = (): false => {
+      if (clientId) {
+        this.sendError(clientId, 'INVALID_STATE', 'Trạng thái lượt vừa thay đổi, vui lòng thử lại.');
+      }
+      return false;
+    };
 
     switch (action.kind) {
       case 'ROLL_DICE': {
-        if (match.turnPhase !== 'AWAIT_ROLL') return;
+        if (match.turnPhase !== 'AWAIT_ROLL') return rejectInvalidState();
         const rawChoice = (action as { diceChoice?: unknown }).diceChoice;
         if (rawChoice !== undefined && !isValidTacticalDiceChoice(rawChoice)) {
           if (clientId) {
             this.sendError(clientId, 'INVALID_ACTION', 'Lựa chọn xúc xắc chiến thuật không hợp lệ.');
           }
-          return;
+          return false;
         }
         const choice: TacticalDiceChoice = rawChoice ?? 'NORMAL';
         if (choice === 'EVEN' || choice === 'ODD') {
@@ -1255,16 +1443,16 @@ export class OnlineRoomManager {
             if (clientId) {
               this.sendError(clientId, 'INVALID_ACTION', 'Không thể dùng xúc xắc Chẵn/Lẻ lúc này.');
             }
-            return;
+            return false;
           }
         }
         void this.performRollDice(room, room.matchEpoch, choice);
-        return;
+        return true;
       }
 
       case 'REROLL_DICE':
+        if (match.turnPhase !== 'REROLL_DECISION') return rejectInvalidState();
         if (
-          match.turnPhase !== 'REROLL_DECISION' ||
           !match.tacticalDiceEnabled ||
           activePlayer.inJail ||
           (activePlayer.rerollCharges ?? 0) <= 0
@@ -1272,29 +1460,35 @@ export class OnlineRoomManager {
           if (clientId) {
             this.sendError(clientId, 'INVALID_ACTION', 'Không thể đổ lại xúc xắc lúc này.');
           }
-          return;
+          return false;
         }
         void this.performRerollDice(room, room.matchEpoch);
-        return;
+        return true;
 
       case 'CONFIRM_ROLL_MOVE':
-        if (match.turnPhase !== 'REROLL_DECISION' || !match.lastDice) {
+        if (match.turnPhase !== 'REROLL_DECISION') return rejectInvalidState();
+        if (!match.lastDice) {
           if (clientId) {
             this.sendError(clientId, 'INVALID_ACTION', 'Không có kết quả xúc xắc để xác nhận di chuyển.');
           }
-          return;
+          return false;
         }
         void this.performConfirmRollMove(room, room.matchEpoch, false);
-        return;
+        return true;
 
       case 'PAY_JAIL_FINE':
-        if (match.turnPhase !== 'AWAIT_ROLL' || !activePlayer.inJail || activePlayer.cash < JAIL_FINE) {
-          return;
+        if (match.turnPhase !== 'AWAIT_ROLL') return rejectInvalidState();
+        if (!activePlayer.inJail || activePlayer.cash < JAIL_FINE) {
+          if (clientId) {
+            this.sendError(clientId, 'INVALID_ACTION', 'Không thể nộp phạt rời Đảo Hoang lúc này.');
+          }
+          return false;
         }
         activePlayer.cash -= JAIL_FINE;
         activePlayer.inJail = false;
         activePlayer.jailTurns = 0;
         activePlayer.doublesStreak = 0;
+        match.decisionRevision += 1;
         this.emitSound(room, 'cashPay');
         this.addLog(
           room,
@@ -1310,16 +1504,21 @@ export class OnlineRoomManager {
         }
         this.broadcastSnapshot(room);
         this.scheduleBotTurnIfNeeded(room);
-        return;
+        return true;
 
       case 'USE_JAIL_CARD':
-        if (match.turnPhase !== 'AWAIT_ROLL' || !activePlayer.inJail || activePlayer.jailFreeCards <= 0) {
-          return;
+        if (match.turnPhase !== 'AWAIT_ROLL') return rejectInvalidState();
+        if (!activePlayer.inJail || activePlayer.jailFreeCards <= 0) {
+          if (clientId) {
+            this.sendError(clientId, 'INVALID_ACTION', 'Không thể dùng Thẻ Thoát Đảo lúc này.');
+          }
+          return false;
         }
         activePlayer.jailFreeCards -= 1;
         activePlayer.inJail = false;
         activePlayer.jailTurns = 0;
         activePlayer.doublesStreak = 0;
+        match.decisionRevision += 1;
         this.emitSound(room, 'cardDraw');
         this.addLog(
           room,
@@ -1329,97 +1528,121 @@ export class OnlineRoomManager {
         );
         this.broadcastSnapshot(room);
         this.scheduleBotTurnIfNeeded(room);
-        return;
+        return true;
 
       case 'BUY_PROPERTY':
-        if (match.turnPhase !== 'BUY_DECISION') return;
-        this.performBuyProperty(room, action.initialLevel, clientId);
-        return;
+        if (match.turnPhase !== 'BUY_DECISION') return rejectInvalidState();
+        return this.performBuyProperty(room, action.initialLevel, clientId);
 
       case 'SKIP_BUY':
-        if (match.turnPhase !== 'BUY_DECISION') return;
+        if (match.turnPhase !== 'BUY_DECISION') return rejectInvalidState();
         this.addLog(
           room,
           `${activePlayer.name} bỏ qua cơ hội mua ${BOARD_TILES[activePlayer.position]?.name || ''}.`,
           activePlayer.color
         );
         this.completeTurnAfterAction(room, activePlayer);
-        return;
+        return true;
 
       case 'UPGRADE_PROPERTY':
-        if (match.turnPhase !== 'UPGRADE_DECISION') return;
-        this.performOnTileUpgrade(room, action.targetLevel, clientId);
-        return;
+        if (match.turnPhase !== 'UPGRADE_DECISION') return rejectInvalidState();
+        return this.performOnTileUpgrade(room, action.targetLevel, clientId);
 
       case 'SKIP_UPGRADE':
-        if (match.turnPhase !== 'UPGRADE_DECISION') return;
+        if (match.turnPhase !== 'UPGRADE_DECISION') return rejectInvalidState();
         this.completeTurnAfterAction(room, activePlayer);
-        return;
+        return true;
 
       case 'CONFIRM_BUYOUT':
-        if (match.turnPhase !== 'BUYOUT_DECISION') return;
-        this.performConfirmBuyout(room);
-        return;
+        if (match.turnPhase !== 'BUYOUT_DECISION') return rejectInvalidState();
+        return this.performConfirmBuyout(room, clientId);
 
       case 'SKIP_BUYOUT':
-        if (match.turnPhase !== 'BUYOUT_DECISION') return;
+        if (match.turnPhase !== 'BUYOUT_DECISION') return rejectInvalidState();
         this.completeTurnAfterAction(room, activePlayer);
-        return;
+        return true;
 
       case 'CONFIRM_CHAMPIONSHIP':
-        if (match.turnPhase !== 'CHAMPIONSHIP_SELECTION') return;
-        this.performConfirmChampionship(room, action.targetTile, clientId);
-        return;
+        if (match.turnPhase !== 'CHAMPIONSHIP_SELECTION') return rejectInvalidState();
+        return this.performConfirmChampionship(room, action.targetTile, clientId);
 
       case 'SKIP_CHAMPIONSHIP':
-        if (match.turnPhase !== 'CHAMPIONSHIP_SELECTION') return;
+        if (match.turnPhase !== 'CHAMPIONSHIP_SELECTION') return rejectInvalidState();
         match.isFreeChampionship = false;
         this.addLog(room, `${activePlayer.name} bỏ qua quyền đăng cai Cúp Quốc Gia.`, activePlayer.color);
         this.completeTurnAfterAction(room, activePlayer);
-        return;
+        return true;
 
-      case 'SELECT_WORLD_TOUR':
-        if (match.turnPhase !== 'WORLD_TOUR') return;
+      case 'SELECT_WORLD_TOUR': {
+        if (match.turnPhase !== 'WORLD_TOUR') return rejectInvalidState();
+        if (!isValidTileIndex(action.targetTile)) {
+          if (clientId) {
+            this.sendError(clientId, 'INVALID_ACTION', 'Ô đích Du Lịch Xuyên Việt không hợp lệ.');
+          }
+          return false;
+        }
+        if (action.targetTile !== WORLD_TOUR_TILE_INDEX) {
+          const hasAnyValidTarget = BOARD_TILES.some((t) =>
+            isValidWorldTourTarget(activePlayer, t.index, match.properties)
+          );
+          if (
+            activePlayer.cash >= WORLD_TOUR_FEE &&
+            hasAnyValidTarget &&
+            !isValidWorldTourTarget(activePlayer, action.targetTile, match.properties)
+          ) {
+            if (clientId) {
+              this.sendError(
+                clientId,
+                'INVALID_ACTION',
+                'Chỉ có thể bay tới ô đất/khu nghỉ dưỡng trống hoặc thuộc sở hữu của bạn.'
+              );
+            }
+            return false;
+          }
+        }
         void this.performWorldTour(room, action.targetTile, room.matchEpoch, clientId);
-        return;
+        return true;
+      }
 
       case 'SKIP_WORLD_TOUR':
-        if (match.turnPhase !== 'WORLD_TOUR') return;
+        if (match.turnPhase !== 'WORLD_TOUR') return rejectInvalidState();
         this.performSkipWorldTour(room);
-        return;
+        return true;
 
       case 'CONFIRM_CARD':
-        if (match.turnPhase !== 'CARD_REVEAL' || !match.drawnCard) return;
+        if (match.turnPhase !== 'CARD_REVEAL' || !match.drawnCard) return rejectInvalidState();
         void this.performConfirmCard(room, room.matchEpoch);
-        return;
+        return true;
 
       case 'APPLY_TACTICAL_CARD':
-        if (match.turnPhase !== 'CARD_TARGET_SELECTION' || !match.pendingTacticalCard) return;
-        this.performApplyTacticalCard(room, action.targetTile, clientId);
-        return;
+        if (match.turnPhase !== 'CARD_TARGET_SELECTION' || !match.pendingTacticalCard) {
+          return rejectInvalidState();
+        }
+        return this.performApplyTacticalCard(room, action.targetTile, clientId);
 
       case 'SKIP_TACTICAL_CARD':
-        if (match.turnPhase !== 'CARD_TARGET_SELECTION') return;
+        if (match.turnPhase !== 'CARD_TARGET_SELECTION') return rejectInvalidState();
         match.pendingTacticalCard = null;
         this.addLog(room, `${activePlayer.name} bỏ qua tác động của thẻ chiến thuật.`, activePlayer.color);
         this.completeTurnAfterAction(room, activePlayer);
-        return;
+        return true;
 
       case 'SELL_AND_PAY_DEBT':
-        if (match.turnPhase !== 'DEBT_RESOLUTION' || !match.pendingDebt) return;
-        this.performSellAndPayDebt(room, action.tileIndicesToSell, clientId);
-        return;
+        if (match.turnPhase !== 'DEBT_RESOLUTION' || !match.pendingDebt) {
+          return rejectInvalidState();
+        }
+        return this.performSellAndPayDebt(room, action.tileIndicesToSell, clientId);
 
       case 'DECLARE_BANKRUPTCY':
-        if (match.turnPhase !== 'DEBT_RESOLUTION') return;
+        if (match.turnPhase !== 'DEBT_RESOLUTION') return rejectInvalidState();
         this.performDeclareBankruptcy(room);
-        return;
+        return true;
 
       default:
         if (clientId) {
           this.sendError(clientId, 'INVALID_ACTION', 'Hành động không hợp lệ.');
         }
-        return;
+        return false;
     }
   }
 
@@ -1456,7 +1679,7 @@ export class OnlineRoomManager {
     const sum = die1 + die2;
     match.lastDice = [die1, die2];
     match.lastDiceSum = sum;
-    match.turnPhase = 'ROLLING_DICE';
+    this.setTurnPhase(match, 'ROLLING_DICE');
     this.emitVisualEvent(room, { kind: 'DICE_ROLLED', playerId: player.id, die1, die2 });
     this.broadcastSnapshot(room);
 
@@ -1493,7 +1716,7 @@ export class OnlineRoomManager {
 
     if (match.tacticalDiceEnabled && (player.rerollCharges ?? 0) > 0) {
       const isDoubles = die1 === die2;
-      match.turnPhase = 'REROLL_DECISION';
+      this.setTurnPhase(match, 'REROLL_DECISION');
       this.ensureSubPhaseTimeFloor(match, 12);
       this.addLog(
         room,
@@ -1520,7 +1743,7 @@ export class OnlineRoomManager {
 
     match.lastDice = [die1, die2];
     match.lastDiceSum = sum;
-    match.turnPhase = 'ROLLING_DICE';
+    this.setTurnPhase(match, 'ROLLING_DICE');
     this.addLog(
       room,
       `🔄 ${player.name} dùng Thẻ Đổ Lại Xúc Xắc (còn ${player.rerollCharges} lượt)!`,
@@ -1579,7 +1802,7 @@ export class OnlineRoomManager {
         player.color,
         'negative'
       );
-      match.turnPhase = 'MOVING_TOKEN';
+      this.setTurnPhase(match, 'MOVING_TOKEN');
       this.emitVisualEvent(room, {
         kind: 'TOKEN_MOVED',
         playerId: player.id,
@@ -1624,7 +1847,7 @@ export class OnlineRoomManager {
     if (!match || room.matchEpoch !== epoch) return;
 
     const { path, finalTile, passedStart } = computeForwardSteps(player.position, moveSteps);
-    match.turnPhase = 'MOVING_TOKEN';
+    this.setTurnPhase(match, 'MOVING_TOKEN');
     this.emitVisualEvent(room, {
       kind: 'TOKEN_MOVED',
       playerId: player.id,
@@ -1706,7 +1929,7 @@ export class OnlineRoomManager {
         if (!(await this.waitRoomBeat(room, 650, epoch))) return;
         match.landingCueText = null;
         match.isFreeChampionship = true;
-        match.turnPhase = 'CHAMPIONSHIP_SELECTION';
+        this.setTurnPhase(match, 'CHAMPIONSHIP_SELECTION');
         this.ensureSubPhaseTimeFloor(match, 18);
         this.broadcastSnapshot(room);
         this.scheduleBotTurnIfNeeded(room);
@@ -1778,7 +2001,7 @@ export class OnlineRoomManager {
         this.broadcastSnapshot(room);
         if (!(await this.waitRoomBeat(room, 650, epoch))) return;
         match.landingCueText = null;
-        match.turnPhase = 'BUY_DECISION';
+        this.setTurnPhase(match, 'BUY_DECISION');
         this.ensureSubPhaseTimeFloor(match, 18);
         this.broadcastSnapshot(room);
         this.scheduleBotTurnIfNeeded(room);
@@ -1800,7 +2023,7 @@ export class OnlineRoomManager {
           this.broadcastSnapshot(room);
           if (!(await this.waitRoomBeat(room, 650, epoch))) return;
           match.landingCueText = null;
-          match.turnPhase = 'UPGRADE_DECISION';
+          this.setTurnPhase(match, 'UPGRADE_DECISION');
           this.ensureSubPhaseTimeFloor(match, 18);
           this.broadcastSnapshot(room);
           this.scheduleBotTurnIfNeeded(room);
@@ -1858,7 +2081,7 @@ export class OnlineRoomManager {
             match.matchMode
           ).allowed
         ) {
-          match.turnPhase = 'BUYOUT_DECISION';
+          this.setTurnPhase(match, 'BUYOUT_DECISION');
           this.ensureSubPhaseTimeFloor(match, 18);
           this.broadcastSnapshot(room);
           this.scheduleBotTurnIfNeeded(room);
@@ -1898,7 +2121,7 @@ export class OnlineRoomManager {
       this.emitSound(room, 'cardDraw');
       this.addLog(room, `${player.name} rút thẻ ${tile.name}: "${card.title}"`, player.color, 'highlight');
       match.drawnCard = card;
-      match.turnPhase = 'CARD_REVEAL';
+      this.setTurnPhase(match, 'CARD_REVEAL');
       this.ensureSubPhaseTimeFloor(match, 18);
       this.broadcastSnapshot(room);
       this.scheduleBotTurnIfNeeded(room);
@@ -1970,7 +2193,7 @@ export class OnlineRoomManager {
           match.matchMode
         ).allowed
       ) {
-        match.turnPhase = 'BUYOUT_DECISION';
+        this.setTurnPhase(match, 'BUYOUT_DECISION');
         this.ensureSubPhaseTimeFloor(match, 18);
         this.broadcastSnapshot(room);
         this.scheduleBotTurnIfNeeded(room);
@@ -2002,7 +2225,7 @@ export class OnlineRoomManager {
       return;
     }
 
-    match.turnPhase = 'DEBT_RESOLUTION';
+    this.setTurnPhase(match, 'DEBT_RESOLUTION');
     this.ensureSubPhaseTimeFloor(match, 20);
     this.addLog(
       room,
@@ -2018,33 +2241,32 @@ export class OnlineRoomManager {
     room: RoomRecord,
     requestedInitialLevel: number,
     clientId?: string
-  ): void {
+  ): boolean {
     const match = room.match;
-    if (!match) return;
+    if (!match) return false;
     const player = match.players[match.activePlayerIndex];
     const tile = BOARD_TILES[player.position];
-    const basePrice = tile?.price || 0;
     if (!tile) {
       this.completeTurnAfterAction(room, player);
-      return;
+      return true;
     }
 
-    const maxInitialLevel = tile.kind === TileKind.PROPERTY ? (player.laps === 0 ? 2 : 3) : 0;
-    if (!isValidInitialPurchaseLevel(requestedInitialLevel, maxInitialLevel)) {
+    const buyCheck = validateInitialPropertyPurchase(
+      player,
+      tile.index,
+      requestedInitialLevel
+    );
+    if (!buyCheck.allowed) {
       if (clientId) {
-        this.sendError(clientId, 'INVALID_ACTION', 'Cấp độ mua ban đầu không hợp lệ.');
+        this.sendError(
+          clientId,
+          'INVALID_ACTION',
+          buyCheck.reason || 'Không thể mua bất động sản theo mức đã chọn.'
+        );
       }
-      return;
+      return false;
     }
-    const safeLevel = tile.kind === TileKind.PROPERTY ? requestedInitialLevel : 0;
-    const totalCost = basePrice + safeLevel * (tile.houseCost ?? 0);
-
-    if (player.cash < totalCost) {
-      if (clientId) {
-        this.sendError(clientId, 'INVALID_ACTION', 'Không đủ tiền mặt để mua theo mức đã chọn.');
-      }
-      return;
-    }
+    const { safeLevel, totalCost } = buyCheck;
 
     player.cash -= totalCost;
     match.properties[tile.index] = {
@@ -2077,15 +2299,16 @@ export class OnlineRoomManager {
     }
 
     this.completeTurnAfterAction(room, player);
+    return true;
   }
 
   private performOnTileUpgrade(
     room: RoomRecord,
     targetLevel: number,
     clientId?: string
-  ): void {
+  ): boolean {
     const match = room.match;
-    if (!match) return;
+    if (!match) return false;
     const player = match.players[match.activePlayerIndex];
     const tileIndex = player.position;
     const prop = match.properties[tileIndex];
@@ -2094,7 +2317,7 @@ export class OnlineRoomManager {
       if (clientId) {
         this.sendError(clientId, 'INVALID_ACTION', 'Cấp độ nâng cấp không hợp lệ.');
       }
-      return;
+      return false;
     }
 
     const check = canUpgradeProperty(player, tileIndex, match.properties, {
@@ -2105,7 +2328,7 @@ export class OnlineRoomManager {
       if (clientId) {
         this.sendError(clientId, 'INVALID_ACTION', check.reason || 'Không thể nâng cấp lên cấp này.');
       }
-      return;
+      return false;
     }
 
     player.cash -= check.cost;
@@ -2126,11 +2349,12 @@ export class OnlineRoomManager {
       'positive'
     );
     this.completeTurnAfterAction(room, player);
+    return true;
   }
 
-  private performConfirmBuyout(room: RoomRecord): void {
+  private performConfirmBuyout(room: RoomRecord, clientId?: string): boolean {
     const match = room.match;
-    if (!match) return;
+    if (!match) return false;
     const buyer = match.players[match.activePlayerIndex];
     const tileIndex = buyer.position;
     const prop = match.properties[tileIndex];
@@ -2143,8 +2367,16 @@ export class OnlineRoomManager {
       match.matchMode
     );
     if (!check.allowed || !prop || prop.ownerId === null) {
+      if (clientId) {
+        this.sendError(
+          clientId,
+          'INVALID_ACTION',
+          check.reason || 'Không thể mua lại bất động sản này lúc này.'
+        );
+        return false;
+      }
       this.completeTurnAfterAction(room, buyer);
-      return;
+      return true;
     }
 
     const prevOwner = match.players.find((p) => p.id === prop.ownerId);
@@ -2169,40 +2401,39 @@ export class OnlineRoomManager {
     }
 
     this.completeTurnAfterAction(room, buyer);
+    return true;
   }
 
   private performConfirmChampionship(
     room: RoomRecord,
     targetTile: number,
     clientId?: string
-  ): void {
+  ): boolean {
     const match = room.match;
-    if (!match) return;
-    if (!isValidTileIndex(targetTile)) {
-      if (clientId) {
-        this.sendError(clientId, 'INVALID_ACTION', 'Ô đăng cai Cúp Quốc Gia không hợp lệ.');
-      }
-      return;
-    }
+    if (!match) return false;
     const player = match.players[match.activePlayerIndex];
-    const prop = match.properties[targetTile];
-    const tile = BOARD_TILES[targetTile];
-    const fee = match.isFreeChampionship ? 0 : CHAMPIONSHIP_FEE;
-    if (
-      !tile ||
-      tile.kind !== TileKind.PROPERTY ||
-      !prop ||
-      prop.ownerId !== player.id ||
-      player.cash < fee
-    ) {
+    const champCheck = validateChampionshipHostSelection(
+      player,
+      targetTile,
+      match.properties,
+      match.isFreeChampionship
+    );
+    if (!champCheck.allowed) {
       if (clientId) {
-        this.sendError(clientId, 'INVALID_ACTION', 'Không thể đăng cai Cúp Quốc Gia tại ô này.');
-        return;
+        this.sendError(
+          clientId,
+          'INVALID_ACTION',
+          champCheck.reason || 'Không thể đăng cai Cúp Quốc Gia tại ô này.'
+        );
+        return false;
       }
       match.isFreeChampionship = false;
       this.completeTurnAfterAction(room, player);
-      return;
+      return true;
     }
+    const prop = match.properties[targetTile];
+    const tile = BOARD_TILES[targetTile];
+    const fee = champCheck.fee;
 
     player.cash -= fee;
     match.boardModifiers = applyChampionshipHost(match.boardModifiers, targetTile);
@@ -2216,6 +2447,7 @@ export class OnlineRoomManager {
       'highlight'
     );
     this.completeTurnAfterAction(room, player);
+    return true;
   }
 
   private performSkipWorldTour(room: RoomRecord): void {
@@ -2228,7 +2460,7 @@ export class OnlineRoomManager {
       `${player.name} bỏ qua chuyến bay Du Lịch Xuyên Việt và đổ xúc xắc như thường.`,
       player.color
     );
-    match.turnPhase = 'AWAIT_ROLL';
+    this.setTurnPhase(match, 'AWAIT_ROLL');
     this.ensureSubPhaseTimeFloor(match, 18);
     this.broadcastSnapshot(room);
     this.scheduleBotTurnIfNeeded(room);
@@ -2259,7 +2491,7 @@ export class OnlineRoomManager {
     );
     if (player.cash < WORLD_TOUR_FEE || !hasAnyValidTarget) {
       player.pendingWorldTour = false;
-      match.turnPhase = 'AWAIT_ROLL';
+      this.setTurnPhase(match, 'AWAIT_ROLL');
       this.ensureSubPhaseTimeFloor(match, 18);
       this.broadcastSnapshot(room);
       this.scheduleBotTurnIfNeeded(room);
@@ -2292,7 +2524,7 @@ export class OnlineRoomManager {
       'highlight'
     );
 
-    match.turnPhase = 'MOVING_TOKEN';
+    this.setTurnPhase(match, 'MOVING_TOKEN');
     if (path.length > 0) {
       this.emitVisualEvent(room, {
         kind: 'TOKEN_MOVED',
@@ -2409,7 +2641,7 @@ export class OnlineRoomManager {
           match.activePlayerIndex = debtorIdx;
         }
         const debtor = match.players[match.activePlayerIndex];
-        match.turnPhase = 'DEBT_RESOLUTION';
+        this.setTurnPhase(match, 'DEBT_RESOLUTION');
         this.ensureSubPhaseTimeFloor(match, 25);
         this.addLog(
           room,
@@ -2429,7 +2661,7 @@ export class OnlineRoomManager {
       this.completeTurnAfterAction(room, player);
     } else if (eff.type === 'GO_TO_JAIL') {
       this.emitSound(room, 'jailAlert');
-      match.turnPhase = 'MOVING_TOKEN';
+      this.setTurnPhase(match, 'MOVING_TOKEN');
       this.emitVisualEvent(room, {
         kind: 'TOKEN_MOVED',
         playerId: player.id,
@@ -2446,7 +2678,7 @@ export class OnlineRoomManager {
       this.completeTurnAfterAction(room, player);
     } else if (eff.type === 'MOVE_TO') {
       const { path, passedStart } = computePathToTile(player.position, eff.targetTile, eff.collectStart);
-      match.turnPhase = 'MOVING_TOKEN';
+      this.setTurnPhase(match, 'MOVING_TOKEN');
       if (path.length > 0) {
         this.emitVisualEvent(room, {
           kind: 'TOKEN_MOVED',
@@ -2487,13 +2719,13 @@ export class OnlineRoomManager {
         return;
       }
       match.isFreeChampionship = true;
-      match.turnPhase = 'CHAMPIONSHIP_SELECTION';
+      this.setTurnPhase(match, 'CHAMPIONSHIP_SELECTION');
       this.ensureSubPhaseTimeFloor(match, 18);
       this.broadcastSnapshot(room);
       this.scheduleBotTurnIfNeeded(room);
     } else if (eff.type === 'GO_TO_WORLD_TOUR') {
       const { path, passedStart } = computePathToTile(player.position, WORLD_TOUR_TILE_INDEX, true);
-      match.turnPhase = 'MOVING_TOKEN';
+      this.setTurnPhase(match, 'MOVING_TOKEN');
       if (path.length > 0) {
         this.emitVisualEvent(room, {
           kind: 'TOKEN_MOVED',
@@ -2546,7 +2778,7 @@ export class OnlineRoomManager {
         return;
       }
       match.pendingTacticalCard = eff.type;
-      match.turnPhase = 'CARD_TARGET_SELECTION';
+      this.setTurnPhase(match, 'CARD_TARGET_SELECTION');
       this.ensureSubPhaseTimeFloor(match, 18);
       this.broadcastSnapshot(room);
       this.scheduleBotTurnIfNeeded(room);
@@ -2557,14 +2789,14 @@ export class OnlineRoomManager {
     room: RoomRecord,
     targetTile: number,
     clientId?: string
-  ): void {
+  ): boolean {
     const match = room.match;
-    if (!match || !match.pendingTacticalCard) return;
+    if (!match || !match.pendingTacticalCard) return false;
     if (!isValidTileIndex(targetTile)) {
       if (clientId) {
         this.sendError(clientId, 'INVALID_ACTION', 'Ô mục tiêu thẻ chiến thuật không hợp lệ.');
       }
-      return;
+      return false;
     }
     const player = match.players[match.activePlayerIndex];
     const kind = match.pendingTacticalCard;
@@ -2581,7 +2813,7 @@ export class OnlineRoomManager {
       if (clientId) {
         this.sendError(clientId, 'INVALID_ACTION', 'Không thể áp dụng thẻ chiến thuật lên ô này.');
       }
-      return;
+      return false;
     }
 
     const tile = BOARD_TILES[targetTile];
@@ -2597,7 +2829,7 @@ export class OnlineRoomManager {
         'positive'
       );
       this.completeTurnAfterAction(room, player);
-      return;
+      return true;
     }
 
     if (kind === 'POWER_OUTAGE') {
@@ -2621,7 +2853,7 @@ export class OnlineRoomManager {
         );
       }
       this.completeTurnAfterAction(room, player);
-      return;
+      return true;
     }
 
     // EARTHQUAKE
@@ -2654,6 +2886,7 @@ export class OnlineRoomManager {
       );
     }
     this.completeTurnAfterAction(room, player);
+    return true;
   }
 
   private advanceAfterQueuedDebt(room: RoomRecord): boolean {
@@ -2717,7 +2950,7 @@ export class OnlineRoomManager {
 
       match.activePlayerIndex = debtorIdx;
       match.pendingDebt = nextDebt;
-      match.turnPhase = 'DEBT_RESOLUTION';
+      this.setTurnPhase(match, 'DEBT_RESOLUTION');
       this.ensureSubPhaseTimeFloor(match, 25);
       this.addLog(
         room,
@@ -2746,9 +2979,9 @@ export class OnlineRoomManager {
     room: RoomRecord,
     tileIndicesToSell: number[],
     clientId?: string
-  ): void {
+  ): boolean {
     const match = room.match;
-    if (!match || !match.pendingDebt) return;
+    if (!match || !match.pendingDebt) return false;
     if (
       !Array.isArray(tileIndicesToSell) ||
       !tileIndicesToSell.every((n) => isValidTileIndex(n))
@@ -2756,7 +2989,7 @@ export class OnlineRoomManager {
       if (clientId) {
         this.sendError(clientId, 'INVALID_ACTION', 'Danh sách bất động sản bán không hợp lệ.');
       }
-      return;
+      return false;
     }
 
     const player = match.players[match.activePlayerIndex];
@@ -2780,7 +3013,7 @@ export class OnlineRoomManager {
       if (clientId) {
         this.sendError(clientId, 'INVALID_ACTION', 'Số tiền bán tài sản chưa đủ để thanh toán khoản nợ.');
       }
-      return;
+      return false;
     }
 
     match.properties = previewProps;
@@ -2822,8 +3055,8 @@ export class OnlineRoomManager {
 
     match.pendingDebt = null;
 
-    if (this.checkVictory(room)) return;
-    if (this.advanceAfterQueuedDebt(room)) return;
+    if (this.checkVictory(room)) return true;
+    if (this.advanceAfterQueuedDebt(room)) return true;
 
     if (
       originTileIndex !== undefined &&
@@ -2837,14 +3070,15 @@ export class OnlineRoomManager {
         match.matchMode
       ).allowed
     ) {
-      match.turnPhase = 'BUYOUT_DECISION';
+      this.setTurnPhase(match, 'BUYOUT_DECISION');
       this.ensureSubPhaseTimeFloor(match, 18);
       this.broadcastSnapshot(room);
       this.scheduleBotTurnIfNeeded(room);
-      return;
+      return true;
     }
 
     this.completeTurnAfterAction(room, player);
+    return true;
   }
 
   private performDeclareBankruptcy(room: RoomRecord): void {
@@ -2913,7 +3147,7 @@ export class OnlineRoomManager {
     match.pendingTacticalCard = null;
 
     if (!player || player.bankrupt) {
-      match.turnPhase = 'AWAIT_ROLL';
+      this.setTurnPhase(match, 'AWAIT_ROLL');
       this.broadcastSnapshot(room);
       return;
     }
@@ -2929,7 +3163,7 @@ export class OnlineRoomManager {
           player.color,
           'highlight'
         );
-        match.turnPhase = 'WORLD_TOUR';
+        this.setTurnPhase(match, 'WORLD_TOUR');
         this.broadcastSnapshot(room);
         this.scheduleBotTurnIfNeeded(room);
         return;
@@ -2942,7 +3176,7 @@ export class OnlineRoomManager {
       );
     }
 
-    match.turnPhase = 'AWAIT_ROLL';
+    this.setTurnPhase(match, 'AWAIT_ROLL');
     this.broadcastSnapshot(room);
     this.scheduleBotTurnIfNeeded(room);
   }
@@ -2973,7 +3207,7 @@ export class OnlineRoomManager {
     if (!result) return false;
 
     match.matchWinnerResult = result;
-    match.turnPhase = 'GAME_OVER';
+    this.setTurnPhase(match, 'GAME_OVER');
     room.status = 'gameover';
     this.clearMatchTimers(room);
     this.promoteConnectedHostIfNeeded(room);
@@ -2984,175 +3218,228 @@ export class OnlineRoomManager {
   }
 
   private scheduleBotTurnIfNeeded(room: RoomRecord): void {
+    if (this.disposed || !this.rooms.has(room.roomCode)) return;
     const match = room.match;
     if (!match || room.status !== 'playing') return;
     const current = match.players[match.activePlayerIndex];
     if (!current || !current.isBot || current.bankrupt) return;
 
-    if (room.botActionTimer) {
-      clearTimeout(room.botActionTimer);
-      room.botActionTimer = null;
-    }
-
     const phase = match.turnPhase;
     if (phase === 'ROLLING_DICE' || phase === 'MOVING_TOKEN' || phase === 'GAME_OVER') return;
+    // Never schedule a Bot action while an async beat (`waitRoomBeat`) is actively in flight
+    if (room.inFlightBeatCount > 0) return;
+
+    const epoch = room.matchEpoch;
+    const turnCount = match.turnCount;
+    const decisionRevision = match.decisionRevision;
+    const scheduledPlayerId = current.id;
+
+    // Idempotent guard: if an active timer already matches this exact decision, keep it (never double-schedule)
+    if (
+      room.botActionTimer !== null &&
+      room.botScheduledMeta &&
+      room.botScheduledMeta.epoch === epoch &&
+      room.botScheduledMeta.turnCount === turnCount &&
+      room.botScheduledMeta.decisionRevision === decisionRevision &&
+      room.botScheduledMeta.playerId === scheduledPlayerId &&
+      room.botScheduledMeta.phase === phase
+    ) {
+      return;
+    }
+
+    this.clearBotActionTimer(room);
 
     const delayMs = phase === 'CARD_REVEAL' ? 2800 : 1250;
-    const epoch = room.matchEpoch;
+    const expectedDelayMs =
+      this.timingScale <= 0 ? 0 : Math.max(10, Math.round(delayMs * this.timingScale));
+    room.botScheduledMeta = {
+      epoch,
+      turnCount,
+      decisionRevision,
+      playerId: scheduledPlayerId,
+      phase,
+      scheduledAt: Date.now(),
+      expectedDelayMs,
+    };
+
     room.botActionTimer = this.scheduleRoomTimeout(room, delayMs, () => {
       room.botActionTimer = null;
+      room.botScheduledMeta = null;
+      if (this.disposed || !this.rooms.has(room.roomCode)) return;
       if (room.matchEpoch !== epoch || room.status !== 'playing' || !room.match) return;
+      if (room.botActionExecuting || room.inFlightBeatCount > 0) return;
       const bot = room.match.players[room.match.activePlayerIndex];
-      if (!bot || !bot.isBot || bot.bankrupt || room.match.turnPhase !== phase) return;
+      if (
+        !bot ||
+        bot.id !== scheduledPlayerId ||
+        !bot.isBot ||
+        bot.bankrupt ||
+        room.match.turnPhase !== phase ||
+        room.match.decisionRevision !== decisionRevision
+      ) {
+        return;
+      }
 
-      if (phase === 'AWAIT_ROLL') {
-        if (bot.inJail) {
-          const decision = botChooseJailAction(bot);
-          if (decision === 'USE_CARD') {
-            this.executeAction(room, { kind: 'USE_JAIL_CARD' });
-            return;
-          }
-          if (decision === 'PAY_FINE') {
-            this.executeAction(room, { kind: 'PAY_JAIL_FINE' });
-            return;
-          }
-        }
-        const diceChoice = room.match.tacticalDiceEnabled
-          ? botChooseTacticalDice(
-              bot,
-              room.match.players,
-              room.match.properties,
-              room.match.boardModifiers,
-              room.match.matchMode
-            )
-          : 'NORMAL';
-        this.executeAction(room, { kind: 'ROLL_DICE', diceChoice });
-      } else if (phase === 'REROLL_DECISION') {
-        const lastDice = room.match.lastDice;
-        if (
-          lastDice &&
-          botShouldRerollDice(
-            bot,
-            lastDice[0],
-            lastDice[1],
-            room.match.players,
-            room.match.properties,
-            room.match.boardModifiers,
-            room.match.matchMode
-          )
-        ) {
-          this.executeAction(room, { kind: 'REROLL_DICE' });
-        } else {
-          this.executeAction(room, { kind: 'CONFIRM_ROLL_MOVE' });
-        }
-      } else if (phase === 'BUY_DECISION') {
-        if (
-          botShouldBuyProperty(
-            bot,
-            bot.position,
-            room.match.players,
-            room.match.properties,
-            room.match.matchMode
-          )
-        ) {
-          const tier = botPickInitialPurchaseTier(
-            bot,
-            bot.position,
-            room.match.properties,
-            room.match.players,
-            room.match.matchMode
-          );
-          this.executeAction(room, { kind: 'BUY_PROPERTY', initialLevel: tier });
-        } else {
-          this.executeAction(room, { kind: 'SKIP_BUY' });
-        }
-      } else if (phase === 'UPGRADE_DECISION') {
-        const lvl = botPickOnTileUpgradeTargetLevel(bot, bot.position, room.match.properties);
-        if (lvl !== null) {
-          this.executeAction(room, { kind: 'UPGRADE_PROPERTY', targetLevel: lvl });
-        } else {
-          this.executeAction(room, { kind: 'SKIP_UPGRADE' });
-        }
-      } else if (phase === 'BUYOUT_DECISION') {
-        if (
-          botShouldBuyoutProperty(
-            bot,
-            bot.position,
-            room.match.players,
-            room.match.properties,
-            room.match.boardModifiers,
-            room.match.matchMode
-          )
-        ) {
-          this.executeAction(room, { kind: 'CONFIRM_BUYOUT' });
-        } else {
-          this.executeAction(room, { kind: 'SKIP_BUYOUT' });
-        }
-      } else if (phase === 'CHAMPIONSHIP_SELECTION') {
-        const target = botPickChampionshipTarget(
-          bot,
-          room.match.properties,
-          room.match.boardModifiers,
-          room.match.isFreeChampionship,
-          room.match.players,
-          room.match.matchMode
-        );
-        if (target !== null) {
-          this.executeAction(room, { kind: 'CONFIRM_CHAMPIONSHIP', targetTile: target });
-        } else {
-          this.executeAction(room, { kind: 'SKIP_CHAMPIONSHIP' });
-        }
-      } else if (phase === 'WORLD_TOUR') {
-        const dest = botPickWorldTourTarget(
-          bot,
-          room.match.properties,
-          room.match.boardModifiers,
-          room.match.players,
-          room.match.matchMode
-        );
-        if (dest !== null) {
-          this.executeAction(room, { kind: 'SELECT_WORLD_TOUR', targetTile: dest });
-        } else {
-          this.executeAction(room, { kind: 'SKIP_WORLD_TOUR' });
-        }
-      } else if (phase === 'CARD_REVEAL') {
-        this.executeAction(room, { kind: 'CONFIRM_CARD' });
-      } else if (phase === 'CARD_TARGET_SELECTION' && room.match.pendingTacticalCard) {
-        const target = botPickTacticalCardTarget(
-          room.match.pendingTacticalCard,
-          bot,
-          room.match.players,
-          room.match.properties,
-          room.match.boardModifiers,
-          room.match.matchMode
-        );
-        if (target !== null) {
-          this.executeAction(room, { kind: 'APPLY_TACTICAL_CARD', targetTile: target });
-        } else {
-          this.executeAction(room, { kind: 'SKIP_TACTICAL_CARD' });
-        }
-      } else if (phase === 'DEBT_RESOLUTION' && room.match.pendingDebt) {
-        const cashNeeded = Math.max(0, room.match.pendingDebt.amount - Math.max(0, bot.cash));
-        if (cashNeeded === 0) {
-          this.executeAction(room, { kind: 'SELL_AND_PAY_DEBT', tileIndicesToSell: [] });
-          return;
-        }
-        const plan = computeOptimalAutoSale(
-          bot.id,
-          cashNeeded,
-          room.match.properties,
-          room.match.boardModifiers
-        );
-        if (!plan.sufficient) {
-          this.executeAction(room, { kind: 'DECLARE_BANKRUPTCY' });
-        } else {
-          this.executeAction(room, {
-            kind: 'SELL_AND_PAY_DEBT',
-            tileIndicesToSell: plan.tileIndicesToSell,
-          });
-        }
+      room.botActionExecuting = true;
+      try {
+        this.runBotDecision(room, bot, phase);
+      } finally {
+        room.botActionExecuting = false;
       }
     });
+  }
+
+  private runBotDecision(room: RoomRecord, bot: PlayerState, phase: TurnPhase): void {
+    if (!room.match) return;
+    if (phase === 'AWAIT_ROLL') {
+      if (bot.inJail) {
+        const decision = botChooseJailAction(bot);
+        if (decision === 'USE_CARD') {
+          this.executeAction(room, { kind: 'USE_JAIL_CARD' });
+          return;
+        }
+        if (decision === 'PAY_FINE') {
+          this.executeAction(room, { kind: 'PAY_JAIL_FINE' });
+          return;
+        }
+      }
+      const diceChoice = room.match.tacticalDiceEnabled
+        ? botChooseTacticalDice(
+            bot,
+            room.match.players,
+            room.match.properties,
+            room.match.boardModifiers,
+            room.match.matchMode
+          )
+        : 'NORMAL';
+      this.executeAction(room, { kind: 'ROLL_DICE', diceChoice });
+    } else if (phase === 'REROLL_DECISION') {
+      const lastDice = room.match.lastDice;
+      if (
+        lastDice &&
+        botShouldRerollDice(
+          bot,
+          lastDice[0],
+          lastDice[1],
+          room.match.players,
+          room.match.properties,
+          room.match.boardModifiers,
+          room.match.matchMode
+        )
+      ) {
+        this.executeAction(room, { kind: 'REROLL_DICE' });
+      } else {
+        this.executeAction(room, { kind: 'CONFIRM_ROLL_MOVE' });
+      }
+    } else if (phase === 'BUY_DECISION') {
+      if (
+        botShouldBuyProperty(
+          bot,
+          bot.position,
+          room.match.players,
+          room.match.properties,
+          room.match.matchMode
+        )
+      ) {
+        const tier = botPickInitialPurchaseTier(
+          bot,
+          bot.position,
+          room.match.properties,
+          room.match.players,
+          room.match.matchMode
+        );
+        this.executeAction(room, { kind: 'BUY_PROPERTY', initialLevel: tier });
+      } else {
+        this.executeAction(room, { kind: 'SKIP_BUY' });
+      }
+    } else if (phase === 'UPGRADE_DECISION') {
+      const lvl = botPickOnTileUpgradeTargetLevel(bot, bot.position, room.match.properties);
+      if (lvl !== null) {
+        this.executeAction(room, { kind: 'UPGRADE_PROPERTY', targetLevel: lvl });
+      } else {
+        this.executeAction(room, { kind: 'SKIP_UPGRADE' });
+      }
+    } else if (phase === 'BUYOUT_DECISION') {
+      if (
+        botShouldBuyoutProperty(
+          bot,
+          bot.position,
+          room.match.players,
+          room.match.properties,
+          room.match.boardModifiers,
+          room.match.matchMode
+        )
+      ) {
+        this.executeAction(room, { kind: 'CONFIRM_BUYOUT' });
+      } else {
+        this.executeAction(room, { kind: 'SKIP_BUYOUT' });
+      }
+    } else if (phase === 'CHAMPIONSHIP_SELECTION') {
+      const target = botPickChampionshipTarget(
+        bot,
+        room.match.properties,
+        room.match.boardModifiers,
+        room.match.isFreeChampionship,
+        room.match.players,
+        room.match.matchMode
+      );
+      if (target !== null) {
+        this.executeAction(room, { kind: 'CONFIRM_CHAMPIONSHIP', targetTile: target });
+      } else {
+        this.executeAction(room, { kind: 'SKIP_CHAMPIONSHIP' });
+      }
+    } else if (phase === 'WORLD_TOUR') {
+      const dest = botPickWorldTourTarget(
+        bot,
+        room.match.properties,
+        room.match.boardModifiers,
+        room.match.players,
+        room.match.matchMode
+      );
+      if (dest !== null) {
+        this.executeAction(room, { kind: 'SELECT_WORLD_TOUR', targetTile: dest });
+      } else {
+        this.executeAction(room, { kind: 'SKIP_WORLD_TOUR' });
+      }
+    } else if (phase === 'CARD_REVEAL') {
+      this.executeAction(room, { kind: 'CONFIRM_CARD' });
+    } else if (phase === 'CARD_TARGET_SELECTION' && room.match.pendingTacticalCard) {
+      const target = botPickTacticalCardTarget(
+        room.match.pendingTacticalCard,
+        bot,
+        room.match.players,
+        room.match.properties,
+        room.match.boardModifiers,
+        room.match.matchMode
+      );
+      if (target !== null) {
+        this.executeAction(room, { kind: 'APPLY_TACTICAL_CARD', targetTile: target });
+      } else {
+        this.executeAction(room, { kind: 'SKIP_TACTICAL_CARD' });
+      }
+    } else if (phase === 'DEBT_RESOLUTION' && room.match.pendingDebt) {
+      const cashNeeded = Math.max(0, room.match.pendingDebt.amount - Math.max(0, bot.cash));
+      if (cashNeeded === 0) {
+        this.executeAction(room, { kind: 'SELL_AND_PAY_DEBT', tileIndicesToSell: [] });
+        return;
+      }
+      const plan = computeOptimalAutoSale(
+        bot.id,
+        cashNeeded,
+        room.match.properties,
+        room.match.boardModifiers,
+        room.match.players,
+        room.match.matchMode
+      );
+      if (!plan.sufficient) {
+        this.executeAction(room, { kind: 'DECLARE_BANKRUPTCY' });
+      } else {
+        this.executeAction(room, {
+          kind: 'SELL_AND_PAY_DEBT',
+          tileIndicesToSell: plan.tileIndicesToSell,
+        });
+      }
+    }
   }
 
   private ensureSubPhaseTimeFloor(match: MatchRecord, minSeconds = 18): void {
@@ -3196,7 +3483,138 @@ export class OnlineRoomManager {
       });
   }
 
+  private executeSafeTimeoutAction(
+    room: RoomRecord,
+    match: MatchRecord,
+    active: PlayerState
+  ): void {
+    const phase = match.turnPhase;
+    if (phase === 'AWAIT_ROLL') {
+      match.turnTimeLeft = 15;
+      this.executeAction(room, { kind: 'ROLL_DICE' });
+    } else if (phase === 'REROLL_DECISION') {
+      const isThirdDouble =
+        !active.inJail &&
+        Boolean(match.lastDice) &&
+        match.lastDice![0] === match.lastDice![1] &&
+        active.doublesStreak >= 2;
+      active.doublesStreak = 0;
+      match.turnTimeLeft = 15;
+      void this.performConfirmRollMove(room, room.matchEpoch, true, isThirdDouble);
+    } else if (phase === 'BUY_DECISION') {
+      active.doublesStreak = 0;
+      this.executeAction(room, { kind: 'SKIP_BUY' });
+    } else if (phase === 'UPGRADE_DECISION') {
+      active.doublesStreak = 0;
+      this.executeAction(room, { kind: 'SKIP_UPGRADE' });
+    } else if (phase === 'BUYOUT_DECISION') {
+      active.doublesStreak = 0;
+      this.executeAction(room, { kind: 'SKIP_BUYOUT' });
+    } else if (phase === 'CHAMPIONSHIP_SELECTION') {
+      active.doublesStreak = 0;
+      this.executeAction(room, { kind: 'SKIP_CHAMPIONSHIP' });
+    } else if (phase === 'WORLD_TOUR') {
+      active.doublesStreak = 0;
+      match.turnTimeLeft = 15;
+      this.executeAction(room, { kind: 'SKIP_WORLD_TOUR' });
+    } else if (phase === 'CARD_REVEAL') {
+      active.doublesStreak = 0;
+      match.turnTimeLeft = 15;
+      this.executeAction(room, { kind: 'CONFIRM_CARD' });
+    } else if (phase === 'CARD_TARGET_SELECTION') {
+      active.doublesStreak = 0;
+      this.executeAction(room, { kind: 'SKIP_TACTICAL_CARD' });
+    } else if (phase === 'DEBT_RESOLUTION' && match.pendingDebt) {
+      active.doublesStreak = 0;
+      match.turnTimeLeft = 15;
+      const cashNeeded = Math.max(0, match.pendingDebt.amount - Math.max(0, active.cash));
+      const plan = computeOptimalAutoSale(
+        active.id,
+        cashNeeded,
+        match.properties,
+        match.boardModifiers,
+        match.players,
+        match.matchMode
+      );
+      if (!plan.sufficient) {
+        this.executeAction(room, { kind: 'DECLARE_BANKRUPTCY' });
+      } else {
+        this.executeAction(room, {
+          kind: 'SELL_AND_PAY_DEBT',
+          tileIndicesToSell: plan.tileIndicesToSell,
+        });
+      }
+    }
+  }
+
+  private runBotWatchdogIfNeeded(
+    room: RoomRecord,
+    match: MatchRecord,
+    active: PlayerState,
+    now: number,
+    timedOut: boolean
+  ): void {
+    // 1. Bot is currently executing a synchronous action or awaiting an async beat -> do NOT interfere.
+    if (room.botActionExecuting || room.inFlightBeatCount > 0) {
+      return;
+    }
+
+    // 2. Bot already has a scheduled timer -> check if it matches the current decision and is not overdue.
+    if (room.botActionTimer !== null) {
+      const meta = room.botScheduledMeta;
+      const matchesCurrentDecision =
+        meta !== null &&
+        meta.epoch === room.matchEpoch &&
+        meta.turnCount === match.turnCount &&
+        meta.decisionRevision === match.decisionRevision &&
+        meta.playerId === active.id &&
+        meta.phase === match.turnPhase;
+      const overdueThresholdMs = meta ? Math.max(5000, meta.expectedDelayMs + 5000) : 5000;
+      const isOverdue = meta ? now - meta.scheduledAt > overdueThresholdMs : true;
+
+      if (matchesCurrentDecision && !isOverdue) {
+        // Legitimately waiting for scheduled timer -> do not spawn duplicate concurrent actions.
+        return;
+      }
+      // Stale or overdue timer -> clear before attempting bounded recovery.
+      this.clearBotActionTimer(room);
+    }
+
+    // 3. Bot is genuinely stranded (no timer, not executing, no async beat in flight).
+    const decisionKey = `${room.matchEpoch}:${match.turnCount}:${match.decisionRevision}:${active.id}:${match.turnPhase}`;
+    if (room.botWatchdogKey !== decisionKey) {
+      room.botWatchdogKey = decisionKey;
+      room.botWatchdogAttempts = 0;
+    }
+
+    // Hard cap per decision prevents any possibility of an infinite watchdog loop.
+    if (room.botWatchdogAttempts >= 2) {
+      return;
+    }
+
+    if (room.botWatchdogAttempts === 0) {
+      room.botWatchdogAttempts = 1;
+      if (match.turnTimeLeft <= 0) {
+        match.turnTimeLeft = 15;
+      }
+      this.scheduleBotTurnIfNeeded(room);
+      return;
+    }
+
+    // Second recovery attempt only if the turn clock also expired after rescheduling failed to advance state.
+    if (timedOut) {
+      room.botWatchdogAttempts = 2;
+      room.botActionExecuting = true;
+      try {
+        this.executeSafeTimeoutAction(room, match, active);
+      } finally {
+        room.botActionExecuting = false;
+      }
+    }
+  }
+
   public tickOneSecond(): void {
+    if (this.disposed) return;
     const now = Date.now();
     for (const room of this.rooms.values()) {
       if (room.status === 'gameover') {
@@ -3214,14 +3632,27 @@ export class OnlineRoomManager {
         match.matchTimeLeft -= 1;
       }
       if (match.matchTimeLeft <= 0) {
+        const outstandingDebts: PendingDebt[] = [
+          ...(match.pendingDebt ? [match.pendingDebt] : []),
+          ...match.pendingDebtQueue,
+        ];
+        const activeDebtorId = match.players[match.activePlayerIndex]?.id;
         const timeResult = evaluateTimeLimitWinner(
           match.players,
           match.properties,
-          match.matchMode
+          match.matchMode,
+          outstandingDebts,
+          activeDebtorId
         );
         if (timeResult) {
+          match.pendingDebt = null;
+          match.pendingDebtQueue = [];
+          match.debtReturnToPlayerIndex = null;
+          match.drawnCard = null;
+          match.pendingTacticalCard = null;
+          match.landingCueText = null;
           match.matchWinnerResult = timeResult;
-          match.turnPhase = 'GAME_OVER';
+          this.setTurnPhase(match, 'GAME_OVER');
           room.status = 'gameover';
           this.clearMatchTimers(room);
           this.promoteConnectedHostIfNeeded(room);
@@ -3271,7 +3702,8 @@ export class OnlineRoomManager {
       if (
         match.turnPhase === 'ROLLING_DICE' ||
         match.turnPhase === 'MOVING_TOKEN' ||
-        match.turnPhase === 'GAME_OVER'
+        match.turnPhase === 'GAME_OVER' ||
+        room.inFlightBeatCount > 0
       ) {
         continue;
       }
@@ -3279,8 +3711,15 @@ export class OnlineRoomManager {
       const active = match.players[match.activePlayerIndex];
       if (!active || active.bankrupt) continue;
 
+      if (active.isBot) {
+        const timedOut = match.turnTimeLeft <= 1;
+        match.turnTimeLeft = timedOut ? 0 : match.turnTimeLeft - 1;
+        this.runBotWatchdogIfNeeded(room, match, active, now, timedOut);
+        continue;
+      }
+
       // Speed up offline human wait slightly (cap at 12s)
-      if (!active.isBot && active.onlineConnected === false && match.turnTimeLeft > 12) {
+      if (active.onlineConnected === false && match.turnTimeLeft > 12) {
         match.turnTimeLeft = 12;
         this.broadcastSnapshot(room);
         continue;
@@ -3293,9 +3732,18 @@ export class OnlineRoomManager {
 
       match.turnTimeLeft = 0;
 
-      if (!active.isBot) {
+      const isOutOfTurnDebtPrompt =
+        match.debtReturnToPlayerIndex !== null &&
+        match.debtReturnToPlayerIndex !== match.activePlayerIndex;
+      const alreadyInteractedThisTurn =
+        match.lastHumanActionTurnCountByPlayer[active.id] === match.turnCount;
+      const alreadyCountedThisTurn =
+        match.lastMissedTurnCountByPlayer[active.id] === match.turnCount;
+
+      if (!isOutOfTurnDebtPrompt && !alreadyInteractedThisTurn && !alreadyCountedThisTurn) {
         const missed = (match.missedTurnsByPlayer[active.id] || 0) + 1;
         match.missedTurnsByPlayer[active.id] = missed;
+        match.lastMissedTurnCountByPlayer[active.id] = match.turnCount;
 
         if (missed >= 2) {
           active.isBot = true;
@@ -3310,63 +3758,9 @@ export class OnlineRoomManager {
             'neutral'
           );
         }
-
-        const phase = match.turnPhase;
-        if (phase === 'AWAIT_ROLL') {
-          match.turnTimeLeft = 15;
-          this.executeAction(room, { kind: 'ROLL_DICE' });
-        } else if (phase === 'REROLL_DECISION') {
-          const isThirdDouble =
-            !active.inJail &&
-            Boolean(match.lastDice) &&
-            match.lastDice![0] === match.lastDice![1] &&
-            active.doublesStreak >= 2;
-          active.doublesStreak = 0;
-          match.turnTimeLeft = 15;
-          void this.performConfirmRollMove(room, room.matchEpoch, true, isThirdDouble);
-        } else if (phase === 'BUY_DECISION') {
-          active.doublesStreak = 0;
-          this.executeAction(room, { kind: 'SKIP_BUY' });
-        } else if (phase === 'UPGRADE_DECISION') {
-          active.doublesStreak = 0;
-          this.executeAction(room, { kind: 'SKIP_UPGRADE' });
-        } else if (phase === 'BUYOUT_DECISION') {
-          active.doublesStreak = 0;
-          this.executeAction(room, { kind: 'SKIP_BUYOUT' });
-        } else if (phase === 'CHAMPIONSHIP_SELECTION') {
-          active.doublesStreak = 0;
-          this.executeAction(room, { kind: 'SKIP_CHAMPIONSHIP' });
-        } else if (phase === 'WORLD_TOUR') {
-          active.doublesStreak = 0;
-          match.turnTimeLeft = 15;
-          this.executeAction(room, { kind: 'SKIP_WORLD_TOUR' });
-        } else if (phase === 'CARD_REVEAL') {
-          active.doublesStreak = 0;
-          match.turnTimeLeft = 15;
-          this.executeAction(room, { kind: 'CONFIRM_CARD' });
-        } else if (phase === 'CARD_TARGET_SELECTION') {
-          active.doublesStreak = 0;
-          this.executeAction(room, { kind: 'SKIP_TACTICAL_CARD' });
-        } else if (phase === 'DEBT_RESOLUTION' && match.pendingDebt) {
-          active.doublesStreak = 0;
-          match.turnTimeLeft = 15;
-          const cashNeeded = Math.max(0, match.pendingDebt.amount - Math.max(0, active.cash));
-          const plan = computeOptimalAutoSale(
-            active.id,
-            cashNeeded,
-            match.properties,
-            match.boardModifiers
-          );
-          if (!plan.sufficient) {
-            this.executeAction(room, { kind: 'DECLARE_BANKRUPTCY' });
-          } else {
-            this.executeAction(room, {
-              kind: 'SELL_AND_PAY_DEBT',
-              tileIndicesToSell: plan.tileIndicesToSell,
-            });
-          }
-        }
       }
+
+      this.executeSafeTimeoutAction(room, match, active);
     }
   }
 }

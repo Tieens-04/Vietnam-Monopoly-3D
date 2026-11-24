@@ -31,6 +31,10 @@ import {
   saveCurrencyStyle,
 } from './game/currencyLogic';
 import {
+  createMonotonicCountdownClock,
+  MonotonicCountdownClock,
+} from './game/gameplayClock';
+import {
   detectBrowserGpu,
   loadSavedGraphicsQualityPref,
   resolveEffectiveGraphicsTier,
@@ -62,7 +66,6 @@ import {
   calculateTotalRealEstateValue,
   canBuyoutProperty,
   canUpgradeProperty,
-  CHAMPIONSHIP_FEE,
   clearDisownedModifiers,
   clearTileOutage,
   computeOptimalAutoSale,
@@ -82,7 +85,6 @@ import {
   getNextActivePlayerIndex,
   getValidTacticalCardTargets,
   isPurchasableTile,
-  isValidInitialPurchaseLevel,
   isValidTileIndex,
   isValidUpgradeTargetLevel,
   isValidWorldTourTarget,
@@ -91,6 +93,7 @@ import {
   MATCH_DURATION_SECONDS,
   MAX_JAIL_TURNS,
   MIN_BIG_RENT_FOR_QUIP,
+  normalizeTacticalDiceChoice,
   parseDeterministicDiceQueue,
   resolveIslandRollOutcome,
   resolveWorldTourMovement,
@@ -98,6 +101,8 @@ import {
   shouldGrantImmediateDoublesRoll,
   START_SALARY,
   TURN_COUNTDOWN_SECONDS,
+  validateChampionshipHostSelection,
+  validateInitialPropertyPurchase,
   WORLD_TOUR_FEE,
   WORLD_TOUR_TILE_INDEX,
 } from './game/rules';
@@ -261,10 +266,28 @@ export default function App() {
     useState<TacticalCardActionKind | null>(null);
   const [turnTimeLeft, setTurnTimeLeft] = useState<number>(TURN_COUNTDOWN_SECONDS);
   const [matchTimeLeft, setMatchTimeLeft] = useState<number>(initialMatchDuration);
+  const getMonotonicNowMs = () =>
+    typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const matchClockRef = useRef<MonotonicCountdownClock | null>(null);
+  if (!matchClockRef.current) {
+    matchClockRef.current = createMonotonicCountdownClock(
+      initialMatchDuration,
+      getMonotonicNowMs()
+    );
+  }
+  const turnClockRef = useRef<MonotonicCountdownClock | null>(null);
+  if (!turnClockRef.current) {
+    turnClockRef.current = createMonotonicCountdownClock(
+      TURN_COUNTDOWN_SECONDS,
+      getMonotonicNowMs()
+    );
+  }
 
   const [selectedTileIndex, setSelectedTileIndex] = useState<number | null>(null);
   const [showAssetsModal, setShowAssetsModal] = useState<boolean>(false);
   const [showRulebookModal, setShowRulebookModal] = useState<boolean>(false);
+  const showRulebookModalRef = useRef<boolean>(showRulebookModal);
+  showRulebookModalRef.current = showRulebookModal;
   const [openActionMenu, setOpenActionMenu] = useState<ActionDockMenuKind>('none');
   const [drawnCard, setDrawnCard] = useState<LuckCard | null>(() =>
     isDemoEvent
@@ -460,11 +483,15 @@ export default function App() {
       ? online.roomSnapshot.match
       : null;
   const isOnlineMatch = Boolean(onlineMatch);
+  const isOnlineConnectedAndSynced =
+    !isOnlineMatch || (online.connectionStatus === 'connected' && online.isSynced);
+  const isOnlineConnectedAndSyncedRef = useRef<boolean>(isOnlineConnectedAndSynced);
+  isOnlineConnectedAndSyncedRef.current = isOnlineConnectedAndSynced;
   const onlineActivePlayer = onlineMatch
     ? onlineMatch.players[onlineMatch.activePlayerIndex]
     : undefined;
   const onlineDecisionKey = onlineMatch
-    ? `${onlineMatch.turnCount}:${onlineMatch.activePlayerIndex}:${onlineMatch.turnPhase}:${onlineActivePlayer?.position ?? -1}:${onlineActivePlayer?.inJail ? 1 : 0}:${onlineActivePlayer?.doublesStreak ?? 0}:${onlineMatch.drawnCard?.id ?? ''}:${onlineMatch.pendingTacticalCard ?? ''}:${onlineMatch.pendingDebt?.debtorId ?? ''}:${onlineMatch.pendingDebt?.amount ?? ''}`
+    ? `${onlineMatch.turnCount}:${onlineMatch.decisionRevision ?? 0}:${onlineMatch.activePlayerIndex}:${onlineMatch.turnPhase}:${onlineActivePlayer?.position ?? -1}:${onlineActivePlayer?.inJail ? 1 : 0}:${onlineActivePlayer?.doublesStreak ?? 0}:${onlineMatch.drawnCard?.id ?? ''}:${onlineMatch.pendingTacticalCard ?? ''}:${onlineMatch.pendingDebt?.debtorId ?? ''}:${onlineMatch.pendingDebt?.amount ?? ''}`
     : null;
   const onlineDecisionKeyRef = useRef<string | null>(onlineDecisionKey);
   onlineDecisionKeyRef.current = onlineDecisionKey;
@@ -484,6 +511,9 @@ export default function App() {
   }, []);
 
   const submitOnlineDecision = useCallback((): boolean => {
+    if (isOnlineMatchRef.current && !isOnlineConnectedAndSyncedRef.current) {
+      return false;
+    }
     const key = onlineDecisionKeyRef.current;
     if (!key) return true;
     if (dismissedOnlineDecisionRef.current === key) {
@@ -523,10 +553,10 @@ export default function App() {
   }, [clearDismissedOnlineDecision, online.errorSeq]);
 
   useEffect(() => {
-    if (isOnlineMatch && online.connectionStatus !== 'connected') {
+    if (isOnlineMatch && !isOnlineConnectedAndSynced) {
       clearDismissedOnlineDecision();
     }
-  }, [clearDismissedOnlineDecision, isOnlineMatch, online.connectionStatus]);
+  }, [clearDismissedOnlineDecision, isOnlineConnectedAndSynced, isOnlineMatch]);
 
   useEffect(
     () => () => {
@@ -539,8 +569,8 @@ export default function App() {
 
   const isOnlineDecisionPendingAck = Boolean(
     isOnlineMatch &&
-      onlineDecisionKey &&
-      dismissedOnlineDecisionKey === onlineDecisionKey
+      (!isOnlineConnectedAndSynced ||
+        (onlineDecisionKey && dismissedOnlineDecisionKey === onlineDecisionKey))
   );
   const isOnlineDecisionPendingAckRef = useRef<boolean>(isOnlineDecisionPendingAck);
   isOnlineDecisionPendingAckRef.current = isOnlineDecisionPendingAck;
@@ -606,15 +636,16 @@ export default function App() {
       setOnlineDisplayMatchTimeLeft(onlineMatch.matchTimeLeft);
     }
   }, [onlineMatch?.matchTimeLeft]);
+  const isOnlineGameOver = onlineMatch?.turnPhase === 'GAME_OVER';
   useEffect(() => {
-    if (!isOnlineMatch || !onlineMatch || onlineMatch.turnPhase === 'GAME_OVER') {
+    if (!isOnlineMatch || isOnlineGameOver) {
       return;
     }
     const interval = window.setInterval(() => {
       setOnlineDisplayMatchTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [isOnlineMatch, onlineMatch?.turnPhase]);
+  }, [isOnlineMatch, isOnlineGameOver]);
 
   const viewMatchTimeLeft = isOnlineMatch
     ? onlineDisplayMatchTimeLeft
@@ -656,6 +687,15 @@ export default function App() {
           !viewCurrentPlayer.bankrupt
       )
     : Boolean(viewCurrentPlayer && !viewCurrentPlayer.isBot && !viewCurrentPlayer.bankrupt);
+
+  const prevOnlineSyncedRef = useRef<boolean>(online.isSynced);
+  useEffect(() => {
+    if (isOnlineMatch && !prevOnlineSyncedRef.current && online.isSynced) {
+      // Freshly resynced after an Online reconnect: cancel any stale pre-disconnect animations & latches
+      canvasRef.current?.cancelPendingAnimations();
+    }
+    prevOnlineSyncedRef.current = online.isSynced;
+  }, [isOnlineMatch, online.isSynced]);
 
   const prevOnlineStatusRef = useRef<string | null>(null);
   useEffect(() => {
@@ -734,8 +774,33 @@ export default function App() {
   viewPendingTacticalCardRef.current = viewPendingTacticalCard;
   const viewMatchModeRef = useRef(viewMatchMode);
   viewMatchModeRef.current = viewMatchMode;
+  const viewTacticalDiceEnabledRef = useRef(viewTacticalDiceEnabled);
+  viewTacticalDiceEnabledRef.current = viewTacticalDiceEnabled;
   const onlinePauseOpenRef = useRef(onlinePauseOpen);
   onlinePauseOpenRef.current = onlinePauseOpen;
+
+  // BUG-11: Always reset tactical dice choice ('EVEN'/'ODD' -> 'NORMAL') on turn/decision transitions,
+  // jail entry, or exhausted Even/Odd charges so stale choices are never sent on subsequent turns.
+  const onlineDecisionRevision = onlineMatch?.decisionRevision ?? 0;
+  const viewCurrentInJail = Boolean(viewCurrentPlayer?.inJail);
+  const viewCurrentEvenOddCharges = viewCurrentPlayer?.evenOddCharges ?? 0;
+  useEffect(() => {
+    selectedDiceChoiceRef.current = 'NORMAL';
+    setSelectedDiceChoice('NORMAL');
+  }, [
+    viewTurnCount,
+    viewActivePlayerIndex,
+    onlineDecisionRevision,
+    viewCurrentInJail,
+    viewTacticalDiceEnabled,
+  ]);
+
+  useEffect(() => {
+    if (viewCurrentEvenOddCharges <= 0 && selectedDiceChoiceRef.current !== 'NORMAL') {
+      selectedDiceChoiceRef.current = 'NORMAL';
+      setSelectedDiceChoice('NORMAL');
+    }
+  }, [viewCurrentEvenOddCharges]);
 
   // Keep live state mirror in refs for async animation callbacks
   const playersRef = useRef(players);
@@ -816,7 +881,21 @@ export default function App() {
     []
   );
 
+  const isTurnClockPhaseActive = (phase: TurnPhase): boolean =>
+    phase !== 'ROLLING_DICE' && phase !== 'MOVING_TOKEN' && phase !== 'GAME_OVER';
+
   const commitTurnPhase = useCallback((next: TurnPhase) => {
+    if (!isOnlineMatchRef.current && screenStateRef.current === 'playing' && turnClockRef.current) {
+      const prevActive =
+        !showRulebookModalRef.current && isTurnClockPhaseActive(turnPhaseRef.current);
+      const { remainingSeconds, changed } = turnClockRef.current.advance(
+        getMonotonicNowMs(),
+        prevActive
+      );
+      if (changed) {
+        setTurnTimeLeft(remainingSeconds);
+      }
+    }
     turnPhaseRef.current = next;
     setTurnPhase(next);
   }, []);
@@ -952,13 +1031,34 @@ export default function App() {
     [addLog, commitScreenState, commitTurnPhase]
   );
 
+  const resetMatchClock = useCallback((seconds: number) => {
+    const next = matchClockRef.current!.reset(seconds, getMonotonicNowMs());
+    matchTimeLeftRef.current = next;
+    setMatchTimeLeft(next);
+  }, []);
+
+  const resetTurnClock = useCallback((seconds: number) => {
+    const next = turnClockRef.current!.reset(seconds, getMonotonicNowMs());
+    setTurnTimeLeft(next);
+  }, []);
+
+  const ensureTurnClockFloor = useCallback((minSeconds: number) => {
+    const wasActive =
+      !isOnlineMatchRef.current &&
+      screenStateRef.current === 'playing' &&
+      !showRulebookModalRef.current &&
+      isTurnClockPhaseActive(turnPhaseRef.current);
+    const next = turnClockRef.current!.ensureFloor(minSeconds, getMonotonicNowMs(), wasActive);
+    setTurnTimeLeft(next);
+  }, []);
+
   /**
    * Starts the roll phase (or next-turn World Tour flight) for a player and
    * resets the 45-second per-turn clock cleanly at turn/bonus start.
    */
   const enterRollPhaseForPlayer = useCallback(
     (player: PlayerState | undefined) => {
-      setTurnTimeLeft(TURN_COUNTDOWN_SECONDS);
+      resetTurnClock(TURN_COUNTDOWN_SECONDS);
       selectedDiceChoiceRef.current = 'NORMAL';
       setSelectedDiceChoice('NORMAL');
       if (!player || player.bankrupt) {
@@ -1217,9 +1317,8 @@ export default function App() {
       setTurnCount(1);
       commitLastDice(null);
       setLastRentPaid(0);
-      setTurnTimeLeft(TURN_COUNTDOWN_SECONDS);
-      matchTimeLeftRef.current = initialMatchDuration;
-      setMatchTimeLeft(initialMatchDuration);
+      resetTurnClock(TURN_COUNTDOWN_SECONDS);
+      resetMatchClock(initialMatchDuration);
       setSelectedTileIndex(null);
       setShowAssetsModal(false);
       setShowRulebookModal(false);
@@ -1306,9 +1405,8 @@ export default function App() {
     setLastRentPaid(0);
     selectedDiceChoiceRef.current = 'NORMAL';
     setSelectedDiceChoice('NORMAL');
-    setTurnTimeLeft(TURN_COUNTDOWN_SECONDS);
-    matchTimeLeftRef.current = initialMatchDuration;
-    setMatchTimeLeft(initialMatchDuration);
+    resetTurnClock(TURN_COUNTDOWN_SECONDS);
+    resetMatchClock(initialMatchDuration);
     commitTurnPhase('AWAIT_ROLL');
     commitScreenState('title');
   }, [
@@ -1421,7 +1519,7 @@ export default function App() {
       setActivePlayerIndex(debtorIdx);
       setSelectedTileIndex(null);
       commitPendingDebt(nextDebt);
-      setTurnTimeLeft((prev) => Math.max(prev, 25));
+      ensureTurnClockFloor(25);
       commitTurnPhase('DEBT_RESOLUTION');
       if (!debtor.isBot) {
         setShowAssetsModal(true);
@@ -1659,7 +1757,7 @@ export default function App() {
             matchModeRef.current
           ).allowed
         ) {
-          setTurnTimeLeft((prev) => Math.max(prev, 18));
+          ensureTurnClockFloor(18);
           commitTurnPhase('BUYOUT_DECISION');
         } else {
           completeTurnAfterAction(updatedPayer);
@@ -1683,7 +1781,7 @@ export default function App() {
         reason,
         originTileIndex: options?.originTileIndex,
       });
-      setTurnTimeLeft((prev) => Math.max(prev, 20));
+      ensureTurnClockFloor(20);
       commitTurnPhase('DEBT_RESOLUTION');
       if (!payer.isBot) {
         setShowAssetsModal(true);
@@ -1775,7 +1873,7 @@ export default function App() {
           setLandingCueText(null);
           if (!okBeat) return;
           setFreeChampionshipFlag(true);
-          setTurnTimeLeft((prev) => Math.max(prev, 18));
+          ensureTurnClockFloor(18);
           commitTurnPhase('CHAMPIONSHIP_SELECTION');
           return;
         }
@@ -1855,7 +1953,7 @@ export default function App() {
           const okBeat = await waitGameBeat(740, epoch);
           setLandingCueText(null);
           if (!okBeat) return;
-          setTurnTimeLeft((prev) => Math.max(prev, 18));
+          ensureTurnClockFloor(18);
           commitTurnPhase('BUY_DECISION');
           return;
         }
@@ -1875,7 +1973,7 @@ export default function App() {
             const okBeat = await waitGameBeat(740, epoch);
             setLandingCueText(null);
             if (!okBeat) return;
-            setTurnTimeLeft((prev) => Math.max(prev, 18));
+            ensureTurnClockFloor(18);
             commitTurnPhase('UPGRADE_DECISION');
             return;
           }
@@ -1933,7 +2031,7 @@ export default function App() {
               matchModeRef.current
             ).allowed
           ) {
-            setTurnTimeLeft((prev) => Math.max(prev, 18));
+            ensureTurnClockFloor(18);
             commitTurnPhase('BUYOUT_DECISION');
             return;
           }
@@ -1980,7 +2078,7 @@ export default function App() {
           'highlight'
         );
         commitDrawnCard(card);
-        setTurnTimeLeft((prev) => Math.max(prev, 18));
+        ensureTurnClockFloor(18);
         commitTurnPhase('CARD_REVEAL');
         return;
       }
@@ -2121,7 +2219,19 @@ export default function App() {
    */
   const handleRollDice = useCallback(
     async (diceChoice?: TacticalDiceChoice) => {
-      const effectiveChoice = diceChoice ?? selectedDiceChoiceRef.current;
+      const activeRollPlayer = isOnlineMatchRef.current
+        ? viewPlayersRef.current[viewActiveIdxRef.current]
+        : playersRef.current[activeIdxRef.current];
+      const effectiveChoice = normalizeTacticalDiceChoice(
+        diceChoice ?? selectedDiceChoiceRef.current,
+        {
+          tacticalDiceEnabled: isOnlineMatchRef.current
+            ? viewTacticalDiceEnabledRef.current
+            : tacticalDiceEnabledRef.current,
+          inJail: activeRollPlayer?.inJail,
+          evenOddCharges: activeRollPlayer?.evenOddCharges,
+        }
+      );
 
       if (isOnlineMatchRef.current) {
         if (
@@ -2280,7 +2390,7 @@ export default function App() {
 
       // 2. Tactical Dice Reroll Offer
       if (tacticalDiceEnabledRef.current && (freshPlayer.rerollCharges ?? 0) > 0) {
-        setTurnTimeLeft((prev) => Math.max(prev, 12));
+        ensureTurnClockFloor(12);
         addLog(
           `🎲 ${freshPlayer.name} đổ được ${die1} + ${die2} = ${sum}${isDoubles ? ' (Ra đôi!)' : ''} — có thể Đổ lại (${freshPlayer.rerollCharges} lượt) hoặc Giữ & Đi.`,
           freshPlayer.color
@@ -2512,25 +2622,23 @@ export default function App() {
       if (!player) return;
 
       const tile = BOARD_TILES[player.position];
-      const basePrice = tile?.price || 0;
       if (!tile) {
         completeTurnAfterAction(player);
         return;
       }
 
-      const maxInitialLevel =
-        tile.kind === TileKind.PROPERTY ? (player.laps === 0 ? 2 : 3) : 0;
-      if (!isValidInitialPurchaseLevel(requestedInitialLevel, maxInitialLevel)) {
-        completeTurnAfterAction(player);
+      const buyCheck = validateInitialPropertyPurchase(
+        player,
+        tile.index,
+        requestedInitialLevel
+      );
+      if (!buyCheck.allowed) {
+        if (player.isBot) {
+          completeTurnAfterAction(player);
+        }
         return;
       }
-      const safeLevel = tile.kind === TileKind.PROPERTY ? requestedInitialLevel : 0;
-      const totalCost = basePrice + safeLevel * (tile.houseCost ?? 0);
-
-      if (player.cash < totalCost) {
-        completeTurnAfterAction(player);
-        return;
-      }
+      const { safeLevel, totalCost } = buyCheck;
 
       const nextPlayers = playersRef.current.map((p) =>
         p.id === player.id ? { ...p, cash: p.cash - totalCost } : p
@@ -2625,7 +2733,9 @@ export default function App() {
       const tileIndex = player.position;
       const prop = propertiesRef.current[tileIndex];
       if (!prop || !isValidUpgradeTargetLevel(targetLevel, prop.level)) {
-        completeTurnAfterAction(player);
+        if (player.isBot) {
+          completeTurnAfterAction(player);
+        }
         return;
       }
       const check = canUpgradeProperty(player, tileIndex, propertiesRef.current, {
@@ -2633,7 +2743,9 @@ export default function App() {
         targetLevel,
       });
       if (!check.allowed) {
-        completeTurnAfterAction(player);
+        if (player.isBot) {
+          completeTurnAfterAction(player);
+        }
         return;
       }
 
@@ -2712,7 +2824,9 @@ export default function App() {
       matchModeRef.current
     );
     if (!check.allowed || !prop || prop.ownerId === null) {
-      completeTurnAfterAction(buyer);
+      if (buyer.isBot) {
+        completeTurnAfterAction(buyer);
+      }
       return;
     }
 
@@ -2827,26 +2941,22 @@ export default function App() {
       const player = playersRef.current[activeIdxRef.current];
       if (!player) return;
 
-      if (!isValidTileIndex(targetTile)) {
-        setFreeChampionshipFlag(false);
-        completeTurnAfterAction(player);
+      const champCheck = validateChampionshipHostSelection(
+        player,
+        targetTile,
+        propertiesRef.current,
+        isFreeChampionshipRef.current
+      );
+      if (!champCheck.allowed) {
+        if (player.isBot) {
+          setFreeChampionshipFlag(false);
+          completeTurnAfterAction(player);
+        }
         return;
       }
-
       const prop = propertiesRef.current[targetTile];
       const tile = BOARD_TILES[targetTile];
-      const fee = isFreeChampionshipRef.current ? 0 : CHAMPIONSHIP_FEE;
-      if (
-        !tile ||
-        tile.kind !== TileKind.PROPERTY ||
-        !prop ||
-        prop.ownerId !== player.id ||
-        player.cash < fee
-      ) {
-        setFreeChampionshipFlag(false);
-        completeTurnAfterAction(player);
-        return;
-      }
+      const fee = champCheck.fee;
 
       const nextPlayers = commitPlayers((prev) =>
         prev.map((p) => (p.id === player.id ? { ...p, cash: p.cash - fee } : p))
@@ -2900,7 +3010,7 @@ export default function App() {
         player.color
       );
     }
-    setTurnTimeLeft((prev) => Math.max(prev, 18));
+    ensureTurnClockFloor(18);
     commitTurnPhase('AWAIT_ROLL');
   }, [addLog, commitPlayers, commitTurnPhase, online.sendGameAction, submitOnlineDecision]);
 
@@ -2940,7 +3050,7 @@ export default function App() {
             p.id === player.id ? { ...p, pendingWorldTour: false } : p
           )
         );
-        setTurnTimeLeft((prev) => Math.max(prev, 18));
+        ensureTurnClockFloor(18);
         commitTurnPhase('AWAIT_ROLL');
         return;
       }
@@ -3132,7 +3242,7 @@ export default function App() {
         const debtor = finalPlayers[activeIdxRef.current];
         setSelectedTileIndex(null);
         commitPendingDebt(firstDebt);
-        setTurnTimeLeft((prev) => Math.max(prev, 25));
+        ensureTurnClockFloor(25);
         commitTurnPhase('DEBT_RESOLUTION');
         if (debtor && !debtor.isBot) {
           setShowAssetsModal(true);
@@ -3234,7 +3344,7 @@ export default function App() {
         return;
       }
       setFreeChampionshipFlag(true);
-      setTurnTimeLeft((prev) => Math.max(prev, 18));
+      ensureTurnClockFloor(18);
       commitTurnPhase('CHAMPIONSHIP_SELECTION');
     } else if (
       eff.type === 'EARTHQUAKE' ||
@@ -3258,7 +3368,7 @@ export default function App() {
         return;
       }
       commitPendingTacticalCard(eff.type);
-      setTurnTimeLeft((prev) => Math.max(prev, 18));
+      ensureTurnClockFloor(18);
       commitTurnPhase('CARD_TARGET_SELECTION');
     } else if (eff.type === 'GO_TO_WORLD_TOUR') {
       const { path, passedStart } = computePathToTile(
@@ -3573,7 +3683,7 @@ export default function App() {
           matchModeRef.current
         ).allowed
       ) {
-        setTurnTimeLeft((prev) => Math.max(prev, 18));
+        ensureTurnClockFloor(18);
         commitTurnPhase('BUYOUT_DECISION');
         return;
       }
@@ -3796,7 +3906,9 @@ export default function App() {
           current.id,
           cashNeeded,
           properties,
-          boardModifiers
+          boardModifiers,
+          players,
+          matchMode
         );
         if (!plan.sufficient) {
           handleDeclareBankruptcy();
@@ -3845,24 +3957,45 @@ export default function App() {
   ]);
 
   /* ==========================================
-   * BUSINESS TOUR 20-MINUTE MATCH CLOCK & SUDDEN DEATH (BUG-04)
+   * BUSINESS TOUR 20-MINUTE MATCH CLOCK & SUDDEN DEATH (BUG-03, BUG-04)
+   * Monotonic performance.now() accumulator decoupled from turnPhase transitions.
    * ========================================== */
   useEffect(() => {
-    if (
-      isOnlineMatch ||
-      screenState !== 'playing' ||
-      showRulebookModal ||
-      turnPhase === 'GAME_OVER'
-    ) {
+    if (isOnlineMatch || screenState !== 'playing') {
       return;
     }
 
-    const interval = window.setInterval(() => {
-      setMatchTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
-    }, 1000);
+    const clock = matchClockRef.current!;
+    clock.syncTimestamp(getMonotonicNowMs());
 
-    return () => clearInterval(interval);
-  }, [isOnlineMatch, screenState, showRulebookModal, turnPhase]);
+    const tick = () => {
+      const active =
+        screenStateRef.current === 'playing' &&
+        !showRulebookModalRef.current &&
+        turnPhaseRef.current !== 'GAME_OVER';
+      const { remainingSeconds, changed } = clock.advance(getMonotonicNowMs(), active);
+      if (changed) {
+        matchTimeLeftRef.current = remainingSeconds;
+        setMatchTimeLeft(remainingSeconds);
+      }
+    };
+
+    const interval = window.setInterval(tick, 200);
+    const onVisibility = () => tick();
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [isOnlineMatch, screenState]);
+
+  useEffect(() => {
+    if (isOnlineMatch || screenState !== 'playing') return;
+    const now = getMonotonicNowMs();
+    matchClockRef.current?.syncTimestamp(now);
+    turnClockRef.current?.syncTimestamp(now);
+  }, [isOnlineMatch, screenState, showRulebookModal]);
 
   useEffect(() => {
     if (
@@ -3874,10 +4007,17 @@ export default function App() {
       return;
     }
 
+    const outstandingDebts: PendingDebt[] = [
+      ...(pendingDebtRef.current ? [pendingDebtRef.current] : []),
+      ...pendingDebtQueueRef.current,
+    ];
+    const activeDebtorId = playersRef.current[activeIdxRef.current]?.id;
     const timeResult = evaluateTimeLimitWinner(
       playersRef.current,
       propertiesRef.current,
-      matchModeRef.current
+      matchModeRef.current,
+      outstandingDebts,
+      activeDebtorId
     );
     if (!timeResult) return;
 
@@ -3939,26 +4079,40 @@ export default function App() {
   }, [viewScreenState]);
 
   /* ==========================================
-   * BUSINESS TOUR 3D TURN COUNTDOWN CLOCK (45s / turn)
+   * BUSINESS TOUR 3D TURN COUNTDOWN CLOCK (45s / turn, BUG-03)
+   * Separate monotonic performance.now() accumulator preserving sub-second carry across phase transitions.
    * ========================================== */
   useEffect(() => {
-    if (
-      isOnlineMatch ||
-      screenState !== 'playing' ||
-      showRulebookModal ||
-      turnPhase === 'ROLLING_DICE' ||
-      turnPhase === 'MOVING_TOKEN' ||
-      turnPhase === 'GAME_OVER'
-    ) {
+    if (isOnlineMatch || screenState !== 'playing') {
       return;
     }
 
-    const interval = window.setInterval(() => {
-      setTurnTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
-    }, 1000);
+    const clock = turnClockRef.current!;
+    clock.syncTimestamp(getMonotonicNowMs());
 
-    return () => clearInterval(interval);
-  }, [isOnlineMatch, screenState, showRulebookModal, turnPhase]);
+    const tick = () => {
+      const phase = turnPhaseRef.current;
+      const active =
+        screenStateRef.current === 'playing' &&
+        !showRulebookModalRef.current &&
+        phase !== 'ROLLING_DICE' &&
+        phase !== 'MOVING_TOKEN' &&
+        phase !== 'GAME_OVER';
+      const { remainingSeconds, changed } = clock.advance(getMonotonicNowMs(), active);
+      if (changed) {
+        setTurnTimeLeft(remainingSeconds);
+      }
+    };
+
+    const interval = window.setInterval(tick, 200);
+    const onVisibility = () => tick();
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [isOnlineMatch, screenState]);
 
   useEffect(() => {
     if (isOnlineMatch || screenState !== 'playing' || turnTimeLeft > 0) return;
@@ -3973,7 +4127,7 @@ export default function App() {
 
     if (turnPhase === 'AWAIT_ROLL') {
       setShowAssetsModal(false);
-      setTurnTimeLeft(15);
+      resetTurnClock(15);
       void handleRollDice('NORMAL');
     } else if (turnPhase === 'REROLL_DECISION') {
       setShowAssetsModal(false);
@@ -3983,7 +4137,7 @@ export default function App() {
         lastDiceRef.current![0] === lastDiceRef.current![1] &&
         current.doublesStreak >= 2;
       clearStreakOnTimeout();
-      setTurnTimeLeft(15);
+      resetTurnClock(15);
       void handleConfirmRollMove(true, isThirdDouble);
     } else if (turnPhase === 'BUY_DECISION') {
       clearStreakOnTimeout();
@@ -3999,11 +4153,11 @@ export default function App() {
       handleSkipChampionship();
     } else if (turnPhase === 'WORLD_TOUR') {
       clearStreakOnTimeout();
-      setTurnTimeLeft(15);
+      resetTurnClock(15);
       handleSkipWorldTour();
     } else if (turnPhase === 'CARD_REVEAL') {
       clearStreakOnTimeout();
-      setTurnTimeLeft(15);
+      resetTurnClock(15);
       void handleConfirmCard();
     } else if (turnPhase === 'CARD_TARGET_SELECTION') {
       clearStreakOnTimeout();
@@ -4016,12 +4170,14 @@ export default function App() {
         current.id,
         cashNeeded,
         propertiesRef.current,
-        boardModifiersRef.current
+        boardModifiersRef.current,
+        playersRef.current,
+        matchModeRef.current
       );
       if (!plan.sufficient) {
         handleDeclareBankruptcy();
       } else {
-        setTurnTimeLeft(15);
+        resetTurnClock(15);
         handleExecuteDebtSaleAndPay(plan.tileIndicesToSell);
       }
     }
@@ -4152,7 +4308,7 @@ export default function App() {
           return next;
         });
       } else if (e.code === 'Space' || e.code === 'Enter') {
-        if (showAssetsModal || openActionMenu !== 'none') {
+        if (showAssetsModal || openActionMenu !== 'none' || isOnlineDecisionPendingAckRef.current) {
           return;
         }
         if (isActivelyControlledByMeRef.current) {
@@ -4913,6 +5069,8 @@ export default function App() {
           victoryCondition={computedWinner.condition}
           matchMode={viewMatchMode}
           winningTeamId={computedWinner.winningTeamId}
+          effectiveNetWorthByPlayerId={computedWinner.effectiveNetWorthByPlayerId}
+          effectiveCashByPlayerId={computedWinner.effectiveCashByPlayerId}
           players={viewPlayers}
           properties={viewProperties}
           turnCount={viewTurnCount}

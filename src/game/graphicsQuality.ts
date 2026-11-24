@@ -38,11 +38,31 @@ export interface BoardFrameScheduleDecision {
   intervalMs: number;
 }
 
+export interface BoardFrameDeltas {
+  /** Clamped ambient/physics simulation delta for smooth visual motion. */
+  simDt: number;
+  /** Clamped visual interpolation delta (camera, lighting, springs, particles, treasury). */
+  visualAnimDt: number;
+  /**
+   * Decoupled gameplay animation delta driving deterministic dice & token-hop Promises.
+   * Tracks real wall time even under low FPS or OS-throttled RAF, freezes to 0 when paused,
+   * and caps the first post-resume frame to avoid pause-gap jumps.
+   */
+  gameplayAnimDt: number;
+}
+
 export interface BoardFrameSchedulerOptions {
   isSoftwareGl: boolean;
   now?: () => number;
   isDocumentHidden: () => boolean;
   hasPendingGameplayPromises: () => boolean;
+  /**
+   * Watchdog fallback delay (ms) used ONLY when `hasPendingGameplayPromises()` is true
+   * and RAF stalls (e.g. OS-suspended/1 Hz occluded window with `document.hidden === false`).
+   * Default: 500ms (> 400ms @ 2.5 FPS + vsync jitter so 60/30/15/5/2.5 FPS stay 100% pure RAF
+   * without off-vsync GPU pile-up, while 0–1 Hz stalled windows still complete promptly at 2 Hz).
+   */
+  rafFallbackMs?: number;
   requestRaf?: (cb: () => void) => number;
   cancelRaf?: (id: number) => void;
   setTimer?: (cb: () => void, ms: number) => number;
@@ -308,14 +328,46 @@ export function shouldKeepBoardAnimating(
 }
 
 /**
+ * Separates Gameplay Animation Time (`gameplayAnimDt`) from Visual Animation Time (`visualAnimDt`).
+ * - Visual interpolations stay clamped (`<= 0.06s` hardware / `<= 0.35s` software) so springs & camera never explode.
+ * - Gameplay promises track real monotonic elapsed time (`<= 10s` hibernate safety cap) so dice & token hops
+ *   finish in designed wall-clock time at 60, 30, 15, 5, and 2.5 FPS without slow-motion stretch.
+ * - Pause zeroes all deltas; the first frame after Resume caps delta to `0.05s` so pause time never leaks in.
+ */
+export function computeBoardFrameDeltas(input: {
+  rawDtSec: number;
+  isPaused: boolean;
+  wasPausedPrevFrame: boolean;
+  isDocumentHidden: boolean;
+  isSoftwareGl: boolean;
+}): BoardFrameDeltas {
+  if (input.isPaused) {
+    return { simDt: 0, visualAnimDt: 0, gameplayAnimDt: 0 };
+  }
+  const safeRaw = Number.isFinite(input.rawDtSec) ? Math.max(0, input.rawDtSec) : 0;
+  const effectiveRaw = input.wasPausedPrevFrame ? Math.min(safeRaw, 0.05) : safeRaw;
+  const simDt = Math.min(effectiveRaw, 0.08);
+  const visualAnimDt = input.isDocumentHidden
+    ? Math.min(effectiveRaw, 2.0)
+    : Math.min(effectiveRaw, input.isSoftwareGl ? 0.35 : 0.06);
+  const gameplayAnimDt = Math.min(effectiveRaw, 10.0);
+  return { simDt, visualAnimDt, gameplayAnimDt };
+}
+
+/**
  * Single-flight WebGL frame scheduler that guarantees at most ONE pending RAF or timer
  * exists at any moment — even when `OrbitControls.update()` synchronously dispatches
  * `'change'` -> `requestRender()` from inside `onFrame()`.
+ *
+ * When `hasPendingGameplayPromises()` is true, arms a mutually-exclusive RAF watchdog timer
+ * (`rafFallbackMs`, default 500ms) sharing a monotonic `scheduleToken` so stalled/occluded
+ * windows complete gameplay animations on time with zero duplicate ticks and zero idle overhead.
  */
 export function createBoardFrameScheduler(
   options: BoardFrameSchedulerOptions
 ): BoardFrameScheduler {
   const nowFn = options.now ?? (() => performance.now());
+  const rafFallbackMs = options.rafFallbackMs ?? 500;
   const requestRafFn =
     options.requestRaf ?? ((cb: () => void) => window.requestAnimationFrame(cb));
   const cancelRafFn =
@@ -330,15 +382,26 @@ export function createBoardFrameScheduler(
   let dirtyWakeDuringTick = false;
   let scheduledMode: 'none' | 'raf' | 'timeout' = 'none';
   let frameId = 0;
+  let rafFallbackTimerId = 0;
+  let scheduleToken = 0;
   let cleanupSoftwareSync: (() => void) | null = null;
   let lastTimeMs = nowFn();
 
+  const clearRafFallback = (): void => {
+    if (rafFallbackTimerId !== 0) {
+      clearTimerFn(rafFallbackTimerId);
+      rafFallbackTimerId = 0;
+    }
+  };
+
   const cancel = (): void => {
+    scheduleToken += 1;
     if (scheduledMode === 'raf') {
       cancelRafFn(frameId);
     } else if (scheduledMode === 'timeout') {
       clearTimerFn(frameId);
     }
+    clearRafFallback();
     scheduledMode = 'none';
     frameId = 0;
     if (cleanupSoftwareSync) {
@@ -348,13 +411,33 @@ export function createBoardFrameScheduler(
     }
   };
 
+  const armRafFallbackIfNeeded = (token: number): void => {
+    if (disposed || rafFallbackTimerId !== 0 || !options.hasPendingGameplayPromises()) {
+      return;
+    }
+    rafFallbackTimerId = setTimerFn(() => {
+      rafFallbackTimerId = 0;
+      if (disposed || token !== scheduleToken) return;
+      tick();
+    }, rafFallbackMs);
+  };
+
   const scheduleRaf = (): void => {
-    if (disposed || scheduledMode === 'raf') return;
+    if (disposed) return;
+    if (scheduledMode === 'raf') {
+      armRafFallbackIfNeeded(scheduleToken);
+      return;
+    }
     if (scheduledMode !== 'none') {
       cancel();
     }
+    const token = ++scheduleToken;
     scheduledMode = 'raf';
-    frameId = requestRafFn(tick);
+    frameId = requestRafFn(() => {
+      if (disposed || token !== scheduleToken) return;
+      tick();
+    });
+    armRafFallbackIfNeeded(token);
   };
 
   const scheduleTimeout = (cb: () => void, ms: number): void => {
@@ -362,8 +445,12 @@ export function createBoardFrameScheduler(
     if (scheduledMode !== 'none') {
       cancel();
     }
+    const token = ++scheduleToken;
     scheduledMode = 'timeout';
-    frameId = setTimerFn(cb, ms);
+    frameId = setTimerFn(() => {
+      if (disposed || token !== scheduleToken) return;
+      cb();
+    }, ms);
   };
 
   const tick = (): void => {
@@ -430,7 +517,10 @@ export function createBoardFrameScheduler(
       }
       return;
     }
-    if (scheduledMode === 'raf') return;
+    if (scheduledMode === 'raf') {
+      armRafFallbackIfNeeded(scheduleToken);
+      return;
+    }
     if (scheduledMode === 'none') {
       lastTimeMs = nowFn() - 16;
     }
@@ -446,8 +536,12 @@ export function createBoardFrameScheduler(
   const handleVisibilityChange = (): void => {
     if (disposed) return;
     if (options.isDocumentHidden()) {
+      const wasIdle = scheduledMode === 'none';
       cancel();
       if (options.hasPendingGameplayPromises()) {
+        if (wasIdle) {
+          lastTimeMs = nowFn() - 16;
+        }
         scheduleTimeout(tick, 80);
       }
     } else {
