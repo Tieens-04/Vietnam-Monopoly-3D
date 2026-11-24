@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { MessageCircle } from 'lucide-react';
 import { GRAPHICS_TIER_LABELS } from '../game/graphicsQuality';
 import { formatBusinessTourCompact, JAIL_FINE } from '../game/rules';
@@ -24,7 +24,11 @@ interface ActionDockProps {
   canAct?: boolean;
   isActionPending?: boolean;
   isOnlineMatch?: boolean;
+  isOnlineSpectator?: boolean;
   isOnlineBotTakeover?: boolean;
+  eligibleTakeoverBots?: Array<{ playerId: number; name: string; color: string }>;
+  takeoverRequestPending?: boolean;
+  onRequestBotTakeover?: (targetPlayerId: number) => void;
   tacticalDiceEnabled?: boolean;
   selectedDiceChoice?: TacticalDiceChoice;
   lastDice?: [number, number] | null;
@@ -80,7 +84,11 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
   canAct,
   isActionPending = false,
   isOnlineMatch = false,
+  isOnlineSpectator = false,
   isOnlineBotTakeover = false,
+  eligibleTakeoverBots = [],
+  takeoverRequestPending = false,
+  onRequestBotTakeover,
   tacticalDiceEnabled = false,
   selectedDiceChoice = 'NORMAL',
   lastDice = null,
@@ -119,6 +127,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
   voiceBarNode,
 }) => {
   const [localOpenMenu, setLocalOpenMenu] = useState<ActionDockMenuKind>('none');
+  const [takeoverPickerOpen, setTakeoverPickerOpen] = useState<boolean>(false);
   const openMenu = controlledOpenMenu ?? localOpenMenu;
   const setOpenMenu = (
     updater: ActionDockMenuKind | ((prev: ActionDockMenuKind) => ActionDockMenuKind)
@@ -131,8 +140,15 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
     }
   };
 
+  useEffect(() => {
+    if (!isOnlineSpectator || takeoverRequestPending || eligibleTakeoverBots.length === 0) {
+      setTakeoverPickerOpen(false);
+    }
+  }, [isOnlineSpectator, takeoverRequestPending, eligibleTakeoverBots.length]);
+
   const isHumanTurn =
-    canAct !== undefined ? canAct : !currentPlayer.isBot && !currentPlayer.bankrupt;
+    !isOnlineSpectator &&
+    (canAct !== undefined ? canAct : !currentPlayer.isBot && !currentPlayer.bankrupt);
 
   const canHumanManageAssets =
     isHumanTurn &&
@@ -151,6 +167,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
     turnPhase === 'DEBT_RESOLUTION';
 
   const toggleMenu = (target: 'emotes' | 'settings' | 'logs') => {
+    setTakeoverPickerOpen(false);
     setOpenMenu((prev) => (prev === target ? 'none' : target));
   };
 
@@ -170,31 +187,33 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
         className="bt-utility-rail fixed right-[max(0.55rem,env(safe-area-inset-right,0px))] sm:right-4 top-1/2 -translate-y-1/2 z-25 flex flex-col items-center gap-2.5 sm:gap-3 pointer-events-none"
       >
         {/* Button 1: Emotes / Quick Chat */}
-        <button
-          type="button"
-          data-testid="bt-btn-emotes"
-          onClick={(e) => {
-            if (e.detail > 0) e.currentTarget.blur();
-            toggleMenu('emotes');
-          }}
-          aria-expanded={openMenu === 'emotes'}
-          aria-label="Biểu cảm và Trò chuyện nhanh"
-          title="Biểu cảm nhân vật"
-          className={`bt-utility-rail-btn pointer-events-auto h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
-            openMenu === 'emotes' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
-          }`}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-            className="h-6 w-6 fill-none stroke-current stroke-[2.3]"
+        {!isOnlineSpectator && (
+          <button
+            type="button"
+            data-testid="bt-btn-emotes"
+            onClick={(e) => {
+              if (e.detail > 0) e.currentTarget.blur();
+              toggleMenu('emotes');
+            }}
+            aria-expanded={openMenu === 'emotes'}
+            aria-label="Biểu cảm và Trò chuyện nhanh"
+            title="Biểu cảm nhân vật"
+            className={`bt-utility-rail-btn pointer-events-auto h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
+              openMenu === 'emotes' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
+            }`}
           >
-            <circle cx="12" cy="12" r="9" />
-            <path d="M8.5 14.5s1.4 2 3.5 2 3.5-2 3.5-2" strokeLinecap="round" />
-            <circle cx="9" cy="10" r="1.1" fill="currentColor" stroke="none" />
-            <circle cx="15" cy="10" r="1.1" fill="currentColor" stroke="none" />
-          </svg>
-        </button>
+            <svg
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              className="h-6 w-6 fill-none stroke-current stroke-[2.3]"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M8.5 14.5s1.4 2 3.5 2 3.5-2 3.5-2" strokeLinecap="round" />
+              <circle cx="9" cy="10" r="1.1" fill="currentColor" stroke="none" />
+              <circle cx="15" cy="10" r="1.1" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+        )}
 
         {/* Button 2: Audio & Quick Settings */}
         <button
@@ -244,6 +263,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
           data-testid="bt-btn-pause"
           onClick={(e) => {
             if (e.detail > 0) e.currentTarget.blur();
+            setTakeoverPickerOpen(false);
             setOpenMenu('none');
             onOpenPause();
           }}
@@ -265,6 +285,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
               data-testid="bt-action-chat-btn"
               onClick={(e) => {
                 if (e.detail > 0) e.currentTarget.blur();
+                setTakeoverPickerOpen(false);
                 setOpenMenu('none');
                 onToggleChat?.();
               }}
@@ -297,7 +318,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
       {/* =================================================================
           2. FLOATING EMOTE PICKER POPOVER (Left of Middle-Right Rail)
           ================================================================= */}
-      {openMenu === 'emotes' && (
+      {!isOnlineSpectator && openMenu === 'emotes' && (
         <div
           data-testid="bt-emote-popover"
           className="fixed right-16 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-60 max-w-[calc(100vw-5.5rem)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
@@ -730,6 +751,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
 
       {/* Online Waiting Indicator when it's another player's or bot's turn */}
       {isOnlineMatch &&
+        !isOnlineSpectator &&
         !isHumanTurn &&
         !isModalDecisionPhase &&
         (turnPhase === 'AWAIT_ROLL' || turnPhase === 'REROLL_DECISION') && (
@@ -741,7 +763,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
         )}
 
       {/* Online AFK Bot Takeover Reclaim CTA (BUG-12) */}
-      {isOnlineMatch && isOnlineBotTakeover && onReclaimControl && (
+      {isOnlineMatch && !isOnlineSpectator && isOnlineBotTakeover && onReclaimControl && (
         <div className="fixed bottom-[174px] sm:bottom-[188px] lg:bottom-[4.5rem] left-1/2 -translate-x-1/2 z-26 w-max max-w-[calc(100vw-1rem)] pointer-events-auto animate-pop-in">
           <button
             type="button"
@@ -752,6 +774,80 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
           >
             🙋 Lấy Lại Quyền Điều Khiển
           </button>
+        </div>
+      )}
+
+      {/* Online Spectator Status Bar & Hot-Join Bot Takeover Picker */}
+      {isOnlineMatch && isOnlineSpectator && turnPhase !== 'GAME_OVER' && (
+        <div className="fixed bottom-[124px] sm:bottom-[136px] lg:bottom-[max(0.9rem,env(safe-area-inset-bottom,0px))] left-1/2 -translate-x-1/2 z-25 w-max max-w-[calc(100vw-1rem)] sm:max-w-[calc(100vw-9rem)] lg:max-w-[min(780px,calc(100vw-580px))] flex flex-col items-center gap-2 pointer-events-none">
+          {takeoverPickerOpen && eligibleTakeoverBots.length > 0 && !takeoverRequestPending && (
+            <div
+              data-testid="bt-takeover-bot-picker"
+              className="pointer-events-auto bt-casual-modal rounded-2xl p-2.5 shadow-xl animate-pop-in flex flex-col gap-2 max-w-full"
+            >
+              <div className="flex items-center justify-between gap-3 px-1">
+                <span className="text-[11px] font-black uppercase tracking-wide text-sky-900">
+                  Chọn Bot muốn thế chỗ
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setTakeoverPickerOpen(false)}
+                  aria-label="Đóng danh sách chọn Bot"
+                  className="icon-hit-target h-5 w-5 rounded-full bg-sky-100 hover:bg-sky-200 text-sky-900 text-[10px] font-black flex items-center justify-center cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-1.5">
+                {eligibleTakeoverBots.map((bot) => (
+                  <button
+                    key={bot.playerId}
+                    type="button"
+                    data-testid={`bt-takeover-bot-option-p${bot.playerId}`}
+                    onClick={() => {
+                      setTakeoverPickerOpen(false);
+                      onRequestBotTakeover?.(bot.playerId);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-300 text-xs font-extrabold text-slate-900 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <span
+                      className="h-2.5 w-2.5 rounded-full shrink-0 border border-white shadow-2xs"
+                      style={{ backgroundColor: bot.color }}
+                    />
+                    <span>{bot.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div
+            data-testid="bt-spectator-status-bar"
+            className="pointer-events-auto bt-casual-modal rounded-full px-3.5 sm:px-4 py-1.5 sm:py-2 flex flex-wrap items-center justify-center gap-2 sm:gap-3 shadow-lg"
+          >
+            <span className="text-xs sm:text-sm font-black text-sky-950 whitespace-nowrap">
+              👁️ Chế độ Khán giả — Đang xem trực tiếp
+            </span>
+            <button
+              type="button"
+              data-testid="bt-request-takeover-btn"
+              disabled={eligibleTakeoverBots.length === 0 || takeoverRequestPending}
+              title={
+                takeoverRequestPending
+                  ? 'Đang chờ Chủ phòng duyệt yêu cầu thế chỗ'
+                  : eligibleTakeoverBots.length === 0
+                    ? 'Hiện chưa có Bot AI khả dụng để thế chỗ'
+                    : 'Chọn một Bot AI còn hoạt động để vào chơi'
+              }
+              onClick={() => {
+                setOpenMenu('none');
+                setTakeoverPickerOpen((prev) => !prev);
+              }}
+              className="bt-btn-green px-3.5 py-1.5 rounded-full text-xs font-black uppercase tracking-wide disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
+            >
+              {takeoverRequestPending ? '⏳ Đang chờ duyệt...' : '🎮 Xin thế chỗ Bot'}
+            </button>
+          </div>
         </div>
       )}
     </>

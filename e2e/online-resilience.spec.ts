@@ -144,6 +144,8 @@ test.describe('Online Resilience, Multiplayer Integrity & Timing Regressions', (
     await guestPage.goto(`/?room=${roomCode}`);
     await guestPage.getByTestId('bt-join-room-btn').click();
     await expect(hostPage.getByText('Danh Sách Ghế Ngồi (2/2 Người)')).toBeVisible();
+    await guestPage.getByTestId('bt-ready-toggle-btn').click();
+    await expect(hostPage.getByTestId('bt-online-start-btn')).toBeEnabled();
     await hostPage.getByTestId('bt-online-start-btn').click();
 
     await expect(hostPage.locator('body')).toHaveAttribute('data-state', 'playing');
@@ -205,6 +207,12 @@ test.describe('Online Resilience, Multiplayer Integrity & Timing Regressions', (
         tokenType: 'yacht',
       });
       await c2.waitFor((m) => m.type === 'ROOM_JOINED');
+      c2.send({ type: 'SET_READY', ready: true });
+      await c1.waitFor(
+        (m) =>
+          m.type === 'ROOM_SNAPSHOT' &&
+          m.snapshot.seats.some((s) => s.seatIndex === 1 && s.ready === true)
+      );
       c1.send({ type: 'START_MATCH' });
       const startSnap = (await c1.waitFor(
         (m) => m.type === 'ROOM_SNAPSHOT' && m.snapshot.status === 'playing'
@@ -287,18 +295,20 @@ test.describe('Online Resilience, Multiplayer Integrity & Timing Regressions', (
     await tempPage.goto(`/?room=${roomCode}`);
     await tempPage.locator('#online-nickname-input').fill('TempSeat1');
     await tempPage.getByTestId('bt-join-room-btn').click();
-    await expect(hostPage.getByText(/TempSeat1/)).toBeVisible();
+    await expect(hostPage.getByTestId('bt-lobby-seat-1')).toContainText('TempSeat1');
 
     await guestPage.goto(`/?room=${roomCode}`);
     await guestPage.locator('#online-nickname-input').fill('GuestSeat2');
     await guestPage.getByTestId('bt-join-room-btn').click();
-    await expect(hostPage.getByText(/GuestSeat2/)).toBeVisible();
+    await expect(hostPage.getByTestId('bt-lobby-seat-2')).toContainText('GuestSeat2');
 
     // Temp leaves room to vacate Seat 1
     await tempPage.getByRole('button', { name: /Rời Phòng/i }).click();
     await tempCtx.close();
 
-    // Start match and inspect authoritative seat/turn order in HUD + logs
+    // Guest readies up, then Host starts match and inspects authoritative seat/turn order in HUD + logs
+    await guestPage.getByTestId('bt-ready-toggle-btn').click();
+    await expect(hostPage.getByTestId('bt-online-start-btn')).toBeEnabled();
     await hostPage.getByTestId('bt-online-start-btn').click();
     await expect(hostPage.locator('body')).toHaveAttribute('data-state', 'playing');
     await expect(guestPage.locator('body')).toHaveAttribute('data-state', 'playing');
@@ -348,6 +358,8 @@ test.describe('Online Resilience, Multiplayer Integrity & Timing Regressions', (
     await guestPage.goto(`/?room=${roomCode}`);
     await guestPage.getByTestId('bt-join-room-btn').click();
     await expect(hostPage.getByText('Danh Sách Ghế Ngồi (2/2 Người)')).toBeVisible();
+    await guestPage.getByTestId('bt-ready-toggle-btn').click();
+    await expect(hostPage.getByTestId('bt-online-start-btn')).toBeEnabled();
     await hostPage.getByTestId('bt-online-start-btn').click();
 
     await expect(hostPage.locator('body')).toHaveAttribute('data-state', 'playing');

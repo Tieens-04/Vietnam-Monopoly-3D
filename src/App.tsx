@@ -5148,8 +5148,65 @@ export default function App() {
   }, []);
 
   const canUseTeamChannel = Boolean(
-    online.roomSnapshot?.matchMode === 'TEAMS_2V2' && online.yourSeatIndex !== null
+    online.roomSnapshot?.matchMode === 'TEAMS_2V2' &&
+      !online.isSpectator &&
+      online.yourSeatIndex !== null
   );
+
+  const isOnlineHost = Boolean(
+    online.roomSnapshot &&
+      !online.isSpectator &&
+      online.yourSeatIndex !== null &&
+      online.yourSeatIndex === online.roomSnapshot.hostSeatIndex
+  );
+
+  const eligibleTakeoverBots = useMemo(() => {
+    if (!online.isSpectator || !onlineMatch || !online.roomSnapshot) {
+      return [];
+    }
+    const activeSeatByPlayerId = new Map<number, boolean>();
+    for (const participant of online.roomSnapshot.participants ?? []) {
+      if (participant.role === 'player' && participant.playerId !== null) {
+        const seat =
+          participant.seatIndex !== null
+            ? online.roomSnapshot.seats.find((s) => s.seatIndex === participant.seatIndex)
+            : undefined;
+        if (!seat || seat.occupiedByHuman) {
+          activeSeatByPlayerId.set(participant.playerId, true);
+        }
+      }
+    }
+    return onlineMatch.players
+      .filter((p) => !p.bankrupt && p.isBot && !activeSeatByPlayerId.has(p.id))
+      .map((p) => ({
+        playerId: p.id,
+        name: p.name,
+        color: p.color,
+      }));
+  }, [online.isSpectator, onlineMatch, online.roomSnapshot]);
+
+  const pendingTakeoverRequest =
+    isOnlineMatch && online.roomSnapshot?.status === 'playing'
+      ? (online.roomSnapshot.pendingTakeoverRequest ?? null)
+      : null;
+  const pendingTakeoverId = pendingTakeoverRequest?.requestId ?? null;
+  const pendingTakeoverExpiresAt = pendingTakeoverRequest?.expiresAt ?? null;
+  const [takeoverNowMs, setTakeoverNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (!isOnlineHost || !pendingTakeoverId || pendingTakeoverExpiresAt === null) {
+      return;
+    }
+    setTakeoverNowMs(Date.now());
+    const interval = window.setInterval(() => {
+      setTakeoverNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [isOnlineHost, pendingTakeoverId, pendingTakeoverExpiresAt]);
+
+  const takeoverSecondsLeft = pendingTakeoverRequest
+    ? Math.max(0, Math.ceil((pendingTakeoverRequest.expiresAt - takeoverNowMs) / 1000))
+    : 0;
 
   const speakingParticipantIds = useMemo<Record<string, boolean>>(() => {
     const result: Record<string, boolean> = {};
@@ -5398,11 +5455,16 @@ export default function App() {
             canAct={isActivelyControlledByMe}
             isActionPending={isOnlineDecisionPendingAck}
             isOnlineMatch={isOnlineMatch}
+            isOnlineSpectator={online.isSpectator}
             isOnlineBotTakeover={Boolean(
               isOnlineMatch &&
+                !online.isSpectator &&
                 myOnlinePlayer?.onlineBotTakeover &&
                 !myOnlinePlayer.bankrupt
             )}
+            eligibleTakeoverBots={eligibleTakeoverBots}
+            takeoverRequestPending={Boolean(pendingTakeoverRequest)}
+            onRequestBotTakeover={online.requestBotTakeover}
             tacticalDiceEnabled={viewTacticalDiceEnabled}
             selectedDiceChoice={selectedDiceChoice}
             lastDice={viewLastDice}
@@ -5451,6 +5513,60 @@ export default function App() {
               canUseTeamChannel={canUseTeamChannel}
               onSendMessage={handleSendChatMessage}
             />
+          )}
+
+          {isOnlineMatch && isOnlineHost && pendingTakeoverRequest && (
+            <div
+              role="dialog"
+              aria-modal="false"
+              aria-label="Yêu cầu xin thế chỗ Bot"
+              data-testid="bt-takeover-approval-dialog"
+              className="fixed top-[168px] sm:top-[4.25rem] left-1/2 -translate-x-1/2 z-46 w-[min(430px,calc(100vw-1rem))] bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto shadow-2xl"
+            >
+              <div className="bt-header-sky px-3.5 py-2 flex items-center justify-between gap-2">
+                <span className="font-display text-xs font-black uppercase tracking-wide">
+                  🎮 Xin Thế Chỗ Bot AI
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-white/25 text-[11px] font-mono-num font-black text-white whitespace-nowrap">
+                  ⏳ {takeoverSecondsLeft}s
+                </span>
+              </div>
+              <div className="p-3 space-y-2.5 bg-white/95">
+                <p className="text-xs sm:text-sm font-bold text-slate-800 leading-snug">
+                  Khán giả{' '}
+                  <span className="font-black text-sky-900">
+                    {pendingTakeoverRequest.requesterName}
+                  </span>{' '}
+                  xin tiếp quản Bot{' '}
+                  <span className="font-black text-emerald-700">
+                    {pendingTakeoverRequest.targetBotName}
+                  </span>{' '}
+                  để tham gia ván đấu.
+                </p>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    data-testid="bt-takeover-reject-btn"
+                    onClick={() =>
+                      online.respondBotTakeover(pendingTakeoverRequest.requestId, false)
+                    }
+                    className="id-btn-crimson px-3.5 py-1.5 rounded-xl text-xs font-black uppercase cursor-pointer whitespace-nowrap"
+                  >
+                    Từ chối
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="bt-takeover-approve-btn"
+                    onClick={() =>
+                      online.respondBotTakeover(pendingTakeoverRequest.requestId, true)
+                    }
+                    className="bt-btn-green px-4 py-1.5 rounded-xl text-xs font-black uppercase cursor-pointer whitespace-nowrap"
+                  >
+                    Chấp nhận
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </>
       )}
@@ -5670,12 +5786,7 @@ export default function App() {
           properties={viewProperties}
           turnCount={viewTurnCount}
           isOnlineMatch={isOnlineMatch}
-          isOnlineHost={
-            Boolean(
-              online.roomSnapshot &&
-                online.yourSeatIndex === online.roomSnapshot.hostSeatIndex
-            )
-          }
+          isOnlineHost={isOnlineHost}
           graphicsQualityTier={effectiveQualityTier}
           trapFocus={!showRulebookModal}
           onlineChatNode={isOnlineMatch ? embeddedOnlineChatNode : undefined}

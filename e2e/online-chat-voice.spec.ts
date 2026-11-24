@@ -107,7 +107,7 @@ test.describe('Phase 1 Online Room Chat & WebRTC Voice Integration', () => {
       await guestPage.getByTestId('bt-join-room-btn').click();
 
       await expect(hostPage.getByText('Danh Sách Ghế Ngồi (2/4 Người)')).toBeVisible();
-      await expect(hostPage.getByText('KhachMoiB')).toBeVisible();
+      await expect(hostPage.getByTestId('bt-lobby-seat-1')).toContainText('KhachMoiB');
       await expect(guestPage.getByTestId('bt-online-room-code')).toHaveText(roomCode);
 
       const guestLobbyMicBtn = guestPage.getByTestId('bt-voice-mic-btn');
@@ -128,7 +128,9 @@ test.describe('Phase 1 Online Room Chat & WebRTC Voice Integration', () => {
       await expect(guestPage.getByTestId('bt-chat-messages-list')).toContainText(guestLobbyMsg);
       await expect(hostPage.getByTestId('bt-chat-messages-list')).toContainText(guestLobbyMsg);
 
-      // 4. Host starts the match
+      // 4. Guest clicks Ready and Host starts the match
+      await guestPage.getByTestId('bt-ready-toggle-btn').click();
+      await expect(hostPage.getByTestId('bt-online-start-btn')).toBeEnabled();
       await hostPage.getByTestId('bt-online-start-btn').click();
       await expect(hostPage.locator('body')).toHaveAttribute('data-state', 'playing');
       await expect(guestPage.locator('body')).toHaveAttribute('data-state', 'playing');
