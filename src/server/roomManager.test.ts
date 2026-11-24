@@ -1705,6 +1705,13 @@ test('Iteration 2 lifecycle & REROLL_DECISION regressions: zombie lobby leak, se
       playerName: 'Full2',
       tokenType: 'yacht',
     });
+    for (let sIdx = 1; sIdx <= 4; sIdx++) {
+      manager.handleClientMessage(`cFullSpec${sIdx}`, {
+        type: 'JOIN_ROOM',
+        roomCode: roomC,
+        playerName: `FullSpec${sIdx}`,
+      });
+    }
 
     manager.handleClientMessage('h1', {
       type: 'JOIN_ROOM',
@@ -1745,6 +1752,9 @@ test('Iteration 2 lifecycle & REROLL_DECISION regressions: zombie lobby leak, se
     }
 
     // Clean up Room C so only Room B remains
+    for (let sIdx = 1; sIdx <= 4; sIdx++) {
+      manager.handleClientMessage(`cFullSpec${sIdx}`, { type: 'LEAVE_ROOM' });
+    }
     manager.handleClientMessage('cFull1', { type: 'LEAVE_ROOM' });
     manager.handleClientMessage('cFull2', { type: 'LEAVE_ROOM' });
 
@@ -5517,6 +5527,690 @@ test('KICK_PARTICIPANT in playing & gameover: marks explicitlyLeft, invalidates 
     if (!backInLobby || backInLobby.type !== 'ROOM_SNAPSHOT') return;
     assert.equal(backInLobby.snapshot.status, 'lobby');
     assert.equal(backInLobby.snapshot.seats.filter((s) => s.occupiedByHuman).length, 1);
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('Spectator admission & cap 4: admits up to 4 spectators in playing/full lobby, rejects 5th with ROOM_FULL, supports reconnect/leave/kick, and keeps room alive while watching', async () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    // 1. Full-seat lobby (maxPlayers: 2) admits spectator on 3rd JOIN_ROOM
+    manager.handleClientMessage('l1', {
+      type: 'CREATE_ROOM',
+      playerName: 'LobbyHost',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const lj1 = latestByClient.get('l1');
+    assert.equal(lj1?.type, 'ROOM_JOINED');
+    if (!lj1 || lj1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('l2', {
+      type: 'JOIN_ROOM',
+      roomCode: lj1.roomCode,
+      playerName: 'LobbyGuest',
+      tokenType: 'yacht',
+    });
+
+    manager.handleClientMessage('ls1', {
+      type: 'JOIN_ROOM',
+      roomCode: lj1.roomCode,
+      playerName: 'LobbySpec1',
+      tokenType: 'jet',
+    });
+    const ls1Join = (allByClient.get('ls1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(ls1Join?.type, 'ROOM_JOINED');
+    if (!ls1Join || ls1Join.type !== 'ROOM_JOINED') return;
+    assert.equal(ls1Join.yourSeatIndex, null);
+    assert.equal(ls1Join.yourPlayerId, null);
+    assert.equal(ls1Join.snapshot.spectators.length, 1);
+    assert.equal(ls1Join.snapshot.spectators[0].role, 'spectator');
+    assert.equal(ls1Join.snapshot.spectators[0].participantId, ls1Join.yourParticipantId);
+    assert.equal(
+      ls1Join.snapshot.participants.some(
+        (p) => p.participantId === ls1Join.yourParticipantId && p.role === 'spectator'
+      ),
+      true
+    );
+
+    // Connected spectator keeps room alive even when humans disconnect in lobby
+    manager.handleDisconnect('l1');
+    manager.handleDisconnect('l2');
+    await flushMicrotasks(12);
+    assert.equal(manager.getActiveRoomCount(), 1, 'Connected spectator must prevent empty lobby cleanup');
+
+    // Clean up lobby room
+    manager.handleClientMessage('ls1', { type: 'LEAVE_ROOM' });
+    await flushMicrotasks(12);
+    assert.equal(manager.getActiveRoomCount(), 0);
+
+    // 2. Playing room admits up to 4 spectators and rejects 5th with ROOM_FULL
+    manager.handleClientMessage('p1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const pj1 = latestByClient.get('p1');
+    assert.equal(pj1?.type, 'ROOM_JOINED');
+    if (!pj1 || pj1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('p2', {
+      type: 'JOIN_ROOM',
+      roomCode: pj1.roomCode,
+      playerName: 'Guest',
+      tokenType: 'yacht',
+    });
+    markAllGuestsReady(manager, ['p2']);
+    manager.handleClientMessage('p1', { type: 'START_MATCH' });
+
+    const specJoinInfos: Array<{ clientId: string; participantId: string; sessionToken: string }> = [];
+    for (let i = 1; i <= 4; i++) {
+      const cid = `s${i}`;
+      manager.handleClientMessage(cid, {
+        type: 'JOIN_ROOM',
+        roomCode: pj1.roomCode,
+        playerName: `Khán giả ${i}`,
+      });
+      const joined = (allByClient.get(cid) || []).find((m) => m.type === 'ROOM_JOINED');
+      assert.equal(joined?.type, 'ROOM_JOINED', `Spectator ${i} must join`);
+      if (!joined || joined.type !== 'ROOM_JOINED') return;
+      assert.equal(joined.yourSeatIndex, null);
+      assert.equal(joined.yourPlayerId, null);
+      assert.equal(joined.snapshot.spectators.length, i);
+      specJoinInfos.push({
+        clientId: cid,
+        participantId: joined.yourParticipantId,
+        sessionToken: joined.sessionToken,
+      });
+    }
+
+    // 5th spectator rejected with ROOM_FULL
+    manager.handleClientMessage('s5', {
+      type: 'JOIN_ROOM',
+      roomCode: pj1.roomCode,
+      playerName: 'Khán giả 5',
+    });
+    const s5Err = (allByClient.get('s5') || []).find((m) => m.type === 'ERROR');
+    assert.equal(s5Err?.type, 'ERROR');
+    if (s5Err?.type === 'ERROR') {
+      assert.equal(s5Err.code, 'ROOM_FULL');
+    }
+
+    // Spectator toggles mic ON, disconnects, reconnects -> keeps participantId & resets micEnabled=false
+    manager.handleClientMessage('s1', { type: 'UPDATE_VOICE_STATE', micEnabled: true });
+    const withMicOn = latestByClient.get('p1');
+    assert.equal(withMicOn?.type, 'ROOM_SNAPSHOT');
+    if (withMicOn?.type === 'ROOM_SNAPSHOT') {
+      assert.equal(
+        withMicOn.snapshot.spectators.find((s) => s.participantId === specJoinInfos[0].participantId)
+          ?.micEnabled,
+        true
+      );
+    }
+    manager.handleDisconnect('s1');
+    manager.handleClientMessage('s1-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: pj1.roomCode,
+      sessionToken: specJoinInfos[0].sessionToken,
+    });
+    const s1Re = (allByClient.get('s1-re') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(s1Re?.type, 'ROOM_JOINED');
+    if (!s1Re || s1Re.type !== 'ROOM_JOINED') return;
+    assert.equal(s1Re.yourParticipantId, specJoinInfos[0].participantId);
+    assert.equal(s1Re.yourSeatIndex, null);
+    assert.equal(s1Re.yourPlayerId, null);
+    assert.equal(
+      s1Re.snapshot.spectators.find((s) => s.participantId === specJoinInfos[0].participantId)
+        ?.micEnabled,
+      false
+    );
+
+    // Spectator active-session replacement (SESSION_REPLACED) also resets micEnabled=false
+    manager.handleClientMessage('s1-re', { type: 'UPDATE_VOICE_STATE', micEnabled: true });
+    manager.handleClientMessage('s1-tab2', {
+      type: 'RECONNECT_ROOM',
+      roomCode: pj1.roomCode,
+      sessionToken: specJoinInfos[0].sessionToken,
+    });
+    assert.ok(
+      (allByClient.get('s1-re') || []).some((m) => m.type === 'ERROR' && m.code === 'SESSION_REPLACED')
+    );
+    const s1Tab2 = (allByClient.get('s1-tab2') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(s1Tab2?.type, 'ROOM_JOINED');
+    if (s1Tab2?.type === 'ROOM_JOINED') {
+      assert.equal(
+        s1Tab2.snapshot.spectators.find((s) => s.participantId === specJoinInfos[0].participantId)
+          ?.micEnabled,
+        false
+      );
+    }
+
+    // Spectator s2 leaves -> slot freed, s5 can now join
+    manager.handleClientMessage('s2', { type: 'LEAVE_ROOM' });
+    assert.ok((allByClient.get('s2') || []).some((m) => m.type === 'LEFT_ROOM'));
+    manager.handleClientMessage('s5', {
+      type: 'JOIN_ROOM',
+      roomCode: pj1.roomCode,
+      playerName: 'Khán giả 5',
+    });
+    const s5Success = (allByClient.get('s5') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(s5Success?.type, 'ROOM_JOINED');
+
+    // Host kicks spectator s3 -> ERROR(KICKED_BY_HOST) and old token invalidated
+    const beforeS3Kick = (allByClient.get('s3') || []).length;
+    manager.handleClientMessage('p1', {
+      type: 'KICK_PARTICIPANT',
+      targetParticipantId: specJoinInfos[2].participantId,
+    });
+    assert.ok(
+      (allByClient.get('s3') || [])
+        .slice(beforeS3Kick)
+        .some((m) => m.type === 'ERROR' && m.code === 'KICKED_BY_HOST')
+    );
+    manager.handleClientMessage('s3-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: pj1.roomCode,
+      sessionToken: specJoinInfos[2].sessionToken,
+    });
+    assert.ok(
+      (allByClient.get('s3-re') || []).some((m) => m.type === 'ERROR' && m.code === 'SESSION_EXPIRED')
+    );
+
+    // Gameover room rejects new JOIN_ROOM with MATCH_ALREADY_ENDED
+    for (let t = 0; t < 1200; t++) {
+      manager.tickOneSecond();
+    }
+    manager.handleClientMessage('late-gameover', {
+      type: 'JOIN_ROOM',
+      roomCode: pj1.roomCode,
+      playerName: 'Late',
+    });
+    assert.ok(
+      (allByClient.get('late-gameover') || []).some(
+        (m) => m.type === 'ERROR' && m.code === 'MATCH_ALREADY_ENDED'
+      )
+    );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('Spectator chat & TEAM isolation: coerces spectator TEAM chat to ALL and hides TEAM messages in live events & reconnect history', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'TeamA1',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      matchMode: 'TEAMS_2V2',
+    });
+    const j1 = latestByClient.get('c1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'TeamB1',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('c3', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'TeamA2',
+      tokenType: 'jet',
+    });
+    markAllGuestsReady(manager, ['c2', 'c3']);
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+
+    manager.handleClientMessage('spec1', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Khán Giả',
+    });
+    const specJoin = (allByClient.get('spec1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(specJoin?.type, 'ROOM_JOINED');
+    if (!specJoin || specJoin.type !== 'ROOM_JOINED') return;
+
+    // Spectator attempts TEAM chat -> server coerces to ALL with role='spectator', playerId=null
+    manager.handleClientMessage('spec1', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Cố lên cả hai đội!',
+    });
+    const specChatEvent = (allByClient.get('c2') || []).find(
+      (m) => m.type === 'GAME_EVENT' && m.event.kind === 'CHAT_MESSAGE'
+    );
+    assert.equal(specChatEvent?.type, 'GAME_EVENT');
+    if (specChatEvent?.type === 'GAME_EVENT' && specChatEvent.event.kind === 'CHAT_MESSAGE') {
+      assert.equal(specChatEvent.event.message.channel, 'ALL');
+      assert.equal(specChatEvent.event.message.role, 'spectator');
+      assert.equal(specChatEvent.event.message.playerId, null);
+      assert.equal(specChatEvent.event.message.teamId, undefined);
+    }
+
+    // Team A & Team B send TEAM messages -> neither leaks to spectator live events
+    const beforeTeamMsgsForSpec = (allByClient.get('spec1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Kế hoạch bí mật Đội A',
+    });
+    manager.handleClientMessage('c2', {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Kế hoạch bí mật Đội B',
+    });
+
+    const specNewEvents = (allByClient.get('spec1') || [])
+      .slice(beforeTeamMsgsForSpec)
+      .filter((m) => m.type === 'GAME_EVENT' && m.event.kind === 'CHAT_MESSAGE');
+    assert.equal(specNewEvents.length, 0, 'Spectator must never receive TEAM chat live events');
+
+    // Teammate c3 DOES receive Team A's message
+    const c3TeamMsgs = (allByClient.get('c3') || []).filter(
+      (m) =>
+        m.type === 'GAME_EVENT' &&
+        m.event.kind === 'CHAT_MESSAGE' &&
+        m.event.message.text === 'Kế hoạch bí mật Đội A'
+    );
+    assert.equal(c3TeamMsgs.length, 1);
+
+    // Spectator reconnects -> snapshot.chatHistory must NOT contain TEAM messages
+    manager.handleClientMessage('spec1-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: j1.roomCode,
+      sessionToken: specJoin.sessionToken,
+    });
+    const specReJoin = (allByClient.get('spec1-re') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(specReJoin?.type, 'ROOM_JOINED');
+    if (!specReJoin || specReJoin.type !== 'ROOM_JOINED') return;
+    assert.equal(
+      specReJoin.snapshot.chatHistory.some((m) => m.channel === 'TEAM'),
+      false,
+      'Spectator reconnect chatHistory must exclude TEAM messages'
+    );
+    assert.equal(specReJoin.snapshot.chatHistory.length, 1);
+
+    // Spectator can exchange RTC_SIGNAL with seated player
+    manager.handleClientMessage('spec1-re', {
+      type: 'RTC_SIGNAL',
+      targetParticipantId: j1.yourParticipantId,
+      signal: { kind: 'offer', sdp: 'v=0-spec' },
+    });
+    const hostRtc = (allByClient.get('c1') || []).find((m) => m.type === 'RTC_SIGNAL');
+    assert.equal(hostRtc?.type, 'RTC_SIGNAL');
+    if (hostRtc?.type === 'RTC_SIGNAL') {
+      assert.equal(hostRtc.fromParticipantId, specJoin.yourParticipantId);
+    }
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('Hot-Join Bot Takeover eligibility: approves start-of-match Bot & explicitlyLeft seat, blocks concurrent request and disconnected reconnect-reserved seat, and resets timer >= 18s on active turn', async () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+    diceRng: () => [1, 2],
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+    });
+    const j1 = latestByClient.get('c1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'DisconnectPlayer',
+      tokenType: 'yacht',
+    });
+    const j2 = (allByClient.get('c2') || []).find((m) => m.type === 'ROOM_JOINED');
+    if (!j2 || j2.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c3', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'LeaverPlayer',
+      tokenType: 'jet',
+    });
+    const j3 = (allByClient.get('c3') || []).find((m) => m.type === 'ROOM_JOINED');
+    if (!j3 || j3.type !== 'ROOM_JOINED') return;
+
+    markAllGuestsReady(manager, ['c2', 'c3']);
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+
+    // c2 disconnects transiently and passes 90s -> temporary Bot AI takeover (explicitlyLeft === false!)
+    manager.handleDisconnect('c2');
+    const roomsMap = (manager as unknown as {
+      rooms: Map<
+        string,
+        {
+          humans: Array<{
+            participantId: string;
+            seatIndex: number;
+            disconnectedAt: number | null;
+            explicitlyLeft: boolean;
+          }>;
+          match: {
+            activePlayerIndex: number;
+            turnTimeLeft: number;
+            players: Array<{ id: number; isBot: boolean; onlineBotTakeover?: boolean }>;
+          } | null;
+          botActionTimer: ReturnType<typeof setTimeout> | null;
+        }
+      >;
+    }).rooms;
+    const room = roomsMap.get(j1.roomCode)!;
+    const c2Seat = room.humans.find((h) => h.participantId === j2.yourParticipantId)!;
+    c2Seat.disconnectedAt = Date.now() - 95_000;
+    manager.tickOneSecond();
+    assert.equal(room.match!.players[1].isBot, true);
+    assert.equal(room.match!.players[1].onlineBotTakeover, true);
+    assert.equal(c2Seat.explicitlyLeft, false);
+
+    // c3 explicitly leaves -> seat 2 becomes explicitlyLeft === true and Bot takes over
+    manager.handleClientMessage('c3', { type: 'LEAVE_ROOM' });
+    const c3Seat = room.humans.find((h) => h.participantId === j3.yourParticipantId)!;
+    assert.equal(c3Seat.explicitlyLeft, true);
+    assert.equal(room.match!.players[2].isBot, true);
+
+    // Spectators s1 and s2 join during playing
+    manager.handleClientMessage('s1', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'NewHero1',
+    });
+    const js1 = (allByClient.get('s1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(js1?.type, 'ROOM_JOINED');
+    if (!js1 || js1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('s2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'NewHero2',
+    });
+
+    // 1. Disconnected c2 seat (playerId 1) MUST be rejected with SEAT_RESERVED_FOR_RECONNECT
+    const beforeReserved = (allByClient.get('s1') || []).length;
+    manager.handleClientMessage('s1', { type: 'REQUEST_BOT_TAKEOVER', targetPlayerId: 1 });
+    assert.ok(
+      (allByClient.get('s1') || [])
+        .slice(beforeReserved)
+        .some((m) => m.type === 'ERROR' && m.code === 'SEAT_RESERVED_FOR_RECONNECT')
+    );
+
+    // 2. Request takeover on start-of-match Bot (playerId 3) while it is Bot 3's active turn with low clock
+    room.match!.activePlayerIndex = 3;
+    room.match!.turnTimeLeft = 4;
+    manager.handleClientMessage('s1', { type: 'REQUEST_BOT_TAKEOVER', targetPlayerId: 3 });
+    const hostPendingSnap = latestByClient.get('c1');
+    assert.equal(hostPendingSnap?.type, 'ROOM_SNAPSHOT');
+    if (!hostPendingSnap || hostPendingSnap.type !== 'ROOM_SNAPSHOT') return;
+    const req1 = hostPendingSnap.snapshot.pendingTakeoverRequest;
+    assert.ok(req1);
+    assert.equal(req1.requesterParticipantId, js1.yourParticipantId);
+    assert.equal(req1.targetPlayerId, 3);
+
+    // Concurrent request from s2 rejected with TAKEOVER_PENDING
+    const beforeDup = (allByClient.get('s2') || []).length;
+    manager.handleClientMessage('s2', { type: 'REQUEST_BOT_TAKEOVER', targetPlayerId: 2 });
+    assert.ok(
+      (allByClient.get('s2') || [])
+        .slice(beforeDup)
+        .some((m) => m.type === 'ERROR' && m.code === 'TAKEOVER_PENDING')
+    );
+
+    // Host approves s1 taking over Bot 3
+    manager.handleClientMessage('c1', {
+      type: 'RESPOND_BOT_TAKEOVER',
+      requestId: req1.requestId,
+      accept: true,
+    });
+
+    const s1After = latestByClient.get('s1');
+    assert.equal(s1After?.type, 'ROOM_SNAPSHOT');
+    if (!s1After || s1After.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(s1After.yourParticipantId, js1.yourParticipantId);
+    assert.equal(s1After.yourSeatIndex, 3);
+    assert.equal(s1After.yourPlayerId, 3);
+    assert.equal(s1After.snapshot.pendingTakeoverRequest, null);
+    assert.equal(s1After.snapshot.spectators.length, 1);
+    const p3 = s1After.snapshot.match?.players[3];
+    assert.equal(p3?.isBot, false);
+    assert.equal(p3?.onlineBotTakeover, false);
+    assert.equal(p3?.onlineConnected, true);
+    assert.equal(p3?.name, 'NewHero1');
+    assert.equal(room.botActionTimer, null, 'Bot timer must be cleared on active-turn takeover');
+    assert.ok(
+      (s1After.snapshot.match?.turnTimeLeft ?? 0) >= 18,
+      'Active-turn takeover must guarantee at least 18s decision time'
+    );
+
+    // 3. Non-host cannot approve, Host reject clears pendingTakeoverRequest, and 20s timeout auto-expires
+    manager.handleClientMessage('s2', { type: 'REQUEST_BOT_TAKEOVER', targetPlayerId: 2 });
+    const reqRejectSnap = latestByClient.get('c1');
+    assert.equal(reqRejectSnap?.type, 'ROOM_SNAPSHOT');
+    if (!reqRejectSnap || reqRejectSnap.type !== 'ROOM_SNAPSHOT') return;
+    const reqReject = reqRejectSnap.snapshot.pendingTakeoverRequest!;
+    assert.ok(reqReject);
+
+    const beforeNonHostResp = (allByClient.get('s1') || []).length;
+    manager.handleClientMessage('s1', {
+      type: 'RESPOND_BOT_TAKEOVER',
+      requestId: reqReject.requestId,
+      accept: true,
+    });
+    assert.ok(
+      (allByClient.get('s1') || [])
+        .slice(beforeNonHostResp)
+        .some((m) => m.type === 'ERROR' && m.code === 'FORBIDDEN')
+    );
+
+    manager.handleClientMessage('c1', {
+      type: 'RESPOND_BOT_TAKEOVER',
+      requestId: reqReject.requestId,
+      accept: false,
+    });
+    const afterDecline = latestByClient.get('c1');
+    assert.equal(afterDecline?.type, 'ROOM_SNAPSHOT');
+    if (afterDecline?.type === 'ROOM_SNAPSHOT') {
+      assert.equal(afterDecline.snapshot.pendingTakeoverRequest, null);
+      assert.equal(afterDecline.snapshot.spectators.length, 1);
+    }
+
+    // Request again and let 20s timeout auto-expire
+    manager.handleClientMessage('s2', { type: 'REQUEST_BOT_TAKEOVER', targetPlayerId: 2 });
+    const reqExpireSnap = latestByClient.get('c1');
+    assert.equal(reqExpireSnap?.type, 'ROOM_SNAPSHOT');
+    if (!reqExpireSnap || reqExpireSnap.type !== 'ROOM_SNAPSHOT') return;
+    const expiredTakeoverId = reqExpireSnap.snapshot.pendingTakeoverRequest!.requestId;
+    await flushMicrotasks(6);
+    const afterExpirySnap = latestByClient.get('c1');
+    assert.equal(afterExpirySnap?.type, 'ROOM_SNAPSHOT');
+    if (afterExpirySnap?.type === 'ROOM_SNAPSHOT') {
+      assert.equal(afterExpirySnap.snapshot.pendingTakeoverRequest, null);
+    }
+    const beforeExpiredReply = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'RESPOND_BOT_TAKEOVER',
+      requestId: expiredTakeoverId,
+      accept: true,
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeExpiredReply)
+        .some((m) => m.type === 'ERROR' && m.code === 'TAKEOVER_EXPIRED')
+    );
+
+    // 4. s2 takes over explicitlyLeft seat (playerId 2) -> succeeds and leaves no duplicate seatIndex
+    manager.handleClientMessage('s2', { type: 'REQUEST_BOT_TAKEOVER', targetPlayerId: 2 });
+    const req2Snap = latestByClient.get('c1');
+    assert.equal(req2Snap?.type, 'ROOM_SNAPSHOT');
+    if (!req2Snap || req2Snap.type !== 'ROOM_SNAPSHOT') return;
+    const req2 = req2Snap.snapshot.pendingTakeoverRequest!;
+    assert.ok(req2);
+
+    manager.handleClientMessage('c1', {
+      type: 'RESPOND_BOT_TAKEOVER',
+      requestId: req2.requestId,
+      accept: true,
+    });
+    const s2After = latestByClient.get('s2');
+    assert.equal(s2After?.type, 'ROOM_SNAPSHOT');
+    if (!s2After || s2After.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(s2After.yourSeatIndex, 2);
+    assert.equal(s2After.yourPlayerId, 2);
+    assert.equal(s2After.snapshot.match?.players[2].isBot, false);
+    assert.equal(s2After.snapshot.match?.players[2].name, 'NewHero2');
+    assert.equal(room.humans.filter((h) => h.seatIndex === 2).length, 1);
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('MOVE_TO_SPECTATOR & MOVE_TO_SEAT for spectator: host step-down transfers host with ready=true, blocks solo host, and spectator returns to open seat preserving participantId', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+    });
+    const j1 = latestByClient.get('c1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    // Solo host cannot vacate last seated human slot
+    const beforeSolo = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', { type: 'MOVE_TO_SPECTATOR' });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeSolo)
+        .some((m) => m.type === 'ERROR' && m.code === 'INVALID_STATE')
+    );
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest2',
+      tokenType: 'yacht',
+    });
+
+    // Host steps down to spectator -> c2 becomes Host with ready=true
+    manager.handleClientMessage('c1', { type: 'MOVE_TO_SPECTATOR' });
+    const c1SpecSnap = latestByClient.get('c1');
+    const c2HostSnap = latestByClient.get('c2');
+    assert.equal(c1SpecSnap?.type, 'ROOM_SNAPSHOT');
+    assert.equal(c2HostSnap?.type, 'ROOM_SNAPSHOT');
+    if (
+      !c1SpecSnap ||
+      c1SpecSnap.type !== 'ROOM_SNAPSHOT' ||
+      !c2HostSnap ||
+      c2HostSnap.type !== 'ROOM_SNAPSHOT'
+    ) {
+      return;
+    }
+
+    assert.equal(c1SpecSnap.yourParticipantId, j1.yourParticipantId);
+    assert.equal(c1SpecSnap.yourSeatIndex, null);
+    assert.equal(c1SpecSnap.yourPlayerId, null);
+    assert.equal(c1SpecSnap.snapshot.spectators.length, 1);
+    assert.equal(c1SpecSnap.snapshot.spectators[0].participantId, j1.yourParticipantId);
+    assert.equal(c1SpecSnap.snapshot.hostSeatIndex, 1);
+    assert.equal(c2HostSnap.snapshot.seats[1].isHost, true);
+    assert.equal(c2HostSnap.snapshot.seats[1].ready, true);
+    assert.equal(c2HostSnap.snapshot.seats[0].occupiedByHuman, false);
+
+    // Spectator c1 clicks MOVE_TO_SEAT(2) -> returns as player on seat 2 keeping participantId, ready=false
+    manager.handleClientMessage('c1', { type: 'MOVE_TO_SEAT', targetSeatIndex: 2 });
+    const c1SeatedSnap = latestByClient.get('c1');
+    assert.equal(c1SeatedSnap?.type, 'ROOM_SNAPSHOT');
+    if (!c1SeatedSnap || c1SeatedSnap.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(c1SeatedSnap.yourParticipantId, j1.yourParticipantId);
+    assert.equal(c1SeatedSnap.yourSeatIndex, 2);
+    assert.equal(c1SeatedSnap.snapshot.spectators.length, 0);
+    assert.equal(c1SeatedSnap.snapshot.seats[2].occupiedByHuman, true);
+    assert.equal(c1SeatedSnap.snapshot.seats[2].participantId, j1.yourParticipantId);
+    assert.equal(c1SeatedSnap.snapshot.seats[2].ready, false);
+    assert.equal(
+      c1SeatedSnap.snapshot.participants.find((p) => p.participantId === j1.yourParticipantId)?.role,
+      'player'
+    );
   } finally {
     manager.dispose();
   }
