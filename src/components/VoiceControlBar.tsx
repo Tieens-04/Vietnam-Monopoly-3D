@@ -370,7 +370,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
             onPointerUp={handleMicPointerRelease}
             onPointerCancel={handleMicPointerRelease}
             onPointerLeave={handleMicPointerRelease}
-            className={`bt-utility-rail-btn relative h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer select-none touch-none transition-all ${
+            className={`bt-utility-rail-btn relative z-10 h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer select-none touch-none transition-all ${
               isMicActive ? 'bt-btn-green' : 'bt-btn-white text-slate-700'
             } ${speakingRingClass}`}
           >
@@ -404,7 +404,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
               if (e.detail > 0) e.currentTarget.blur();
               setPopoverOpen((prev) => !prev);
             }}
-            className={`icon-hit-target px-2 py-0.5 rounded-full text-[10px] font-black flex items-center gap-0.5 cursor-pointer transition-colors ${
+            className={`min-h-[28px] min-w-[44px] px-2 py-0.5 rounded-full text-[10px] font-black flex items-center justify-center gap-0.5 cursor-pointer transition-colors ${
               popoverOpen ? 'bt-btn-cyan' : 'bt-btn-white text-sky-900'
             }`}
           >
