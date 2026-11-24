@@ -12,6 +12,7 @@ import {
   resolveGraphicsProfile,
 } from '../game/graphicsQuality';
 import { GraphicsQualityTier } from '../game/types';
+import { mergeGroupMeshesByMaterial } from '../three/models';
 
 export interface PlayerAvatar3DProps {
   archetype: AvatarArchetypeId;
@@ -54,6 +55,7 @@ interface AvatarSubscriber {
   archetype: AvatarArchetypeId;
   canvas2d: HTMLCanvasElement;
   ctx2d: CanvasRenderingContext2D;
+  hasDrawnFirstFrame?: boolean;
   getState: () => {
     mood: AvatarMood;
     phaseSeed: number;
@@ -119,6 +121,35 @@ function applyPoseStateToRig(
   rig.rimLight.intensity = isActive || mood === 'celebrating' ? 1.35 : 0.78;
 }
 
+export interface AvatarMoodBurst {
+  playerId: number;
+  mood: AvatarMood;
+  durationMs?: number;
+}
+
+type AvatarMoodBurstListener = (burst: AvatarMoodBurst) => void;
+const avatarMoodBurstListeners = new Set<AvatarMoodBurstListener>();
+
+export function emitAvatarMoodBurst(burst: AvatarMoodBurst): void {
+  if (avatarMoodBurstListeners.size === 0) return;
+  for (const listener of Array.from(avatarMoodBurstListeners)) {
+    try {
+      listener(burst);
+    } catch {
+      // Isolate mood UI listener errors from 3D board loop
+    }
+  }
+}
+
+export function subscribeAvatarMoodBurst(
+  listener: AvatarMoodBurstListener
+): () => void {
+  avatarMoodBurstListeners.add(listener);
+  return () => {
+    avatarMoodBurstListeners.delete(listener);
+  };
+}
+
 /**
  * Shared Single-Context Offscreen WebGL Avatar Engine.
  * - Caches at most 4 shared `CharacterRigRefs` (`car`, `yacht`, `jet`, `crown`) for the entire app lifetime.
@@ -146,6 +177,7 @@ class SharedAvatarRenderEngine {
   private visibilityBound = false;
   private lastTimeMs = 0;
   private elapsedSec = 0;
+  private tickCounter = 0;
 
   private ensureTierLoaded(): void {
     if (this.tierInitialized) return;
@@ -495,9 +527,25 @@ class SharedAvatarRenderEngine {
     if (!renderer) return;
 
     const dampAlpha = 1 - Math.exp(-10 * dt);
+    this.tickCounter += 1;
 
+    let subIdx = 0;
     for (const sub of this.subscribers) {
+      const slotIdx = subIdx++;
       const st = sub.getState();
+      const isQuietIdleOpponent =
+        !st.isActive &&
+        st.mood === 'idle' &&
+        st.pointerX === 0 &&
+        st.pointerY === 0;
+      if (
+        isQuietIdleOpponent &&
+        sub.hasDrawnFirstFrame &&
+        (this.tickCounter + slotIdx) % 3 !== 0
+      ) {
+        continue;
+      }
+
       const target = computeAvatarPoseTargets({
         mood: st.mood,
         elapsedSec: this.elapsedSec,
@@ -537,6 +585,7 @@ class SharedAvatarRenderEngine {
       const h = sub.canvas2d.height;
       sub.ctx2d.clearRect(0, 0, w, h);
       sub.ctx2d.drawImage(renderer.domElement, 0, 0, w, h);
+      sub.hasDrawnFirstFrame = true;
     }
 
     if (this.isSoftwareGl) {
@@ -574,9 +623,10 @@ function drawFallback2DPortrait(sub: AvatarSubscriber): void {
 }
 
 /**
- * Builds a composite 14+ part procedural 3D Business Tour stylized tycoon character bust.
+ * Builds a composite 14+ part procedural 3D Business Tour stylized tycoon character bust
+ * with static meshes batched per material inside each articulated group.
  */
-function buildStylizedCharacterRig(
+export function buildStylizedCharacterRig(
   archetype: AvatarArchetypeId,
   envTexture: THREE.Texture | null
 ): CharacterRigRefs {
@@ -927,9 +977,10 @@ function buildStylizedCharacterRig(
       emissiveIntensity: 0.28,
     })
   );
-  const pupilMat = trackMat(new THREE.MeshBasicMaterial({ color: 0x060913 }));
+  const eyeDarkMat = trackMat(new THREE.MeshBasicMaterial({ color: 0x0e0a10 }));
   const catchlightMat = trackMat(new THREE.MeshBasicMaterial({ color: 0xffffff }));
-  const lashMat = trackMat(new THREE.MeshBasicMaterial({ color: 0x171010 }));
+  const pupilMat = eyeDarkMat;
+  const lashMat = eyeDarkMat;
 
   const scleraGeo = trackGeo(new THREE.SphereGeometry(0.06, 16, 14));
   const irisGeo = trackGeo(new THREE.CircleGeometry(0.04, 16));
@@ -1402,6 +1453,34 @@ function buildStylizedCharacterRig(
     jailBarsGroup.add(bar);
   }
   scene.add(jailBarsGroup);
+
+  // Batch static geometry per material inside each articulated group so offscreen
+  // Medium/High portraits cut draw calls by >70% while keeping blinking/brows/mouth/props live.
+  const torsoExcluded = new Set<THREE.Object3D>([headGroup]);
+  if (propPivot) {
+    torsoExcluded.add(propPivot);
+  }
+  mergeGroupMeshesByMaterial(torsoGroup, torsoExcluded);
+
+  const headExcluded = new Set<THREE.Object3D>([
+    leftEyelid,
+    rightEyelid,
+    leftBrow,
+    rightBrow,
+    mouthArc,
+  ]);
+  mergeGroupMeshesByMaterial(headGroup, headExcluded);
+  mergeGroupMeshesByMaterial(jailBarsGroup);
+
+  scene.traverse((obj) => {
+    if (
+      obj instanceof THREE.Mesh &&
+      obj.geometry &&
+      !disposables.includes(obj.geometry)
+    ) {
+      disposables.push(obj.geometry);
+    }
+  });
 
   const setQualityFeatures = (
     nextEnvTex: THREE.Texture | null,

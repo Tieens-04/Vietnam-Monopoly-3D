@@ -1519,6 +1519,10 @@ test.describe('Business Tour Rules Alignment & UI/Online Parity', () => {
       });
     });
 
+    // Hold static OVERVIEW camera so 2D screen-space speech-bubble coordinates measure pure 3D pawn motion without CameraDirector pan/zoom offset.
+    await page.addInitScript(() => {
+      window.localStorage.setItem('bt_vn_cinematic_camera', 'false');
+    });
     await page.goto('/?quality=high');
     await getTabOnline(page).click();
     await page.getByRole('button', { name: '2 Người' }).click();

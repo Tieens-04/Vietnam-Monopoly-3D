@@ -24,12 +24,19 @@ export type CashFlowTransferKind =
   | 'PLAYER_TO_BANK'
   | 'BANK_TO_PLAYER';
 
+export type CashFlowTransferReason =
+  | 'start_salary'
+  | 'tax'
+  | 'refund'
+  | 'bankrupt';
+
 export interface CashFlowTransferEvent {
   kind: CashFlowTransferKind;
   fromPlayerId: number | null;
   toPlayerId: number | null;
   tileIndex: number | null;
   amount: number;
+  reason?: CashFlowTransferReason;
 }
 
 export interface CurrencyStyleOptionMeta {
@@ -375,10 +382,18 @@ export function detectCashFlowTransfers(
 
   const payers: Array<{ id: number; remaining: number; pos: number }> = [];
   const gainers: Array<{ id: number; remaining: number; pos: number }> = [];
+  const passedStartPlayerIds = new Set<number>();
+  const newlyBankruptPlayerIds = new Set<number>();
 
   for (const nextP of nextPlayers) {
     const prevP = prevById.get(nextP.id);
     if (!prevP) continue;
+    if (nextP.laps > prevP.laps) {
+      passedStartPlayerIds.add(nextP.id);
+    }
+    if (!prevP.bankrupt && nextP.bankrupt) {
+      newlyBankruptPlayerIds.add(nextP.id);
+    }
     const delta = Math.round(nextP.cash - prevP.cash);
     if (delta < 0) {
       payers.push({ id: nextP.id, remaining: Math.abs(delta), pos: nextP.position });
@@ -406,6 +421,7 @@ export function detectCashFlowTransfers(
           toPlayerId: gainer.id,
           tileIndex: null,
           amount: matched,
+          ...(newlyBankruptPlayerIds.has(payer.id) ? { reason: 'bankrupt' as const } : {}),
         });
         payer.remaining -= matched;
         gainer.remaining -= matched;
@@ -413,12 +429,16 @@ export function detectCashFlowTransfers(
     }
   }
 
-  // Detect newly acquired or upgraded tiles per player
+  // Detect newly acquired/upgraded tiles and liquidated tiles per player
   const newlyInvestedTileByPlayer = new Map<number, number>();
+  const soldPropertyPlayerIds = new Set<number>();
   for (const key of Object.keys(nextProps)) {
     const tIdx = Number(key);
     const nextPr = nextProps[tIdx];
     const prevPr = prevProps[tIdx];
+    if (prevPr && prevPr.ownerId !== null && (!nextPr || nextPr.ownerId === null)) {
+      soldPropertyPlayerIds.add(prevPr.ownerId);
+    }
     if (!nextPr || nextPr.ownerId === null) continue;
     if (!prevPr || prevPr.ownerId !== nextPr.ownerId || nextPr.level > prevPr.level) {
       newlyInvestedTileByPlayer.set(nextPr.ownerId, tIdx);
@@ -438,12 +458,19 @@ export function detectCashFlowTransfers(
         amount: payer.remaining,
       });
     } else {
+      const reason =
+        payer.pos === 30
+          ? ('tax' as const)
+          : newlyBankruptPlayerIds.has(payer.id)
+            ? ('bankrupt' as const)
+            : undefined;
       events.push({
         kind: 'PLAYER_TO_BANK',
         fromPlayerId: payer.id,
         toPlayerId: null,
         tileIndex: payer.pos === 30 ? 30 : null,
         amount: payer.remaining,
+        ...(reason ? { reason } : {}),
       });
     }
   }
@@ -451,12 +478,18 @@ export function detectCashFlowTransfers(
   // 3. Classify remaining inflows (Start +300K salary, Chance dividend, Property sale refund)
   for (const gainer of gainers) {
     if (gainer.remaining <= 0) continue;
+    const reason = passedStartPlayerIds.has(gainer.id)
+      ? ('start_salary' as const)
+      : soldPropertyPlayerIds.has(gainer.id)
+        ? ('refund' as const)
+        : undefined;
     events.push({
       kind: 'BANK_TO_PLAYER',
       fromPlayerId: null,
       toPlayerId: gainer.id,
       tileIndex: null,
       amount: gainer.remaining,
+      ...(reason ? { reason } : {}),
     });
   }
 

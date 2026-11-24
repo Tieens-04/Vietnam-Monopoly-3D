@@ -1,23 +1,25 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { deriveAvatarMood, getPlayerPersona } from '../game/avatarLogic';
+import {
+  AvatarMood,
+  deriveAvatarMood,
+  getPlayerPersona,
+} from '../game/avatarLogic';
 import { BOARD_TILES } from '../game/boardData';
 import {
   calculateNetWorth,
   formatBusinessTourCompact,
   formatBusinessTourSpaced,
 } from '../game/rules';
+import { CurrencyStyleId, MatchBoardModifiers, MatchMode, PlayerState, PropertyState, TileKind, BotChatBubbleState, BotQuipEventKind } from '../game/types';
 import {
-  BotChatBubbleState,
-  BotQuipEventKind,
-  CurrencyStyleId,
-  MatchBoardModifiers,
-  MatchMode,
-  PlayerState,
-  PropertyState,
-  TileKind,
-} from '../game/types';
+  readPrefersReducedMotion,
+  subscribePrefersReducedMotion,
+} from '../three/animationDirector';
 import { CurrencyStyleIcon } from './CurrencyStyleBadge';
-import { PlayerAvatar3D } from './PlayerAvatar3D';
+import {
+  PlayerAvatar3D,
+  subscribeAvatarMoodBurst,
+} from './PlayerAvatar3D';
 
 interface PlayerHUDProps {
   players: PlayerState[];
@@ -26,6 +28,7 @@ interface PlayerHUDProps {
   boardModifiers: MatchBoardModifiers;
   matchMode?: MatchMode;
   currencyStyle?: CurrencyStyleId;
+  debtPlayerId?: number | null;
   botBubbles: Record<number, BotChatBubbleState>;
   localPlayerId?: number | null;
   playerEmotes?: Record<number, string>;
@@ -103,8 +106,10 @@ const AnimatedCashPill: React.FC<{
   value: number;
   delta: number | null;
   bankrupt: boolean;
+  isDebtTarget?: boolean;
+  reducedMotion: boolean;
   currencyStyle: CurrencyStyleId;
-}> = ({ value, delta, bankrupt, currencyStyle }) => {
+}> = ({ value, delta, bankrupt, isDebtTarget = false, reducedMotion, currencyStyle }) => {
   const [displayed, setDisplayed] = useState(value);
   const prevRef = useRef(value);
 
@@ -114,13 +119,19 @@ const AnimatedCashPill: React.FC<{
     if (diff === 0) return;
 
     prevRef.current = value;
-    const duration = 360;
+    if (reducedMotion) {
+      setDisplayed(value);
+      return;
+    }
+
+    const duration = 420;
     const t0 = performance.now();
     let raf = 0;
 
     const step = (now: number) => {
       const p = Math.min(1, (now - t0) / duration);
-      const eased = 1 - Math.pow(1 - p, 3);
+      // power2.out ease
+      const eased = 1 - Math.pow(1 - p, 2);
       setDisplayed(Math.round(startVal + diff * eased));
       if (p < 1) {
         raf = requestAnimationFrame(step);
@@ -129,10 +140,12 @@ const AnimatedCashPill: React.FC<{
     raf = requestAnimationFrame(step);
 
     return () => cancelAnimationFrame(raf);
-  }, [value]);
+  }, [value, reducedMotion]);
 
-  const deltaRingClass =
-    delta !== null && !bankrupt
+  const isInDebt = !bankrupt && (value < 0 || isDebtTarget);
+  const deltaRingClass = isInDebt
+    ? `border-rose-500 ring-2 ring-rose-400/80 ${reducedMotion ? '' : 'animate-pulse'}`
+    : delta !== null && !bankrupt
       ? delta > 0
         ? 'border-emerald-500 ring-2 ring-emerald-300/75'
         : 'border-rose-500 ring-2 ring-rose-300/75'
@@ -149,7 +162,7 @@ const AnimatedCashPill: React.FC<{
         />
         <span
           className={`font-mono-num text-xs sm:text-[15px] font-extrabold tracking-tight leading-none truncate ${
-            bankrupt || value < 0 ? 'text-rose-600' : 'text-slate-800'
+            bankrupt || isInDebt ? 'text-rose-600' : 'text-slate-800'
           }`}
         >
           {bankrupt ? '0' : formatBusinessTourSpaced(displayed)}
@@ -159,8 +172,8 @@ const AnimatedCashPill: React.FC<{
       {delta !== null && !bankrupt && (
         <span
           className={`font-mono-num text-[10px] font-extrabold shrink-0 ${
-            delta > 0 ? 'text-[#16A34A]' : 'text-rose-600'
-          }`}
+            reducedMotion ? '' : 'animate-pop-in'
+          } ${delta > 0 ? 'text-[#16A34A]' : 'text-rose-600'}`}
         >
           {delta > 0
             ? `+${formatBusinessTourSpaced(delta)}`
@@ -214,6 +227,8 @@ interface PlayerCornerCardProps {
   corner: CornerPositionSpec;
   isActive: boolean;
   isLocalHuman: boolean;
+  isDebtTarget: boolean;
+  reducedMotion: boolean;
   matchMode: MatchMode;
   emoteText?: string;
   ownedProps: PropertyState[];
@@ -231,6 +246,8 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
   corner,
   isActive,
   isLocalHuman,
+  isDebtTarget,
+  reducedMotion,
   matchMode,
   emoteText,
   ownedProps,
@@ -242,7 +259,9 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
   onSelectTile,
 }) => {
   const [recentDelta, setRecentDelta] = useState<number | null>(null);
+  const [burstMood, setBurstMood] = useState<AvatarMood | null>(null);
   const prevCashRef = useRef(player.cash);
+  const burstTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const diff = player.cash - prevCashRef.current;
@@ -253,8 +272,30 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
     return () => window.clearTimeout(timer);
   }, [player.cash]);
 
+  useEffect(() => {
+    const unsub = subscribeAvatarMoodBurst((burst) => {
+      if (burst.playerId !== player.id) return;
+      if (burstTimerRef.current !== null) {
+        window.clearTimeout(burstTimerRef.current);
+      }
+      setBurstMood(burst.mood);
+      const ms = Math.max(250, burst.durationMs ?? 1200);
+      burstTimerRef.current = window.setTimeout(() => {
+        burstTimerRef.current = null;
+        setBurstMood(null);
+      }, ms);
+    });
+    return () => {
+      unsub();
+      if (burstTimerRef.current !== null) {
+        window.clearTimeout(burstTimerRef.current);
+        burstTimerRef.current = null;
+      }
+    };
+  }, [player.id]);
+
   const persona = getPlayerPersona(player);
-  const mood = deriveAvatarMood({
+  const derivedMood = deriveAvatarMood({
     bankrupt: player.bankrupt,
     inJail: player.inJail,
     cash: player.cash,
@@ -262,6 +303,7 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
     recentCashDelta: recentDelta,
     bubble,
   });
+  const mood: AvatarMood = player.bankrupt ? 'bankrupt' : (burstMood ?? derivedMood);
   const badgeMeta = bubble ? getBubbleBadgeMeta(bubble.eventKind) : null;
   const palette = getPlayerBannerPalette(player.color);
 
@@ -382,6 +424,8 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
               value={player.cash}
               delta={recentDelta}
               bankrupt={player.bankrupt}
+              isDebtTarget={isDebtTarget}
+              reducedMotion={reducedMotion}
               currencyStyle={currencyStyle}
             />
 
@@ -531,12 +575,21 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
   boardModifiers,
   matchMode = 'FFA',
   currencyStyle = 'mixed',
+  debtPlayerId = null,
   botBubbles,
   localPlayerId,
   playerEmotes,
   onDismissBubble,
   onSelectTile,
 }) => {
+  const [reducedMotion, setReducedMotion] = useState<boolean>(() =>
+    readPrefersReducedMotion()
+  );
+
+  useEffect(() => {
+    return subscribePrefersReducedMotion(setReducedMotion);
+  }, []);
+
   return (
     <div className="fixed inset-0 z-20 pointer-events-none">
       {players.slice(0, 4).map((player, idx) => {
@@ -556,6 +609,8 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
             corner={corner}
             isActive={isActive}
             isLocalHuman={localPlayerId !== null && localPlayerId !== undefined && player.id === localPlayerId}
+            isDebtTarget={debtPlayerId !== null && player.id === debtPlayerId}
+            reducedMotion={reducedMotion}
             matchMode={matchMode}
             emoteText={playerEmotes?.[player.id]}
             ownedProps={ownedProps}

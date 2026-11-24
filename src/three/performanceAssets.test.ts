@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from 'three';
-import { DEFAULT_PLAYER_CONFIGS } from '../game/boardData';
-import { createInitialPlayers } from '../game/rules';
+import { BOARD_TILES, DEFAULT_PLAYER_CONFIGS } from '../game/boardData';
+import { createInitialPlayers, DICE_BOX_FACE_VALUES } from '../game/rules';
+import { buildStylizedCharacterRig } from '../components/PlayerAvatar3D';
 import {
   createCornerDiorama,
   createCourtyardDiorama,
@@ -13,6 +14,15 @@ import {
   createTopCappedBoxGeometry,
   NightLightingPalette,
 } from './models';
+import {
+  create3DTaxGrassTexture,
+  createBusinessTourPitchTexture,
+  createCardDeckTopTexture,
+  createCountdownClockBoardTexture,
+  createDiceFaceMaterials,
+  createOuterPriceTabTexture,
+  createTileTopTexture,
+} from './textures';
 import { createTreasurySystem } from './treasurySystem';
 
 function installMinimalCanvasDomStub(): () => void {
@@ -378,6 +388,82 @@ test('static geometry batching cuts mesh draw-call counts across pawns, vista, c
       'Countdown ticks must redraw in-place on the persistent CanvasTexture instead of reallocating GPU textures every second'
     );
     courtyard.animated.disposeDynamicTextures();
+  } finally {
+    restoreDom();
+  }
+});
+
+test('AT-UNIT-06 (Wave 7 Budget): CanvasTexture VRAM dimensions stay capped and PlayerAvatar3D batches static meshes', () => {
+  const restoreDom = installMinimalCanvasDomStub();
+  try {
+    const cornerTex = createTileTopTexture(BOARD_TILES[0], 4, false);
+    const cornerImg = cornerTex.image as { width: number; height: number };
+    assert.ok(cornerImg.width <= 480 && cornerImg.height <= 480, `Corner tile texture exceeded 480x480: ${cornerImg.width}x${cornerImg.height}`);
+    cornerTex.dispose();
+
+    const propTex = createTileTopTexture(BOARD_TILES[1], 4, false);
+    const propImg = propTex.image as { width: number; height: number };
+    assert.ok(propImg.width <= 384 && propImg.height <= 576, `Regular tile texture exceeded 384x576: ${propImg.width}x${propImg.height}`);
+    propTex.dispose();
+
+    const priceTex = createOuterPriceTabTexture('200K', '#22B8F8', null, undefined, false, 4);
+    const priceImg = priceTex.image as { width: number; height: number };
+    assert.ok(priceImg.width <= 256 && priceImg.height <= 150, `Price tab texture exceeded 256x150: ${priceImg.width}x${priceImg.height}`);
+    priceTex.dispose();
+
+    const taxTex = create3DTaxGrassTexture('VIỆT NAM 3D', 'cap', 4, 'CỜ TỶ PHÚ');
+    const taxImg = taxTex.image as { width: number; height: number };
+    assert.ok(taxImg.width <= 1024 && taxImg.height <= 384, `3D tax grass texture exceeded 1024x384: ${taxImg.width}x${taxImg.height}`);
+    assert.equal(taxTex.generateMipmaps, false, 'Center flat text plaque should skip mipmaps');
+    taxTex.dispose();
+
+    const pitchTex = createBusinessTourPitchTexture(4);
+    const pitchImg = pitchTex.image as { width: number; height: number };
+    assert.ok(pitchImg.width <= 768 && pitchImg.height <= 768, `Pitch texture exceeded 768x768: ${pitchImg.width}x${pitchImg.height}`);
+    pitchTex.dispose();
+
+    const clockTex = createCountdownClockBoardTexture('00:45', 1, 45, '#F5B800', 4);
+    const clockImg = clockTex.image as { width: number; height: number };
+    assert.ok(clockImg.width <= 512 && clockImg.height <= 256, `Clock texture exceeded 512x256: ${clockImg.width}x${clockImg.height}`);
+    assert.equal(clockTex.generateMipmaps, false, '1Hz updated clock texture must disable mipmaps');
+    clockTex.dispose();
+
+    const cardTex = createCardDeckTopTexture('CHANCE', 4);
+    const cardImg = cardTex.image as { width: number; height: number };
+    assert.ok(cardImg.width <= 384 && cardImg.height <= 240, `Card deck texture exceeded 384x240: ${cardImg.width}x${cardImg.height}`);
+    cardTex.dispose();
+
+    const diceMats = createDiceFaceMaterials(DICE_BOX_FACE_VALUES, 4);
+    for (const m of diceMats) {
+      const img = m.map?.image as { width: number; height: number } | undefined;
+      assert.ok(img && img.width <= 256 && img.height <= 256, `Dice face texture exceeded 256x256`);
+      m.map?.dispose();
+      m.bumpMap?.dispose();
+      m.dispose();
+    }
+
+    // Batched PlayerAvatar3D rigs must stay <= 24 total meshes (<= 23 visible, down from ~45-56!) while preserving articulated features
+    for (const archetype of ['car', 'yacht', 'jet', 'crown'] as const) {
+      const rig = buildStylizedCharacterRig(archetype, null);
+      const totalMeshes = countMeshes(rig.scene);
+      assert.ok(
+        totalMeshes <= 24,
+        `Avatar rig '${archetype}' exceeded <= 24 batched meshes (got ${totalMeshes})`
+      );
+      assert.ok(rig.leftEyelid.parent !== null, `${archetype}: leftEyelid must stay attached`);
+      assert.ok(rig.rightEyelid.parent !== null, `${archetype}: rightEyelid must stay attached`);
+      assert.ok(rig.leftBrow.parent !== null, `${archetype}: leftBrow must stay attached`);
+      assert.ok(rig.rightBrow.parent !== null, `${archetype}: rightBrow must stay attached`);
+      assert.ok(rig.mouthArc.parent !== null, `${archetype}: mouthArc must stay attached`);
+      assert.equal(
+        countMeshes(rig.jailBarsGroup),
+        1,
+        `${archetype}: 4 jail bars must batch into 1 mesh`
+      );
+      for (const d of rig.disposables) {
+        d.dispose();
+      }
+    }
   } finally {
     restoreDom();
   }

@@ -411,46 +411,135 @@ test('BUG-30b: Opening ?room=BBBB with mismatched stored session for AAAA skips 
   }
 });
 
-test('BUG-30c: pendingQueueRef queues actions before onopen, flushes them in order on open, and leaveRoom clears queued actions', () => {
+test('BUG-30c & BUG-04: pendingQueueRef queues only room bootstrap messages; GAME_ACTION & SEND_EMOTE are never queued offline or before reconnect snapshot sync', () => {
   const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
   const hook = mountHook(() => useOnlineMultiplayer());
 
   try {
-    // Send actions before socket opens -> queued without throwing
-    hook.current.sendGameAction({ kind: 'ROLL_DICE', diceChoice: 'EVEN' });
-    hook.current.sendEmote('👍 Tuyệt vời!');
-
+    // 1. Room bootstrap message (CREATE_ROOM) before onopen -> queued and flushed on open; leaveRoom clears it
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
     assert.equal(MockWebSocket.instances.length, 1);
     const ws1 = MockWebSocket.instances[0];
     assert.equal(ws1.readyState, MockWebSocket.CONNECTING);
     assert.deepEqual(ws1.sent, []);
 
-    // When socket opens, queued actions flush in exact FIFO order
     ws1.simulateOpen();
-    assert.equal(ws1.sent.length, 2);
-    assert.deepEqual(JSON.parse(ws1.sent[0]), {
-      type: 'GAME_ACTION',
-      action: { kind: 'ROLL_DICE', diceChoice: 'EVEN' },
-    });
-    assert.deepEqual(JSON.parse(ws1.sent[1]), {
-      type: 'SEND_EMOTE',
-      emoteText: '👍 Tuyệt vời!',
-    });
+    assert.equal(ws1.sent.length, 1);
+    assert.equal(JSON.parse(ws1.sent[0]).type, 'CREATE_ROOM');
 
-    // Simulate disconnect, queue an action, then leaveRoom() -> must purge pendingQueueRef
+    const playingSnap: OnlineRoomSnapshot = {
+      ...makeRoomSnapshot('AAAA'),
+      status: 'playing',
+      match: {
+        players: [],
+        properties: {},
+        activePlayerIndex: 0,
+        turnPhase: 'AWAIT_ROLL',
+        turnCount: 1,
+        decisionRevision: 1,
+        lastDice: null,
+        lastDiceSum: 0,
+        lastRentPaid: 0,
+        boardModifiers: {
+          festivalTileIndices: [],
+          championshipTileIndex: null,
+          championshipMultiplier: 1,
+        },
+        isFreeChampionship: false,
+        turnTimeLeft: 45,
+        matchTimeLeft: 1200,
+        drawnCard: null,
+        pendingDebt: null,
+        matchWinnerResult: null,
+        logs: [],
+        landingCueText: null,
+      },
+    };
+    ws1.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'AAAA',
+      sessionToken: 'token-aaaa-999999',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: playingSnap,
+    });
+    assert.equal(hook.current.connectionStatus, 'connected');
+    assert.equal((hook.current as { isSynced?: boolean }).isSynced, true);
+
+    // 2. While connected & synced, sendGameAction sends immediately with server expectations + unique actionId
+    hook.current.sendGameAction({ kind: 'ROLL_DICE', diceChoice: 'NORMAL' });
+    assert.equal(ws1.sent.length, 2);
+    const sentAction = JSON.parse(ws1.sent[1]);
+    assert.equal(sentAction.type, 'GAME_ACTION');
+    assert.deepEqual(sentAction.action, { kind: 'ROLL_DICE', diceChoice: 'NORMAL' });
+    assert.equal(sentAction.expectedTurnCount, 1);
+    assert.equal(sentAction.expectedPhase, 'AWAIT_ROLL');
+    assert.equal(sentAction.expectedDecisionRevision, 1);
+    assert.equal(typeof sentAction.actionId, 'string');
+    assert.ok(sentAction.actionId.length > 0);
+
+    // 3. Simulate network drop while in match -> attempting GAME_ACTION / SEND_EMOTE while disconnected MUST NOT queue or replay!
     ws1.simulateClose();
-    hook.current.sendGameAction({ kind: 'SKIP_BUY' });
+    assert.equal(hook.current.connectionStatus, 'reconnecting');
+    assert.equal((hook.current as { isSynced?: boolean }).isSynced, false);
+
+    hook.current.sendGameAction({ kind: 'ROLL_DICE' });
+    hook.current.sendEmote('👍 Tuyệt vời!');
+
     assert.equal(MockWebSocket.instances.length, 2);
     const ws2 = MockWebSocket.instances[1];
-    assert.deepEqual(ws2.sent, []);
-
-    hook.current.leaveRoom();
     ws2.simulateOpen();
-    assert.deepEqual(
-      ws2.sent,
-      [],
-      'leaveRoom() must clear pendingQueueRef so stale actions never flush on a later open'
-    );
+
+    // Only RECONNECT_ROOM may be sent on reconnect — NEVER the stale GAME_ACTION or SEND_EMOTE!
+    assert.equal(ws2.sent.length, 1, `Expected only RECONNECT_ROOM on reconnect, got ${JSON.stringify(ws2.sent)}`);
+    assert.equal(JSON.parse(ws2.sent[0]).type, 'RECONNECT_ROOM');
+
+    // 4. Before ROOM_JOINED/ROOM_SNAPSHOT arrives after reconnect, client is STILL NOT synced; GAME_ACTION must stay blocked!
+    assert.equal((hook.current as { isSynced?: boolean }).isSynced, false);
+    assert.equal(hook.current.connectionStatus, 'reconnecting');
+    hook.current.sendGameAction({ kind: 'ROLL_DICE' });
+    assert.equal(ws2.sent.length, 1, 'Must NOT send GAME_ACTION before fresh reconnect snapshot arrives');
+
+    // 5. Fresh ROOM_JOINED arrives (now Turn 3, revision 7) -> unlocks actions with updated expectations!
+    ws2.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'AAAA',
+      sessionToken: 'token-aaaa-999999',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: {
+        ...playingSnap,
+        match: {
+          ...playingSnap.match!,
+          turnCount: 3,
+          decisionRevision: 7,
+          turnPhase: 'AWAIT_ROLL',
+        },
+      },
+    });
+    assert.equal((hook.current as { isSynced?: boolean }).isSynced, true);
+    assert.equal(hook.current.connectionStatus, 'connected');
+    hook.current.sendGameAction({ kind: 'PAY_JAIL_FINE' });
+    assert.equal(ws2.sent.length, 2);
+    const postSyncAction = JSON.parse(ws2.sent[1]);
+    assert.equal(postSyncAction.expectedTurnCount, 3);
+    assert.equal(postSyncAction.expectedDecisionRevision, 7);
+    assert.notEqual(postSyncAction.actionId, sentAction.actionId);
+
+    // 6. leaveRoom() still purges queued JOIN_ROOM bootstrap messages before onopen
+    ws2.simulateClose();
+    hook.current.leaveRoom();
+    hook.current.joinRoom({ roomCode: 'BBBB', playerName: 'Guest' });
+    const ws3 = MockWebSocket.instances.at(-1)!;
+    hook.current.leaveRoom();
+    ws3.simulateOpen();
+    assert.deepEqual(ws3.sent, []);
   } finally {
     hook.unmount();
     env.restore();
@@ -506,6 +595,67 @@ test('skipInitialAutoReconnect skips stored session hijack on offline autostart/
       message: 'Hành động không hợp lệ.',
     });
     assert.equal(hook.current.errorSeq, 2);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+test('BUG-04 (Review Round 2): delayed onclose from a superseded WebSocket must not desync or disconnect a newer active socket', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const hook = mountHook(() => useOnlineMultiplayer());
+
+  try {
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const ws1 = MockWebSocket.instances[0];
+    ws1.simulateOpen();
+    ws1.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'AAAA',
+      sessionToken: 'tok-aaaa-111111',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: makeRoomSnapshot('AAAA'),
+    });
+    assert.equal(hook.current.isSynced, true);
+
+    // Simulate ws1 closing normally and ws2 opening & syncing
+    ws1.simulateClose();
+    assert.equal(hook.current.isSynced, false);
+    // Re-open by sending a new createRoom (simulates rapid reconnect / room switch creating ws2)
+    hook.current.leaveRoom();
+    hook.current.createRoom({
+      playerName: 'Host2',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const ws2 = MockWebSocket.instances.at(-1)!;
+    assert.notEqual(ws2, ws1);
+    ws2.simulateOpen();
+    ws2.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'BBBB',
+      sessionToken: 'tok-bbbb-222222',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: makeRoomSnapshot('BBBB'),
+    });
+    assert.equal(hook.current.connectionStatus, 'connected');
+    assert.equal(hook.current.isSynced, true);
+
+    // Now a delayed/stale onclose fires on the old ws1 -> MUST NOT touch ws2's synced connected state!
+    ws1.simulateClose();
+    assert.equal(hook.current.connectionStatus, 'connected');
+    assert.equal(hook.current.isSynced, true);
+    assert.equal(hook.current.roomSnapshot?.roomCode, 'BBBB');
   } finally {
     hook.unmount();
     env.restore();

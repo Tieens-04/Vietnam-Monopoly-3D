@@ -631,13 +631,14 @@ export function createTileTopTexture(
     tile.kind === TileKind.WORLD_CHAMPIONSHIPS ||
     tile.kind === TileKind.WORLD_TOUR;
 
+  const W = isCorner ? 640 : 512;
+  const H = isCorner ? 640 : 768;
+  const scale = 0.75; // 480x480 corners, 384x576 regular tiles (-44% GPU VRAM, crisp with maxAnisotropy)
   const canvas = document.createElement('canvas');
-  canvas.width = isCorner ? 640 : 512;
-  canvas.height = isCorner ? 640 : 768;
+  canvas.width = Math.round(W * scale);
+  canvas.height = Math.round(H * scale);
   const ctx = canvas.getContext('2d')!;
-
-  const W = canvas.width;
-  const H = canvas.height;
+  ctx.scale(scale, scale);
 
   // 1. Crisp beveled alabaster-ivory outer stone rim + warm satin tile surface
   ctx.fillStyle = '#CBD5E1';
@@ -997,10 +998,13 @@ export function createOuterPriceTabTexture(
 ): THREE.CanvasTexture {
   const W = 384;
   const H = 224;
+  const targetW = 256;
+  const targetH = 150;
   const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = targetW;
+  canvas.height = targetH;
   const ctx = canvas.getContext('2d')!;
+  ctx.scale(targetW / W, targetH / H);
 
   ctx.save();
   if (flip180) {
@@ -1173,10 +1177,12 @@ export function createLevelBadgeTexture(
  */
 export function createBusinessTourPitchTexture(maxAnisotropy: number): THREE.CanvasTexture {
   const S = 1024;
+  const targetS = 768;
   const canvas = document.createElement('canvas');
-  canvas.width = S;
-  canvas.height = S;
+  canvas.width = targetS;
+  canvas.height = targetS;
   const ctx = canvas.getContext('2d')!;
+  ctx.scale(targetS / S, targetS / S);
 
   const baseGrad = ctx.createRadialGradient(S / 2, S / 2, 64, S / 2, S / 2, S * 0.72);
   baseGrad.addColorStop(0, '#8BE255');
@@ -1256,10 +1262,13 @@ export function create3DTaxGrassTexture(
 ): THREE.CanvasTexture {
   const W = 1536;
   const H = 576;
+  const targetW = 1024;
+  const targetH = 384;
   const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = targetW;
+  canvas.height = targetH;
   const ctx = canvas.getContext('2d')!;
+  ctx.scale(targetW / W, targetH / H);
 
   ctx.clearRect(0, 0, W, H);
   ctx.textAlign = 'center';
@@ -1331,6 +1340,8 @@ export function create3DTaxGrassTexture(
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   tex.anisotropy = maxAnisotropy;
   tex.needsUpdate = true;
   return tex;
@@ -1349,10 +1360,14 @@ export function drawCountdownClockBoardToCanvas(
 ): void {
   const W = 640;
   const H = 320;
-  if (canvas.width !== W) canvas.width = W;
-  if (canvas.height !== H) canvas.height = H;
+  const targetW = 512;
+  const targetH = 256;
+  if (canvas.width !== targetW) canvas.width = targetW;
+  if (canvas.height !== targetH) canvas.height = targetH;
   const ctx = canvas.getContext('2d')!;
 
+  ctx.save();
+  ctx.scale(targetW / W, targetH / H);
   ctx.clearRect(0, 0, W, H);
   const bg = ctx.createLinearGradient(0, 0, 0, H);
   bg.addColorStop(0, '#1E293B');
@@ -1405,6 +1420,7 @@ export function drawCountdownClockBoardToCanvas(
   ctx.fillStyle = digitColor;
   ctx.fillText(timeStr, W / 2, 208);
   ctx.restore();
+  ctx.restore();
 }
 
 export function createCountdownClockBoardTexture(
@@ -1425,6 +1441,8 @@ export function createCountdownClockBoardTexture(
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   tex.anisotropy = maxAnisotropy;
   tex.needsUpdate = true;
   return tex;
@@ -1474,6 +1492,8 @@ export function createCashBillTopTexture(maxAnisotropy: number): THREE.CanvasTex
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   tex.anisotropy = maxAnisotropy;
   return tex;
 }
@@ -1495,6 +1515,8 @@ export function createCashBillSideTexture(maxAnisotropy: number): THREE.CanvasTe
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   tex.anisotropy = maxAnisotropy;
   return tex;
 }
@@ -1537,6 +1559,8 @@ export function createMetallicCoinTopTexture(
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   tex.anisotropy = maxAnisotropy;
   return tex;
 }
@@ -1551,10 +1575,13 @@ export function createCardDeckTopTexture(
 ): THREE.CanvasTexture {
   const W = 512;
   const H = 320;
+  const targetW = 384;
+  const targetH = 240;
   const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = targetW;
+  canvas.height = targetH;
   const ctx = canvas.getContext('2d')!;
+  ctx.scale(targetW / W, targetH / H);
 
   const isChance = deckType === 'CHANCE';
   const grad = ctx.createLinearGradient(0, 0, W, H);
@@ -1588,6 +1615,8 @@ export function createCardDeckTopTexture(
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   tex.anisotropy = maxAnisotropy;
   return tex;
 }
@@ -1602,6 +1631,8 @@ export function createBoulevardRoadTexture(maxAnisotropy: number): THREE.CanvasT
   ctx.fillRect(0, 0, S, S);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   tex.anisotropy = maxAnisotropy;
   return tex;
 }
@@ -1650,10 +1681,13 @@ export function createDiceFaceMaterials(
 
   return faceValues.map((val) => {
     const size = 384;
+    const targetSize = 256;
+    const scale = targetSize / size;
     const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
+    canvas.width = targetSize;
+    canvas.height = targetSize;
     const ctx = canvas.getContext('2d')!;
+    ctx.scale(scale, scale);
 
     // Seamless rich hot-pink base (blends cleanly onto RoundedBoxGeometry bevels!)
     const faceGrad = ctx.createRadialGradient(
@@ -1678,9 +1712,10 @@ export function createDiceFaceMaterials(
 
     // Concave dimple bump canvas
     const bumpCanvas = document.createElement('canvas');
-    bumpCanvas.width = size;
-    bumpCanvas.height = size;
+    bumpCanvas.width = targetSize;
+    bumpCanvas.height = targetSize;
     const bctx = bumpCanvas.getContext('2d')!;
+    bctx.scale(scale, scale);
     bctx.fillStyle = '#B0B0B0';
     bctx.fillRect(0, 0, size, size);
 

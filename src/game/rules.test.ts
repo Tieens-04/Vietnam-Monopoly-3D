@@ -1176,4 +1176,398 @@ test('Festival x2 defaults to OFF (0 cities) unless explicitly enabled, and form
   );
 });
 
+test('BUG-05 (Audit): Sudden Death TIME_LIMIT accounts for pendingDebt & pendingDebtQueue across bank debt, player debt, multi-debtor, multi-creditor, insufficient assets, FFA, TEAMS_2V2, and VictoryModal ranking', () => {
+  // 1. Player-to-player rent debt (fallbackDebtorId): P0 has 1.51M NW (10K cash + 1.5M RE), owes P1 1.0M; P1=800K, P2=900K
+  // Effective NW: P1 = 1.8M (#1), P2 = 900K (#2), P0 = 510K (#3)
+  const pFfa = createInitialPlayers(DEFAULT_PLAYER_CONFIGS.slice(0, 3), 2_000_000, 'FFA');
+  pFfa[0].cash = 10_000;
+  pFfa[1].cash = 800_000;
+  pFfa[2].cash = 900_000;
+  // Give P0 Hà Nội (400K + 3*250K = 1,150K) + Đà Nẵng (350K) = 1,500K RE -> raw NW = 1,510K
+  const propsFfa = makeTestProps({
+    29: { ownerId: 0, level: 3 },
+    27: { ownerId: 0, level: 0 },
+  });
+  const rentDebt = {
+    amount: 1_000_000,
+    creditorId: 1,
+    reason: 'TP.HCM',
+  };
+  // Duplicate reference guard: passing [rentDebt, rentDebt] must NOT deduct twice!
+  const resFfa = (
+    evaluateTimeLimitWinner as (
+      players: PlayerState[],
+      properties: Record<number, PropertyState>,
+      matchMode?: 'FFA' | 'TEAMS_2V2',
+      pendingDebts?: Array<{ amount: number; creditorId: number | null; reason: string; debtorId?: number }>,
+      fallbackDebtorId?: number
+    ) => ReturnType<typeof evaluateTimeLimitWinner>
+  )(pFfa, propsFfa, 'FFA', [rentDebt, rentDebt], 0);
+  assert.ok(resFfa);
+  assert.equal(resFfa.winner.id, 1, 'Creditor P1 must win after collecting 1.0M debt');
+  assert.equal(resFfa.effectiveNetWorthByPlayerId?.[1], 1_800_000);
+  assert.equal(resFfa.effectiveNetWorthByPlayerId?.[2], 900_000);
+  assert.equal(resFfa.effectiveNetWorthByPlayerId?.[0], 510_000);
+  // Original players/properties must NOT be mutated into bankrupt/stripped state
+  assert.equal(pFfa[0].bankrupt, false);
+  assert.equal(propsFfa[29].ownerId, 0);
+
+  // Ranking consistency: P1 (#1) -> P2 (#2) -> P0 (#3)
+  const rankedFfa = (
+    rankPlayersForVictory as (
+      players: PlayerState[],
+      properties: Record<number, PropertyState>,
+      winnerId: number,
+      matchMode?: 'FFA' | 'TEAMS_2V2',
+      winningTeamId?: 0 | 1,
+      effectiveNetWorthByPlayerId?: Record<number, number>
+    ) => PlayerState[]
+  )(pFfa, propsFfa, resFfa.winner.id, 'FFA', undefined, resFfa.effectiveNetWorthByPlayerId);
+  assert.deepEqual(
+    rankedFfa.map((p) => p.id),
+    [1, 2, 0]
+  );
+
+  // 2. Bank debt (Tax): P0 has 1.0M cash, owes Bank 400K -> effective NW 600K < P1 800K -> P1 wins (no credit to P1!)
+  const pBank = createInitialPlayers(DEFAULT_PLAYER_CONFIGS.slice(0, 2), 2_000_000, 'FFA');
+  pBank[0].cash = 1_000_000;
+  pBank[1].cash = 800_000;
+  const resBank = (
+    evaluateTimeLimitWinner as (
+      players: PlayerState[],
+      properties: Record<number, PropertyState>,
+      matchMode?: 'FFA' | 'TEAMS_2V2',
+      pendingDebts?: Array<{ amount: number; creditorId: number | null; reason: string; debtorId?: number }>,
+      fallbackDebtorId?: number
+    ) => ReturnType<typeof evaluateTimeLimitWinner>
+  )(pBank, makeTestProps({}), 'FFA', [{ amount: 400_000, creditorId: null, reason: 'Thuế 10%' }], 0);
+  assert.equal(resBank?.winner.id, 1);
+  assert.equal(resBank?.effectiveNetWorthByPlayerId?.[0], 600_000);
+  assert.equal(resBank?.effectiveNetWorthByPlayerId?.[1], 800_000);
+
+  // 3. Insufficient assets + multiple creditors (FIFO): D(P0) has 300K NW, owes P1 200K then P2 200K.
+  // P1 receives 200K, P2 receives only remaining 100K (never phantom 200K!), P0 floors at 0 (never negative!).
+  const pMultiCred = createInitialPlayers(DEFAULT_PLAYER_CONFIGS.slice(0, 3), 2_000_000, 'FFA');
+  pMultiCred[0].cash = 300_000;
+  pMultiCred[1].cash = 500_000;
+  pMultiCred[2].cash = 550_000;
+  const resMultiCred = (
+    evaluateTimeLimitWinner as (
+      players: PlayerState[],
+      properties: Record<number, PropertyState>,
+      matchMode?: 'FFA' | 'TEAMS_2V2',
+      pendingDebts?: Array<{ amount: number; creditorId: number | null; reason: string; debtorId?: number }>,
+      fallbackDebtorId?: number
+    ) => ReturnType<typeof evaluateTimeLimitWinner>
+  )(
+    pMultiCred,
+    makeTestProps({}),
+    'FFA',
+    [
+      { amount: 200_000, creditorId: 1, debtorId: 0, reason: 'Nợ 1' },
+      { amount: 200_000, creditorId: 2, debtorId: 0, reason: 'Nợ 2' },
+    ],
+    0
+  );
+  assert.equal(resMultiCred?.effectiveNetWorthByPlayerId?.[0], 0);
+  assert.equal(resMultiCred?.effectiveNetWorthByPlayerId?.[1], 700_000);
+  assert.equal(resMultiCred?.effectiveNetWorthByPlayerId?.[2], 650_000);
+  assert.equal(resMultiCred?.winner.id, 1);
+
+  // 4. Multiple debtors (ch-10 Birthday pendingDebt + pendingDebtQueue): P1 and P2 each owe P0 250K
+  const pMultiDebt = createInitialPlayers(DEFAULT_PLAYER_CONFIGS.slice(0, 3), 2_000_000, 'FFA');
+  pMultiDebt[0].cash = 600_000;
+  pMultiDebt[1].cash = 800_000;
+  pMultiDebt[2].cash = 700_000;
+  const resMultiDebt = (
+    evaluateTimeLimitWinner as (
+      players: PlayerState[],
+      properties: Record<number, PropertyState>,
+      matchMode?: 'FFA' | 'TEAMS_2V2',
+      pendingDebts?: Array<{ amount: number; creditorId: number | null; reason: string; debtorId?: number }>,
+      fallbackDebtorId?: number
+    ) => ReturnType<typeof evaluateTimeLimitWinner>
+  )(
+    pMultiDebt,
+    makeTestProps({}),
+    'FFA',
+    [
+      { amount: 250_000, creditorId: 0, debtorId: 1, reason: 'Sinh Nhật' },
+      { amount: 250_000, creditorId: 0, debtorId: 2, reason: 'Sinh Nhật' },
+    ],
+    1
+  );
+  assert.equal(resMultiDebt?.winner.id, 0);
+  assert.equal(resMultiDebt?.effectiveNetWorthByPlayerId?.[0], 1_100_000);
+  assert.equal(resMultiDebt?.effectiveNetWorthByPlayerId?.[1], 550_000);
+  assert.equal(resMultiDebt?.effectiveNetWorthByPlayerId?.[2], 450_000);
+
+  // 5. TEAMS_2V2: Team 0 raw total (1.6M + 1.0M = 2.6M) > Team 1 raw total (1.2M + 1.0M = 2.2M),
+  // but P0 (Team 0) owes P1 (Team 1) 1.0M -> Team 0 becomes 1.6M, Team 1 becomes 3.2M -> Team 1 wins!
+  const pTeam = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000, 'TEAMS_2V2');
+  pTeam[0].cash = 1_600_000; // Team 0
+  pTeam[1].cash = 1_200_000; // Team 1
+  pTeam[2].cash = 1_000_000; // Team 0
+  pTeam[3].cash = 1_000_000; // Team 1
+  const resTeam = (
+    evaluateTimeLimitWinner as (
+      players: PlayerState[],
+      properties: Record<number, PropertyState>,
+      matchMode?: 'FFA' | 'TEAMS_2V2',
+      pendingDebts?: Array<{ amount: number; creditorId: number | null; reason: string; debtorId?: number }>,
+      fallbackDebtorId?: number
+    ) => ReturnType<typeof evaluateTimeLimitWinner>
+  )(
+    pTeam,
+    makeTestProps({}),
+    'TEAMS_2V2',
+    [{ amount: 1_000_000, creditorId: 1, debtorId: 0, reason: 'Tiền thuê' }],
+    0
+  );
+  assert.equal(resTeam?.winningTeamId, 1);
+  assert.equal(resTeam?.winner.id, 1);
+  assert.equal(resTeam?.effectiveNetWorthByPlayerId?.[0], 600_000);
+  assert.equal(resTeam?.effectiveNetWorthByPlayerId?.[1], 2_200_000);
+  const rankedTeam = (
+    rankPlayersForVictory as (
+      players: PlayerState[],
+      properties: Record<number, PropertyState>,
+      winnerId: number,
+      matchMode?: 'FFA' | 'TEAMS_2V2',
+      winningTeamId?: 0 | 1,
+      effectiveNetWorthByPlayerId?: Record<number, number>
+    ) => PlayerState[]
+  )(pTeam, makeTestProps({}), resTeam!.winner.id, 'TEAMS_2V2', resTeam!.winningTeamId, resTeam!.effectiveNetWorthByPlayerId);
+  assert.deepEqual(
+    rankedTeam.map((p) => p.id),
+    [1, 3, 2, 0]
+  );
+});
+
+test('BUG-11: normalizeTacticalDiceChoice forces NORMAL when tactical dice disabled, player in jail, or charges exhausted', async () => {
+  const rulesMod = (await import('./rules')) as Record<string, unknown>;
+  const normalizeTacticalDiceChoice = rulesMod.normalizeTacticalDiceChoice as
+    | ((
+        choice: 'NORMAL' | 'EVEN' | 'ODD',
+        opts: { tacticalDiceEnabled: boolean; inJail?: boolean; evenOddCharges?: number }
+      ) => 'NORMAL' | 'EVEN' | 'ODD')
+    | undefined;
+  assert.equal(typeof normalizeTacticalDiceChoice, 'function', 'normalizeTacticalDiceChoice must be exported');
+  if (!normalizeTacticalDiceChoice) return;
+
+  assert.equal(
+    normalizeTacticalDiceChoice('EVEN', { tacticalDiceEnabled: true, inJail: true, evenOddCharges: 3 }),
+    'NORMAL',
+    'In Lost Island (inJail=true), stale EVEN must coerce to NORMAL'
+  );
+  assert.equal(
+    normalizeTacticalDiceChoice('ODD', { tacticalDiceEnabled: true, inJail: false, evenOddCharges: 0 }),
+    'NORMAL',
+    'With 0 charges remaining, stale ODD must coerce to NORMAL'
+  );
+  assert.equal(
+    normalizeTacticalDiceChoice('EVEN', { tacticalDiceEnabled: false, inJail: false, evenOddCharges: 3 }),
+    'NORMAL',
+    'When tacticalDiceEnabled is false, EVEN must coerce to NORMAL'
+  );
+  assert.equal(
+    normalizeTacticalDiceChoice('EVEN', { tacticalDiceEnabled: true, inJail: false, evenOddCharges: 2 }),
+    'EVEN'
+  );
+  assert.equal(
+    normalizeTacticalDiceChoice('ODD', { tacticalDiceEnabled: true, inJail: false, evenOddCharges: 1 }),
+    'ODD'
+  );
+  assert.equal(
+    normalizeTacticalDiceChoice('NORMAL', { tacticalDiceEnabled: true, inJail: false, evenOddCharges: 3 }),
+    'NORMAL'
+  );
+});
+
+test('BUG-08: computeOptimalAutoSale protects teammate-completed Color Monopolies and multi-Resort sets in TEAMS_2V2', () => {
+  const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000, 'TEAMS_2V2');
+  const callAutoSale = computeOptimalAutoSale as (
+    playerId: number,
+    cashNeeded: number,
+    properties: Record<number, PropertyState>,
+    modifiers?: MatchBoardModifiers,
+    players?: PlayerState[],
+    matchMode?: 'FFA' | 'TEAMS_2V2'
+  ) => ReturnType<typeof computeOptimalAutoSale>;
+
+  // Case 1: Team Brown monopoly split across P0 (tiles 1, 2) and teammate P2 (tile 3);
+  // P0 also holds solo Cyan tile 5 (Ninh Bình, 90K). Need 60K.
+  // In FFA: P0 only has 2/3 Brown, so selling tile 2 (60K) is cheaper than tile 5 (90K).
+  // In TEAMS_2V2: P0+P2 complete Brown monopoly -> MUST protect tile 1 & 2 and sell solo tile 5!
+  const brownTeamProps = makeTestProps({
+    1: { ownerId: 0, level: 0 }, // 50K
+    2: { ownerId: 0, level: 0 }, // 60K
+    3: { ownerId: 2, level: 0 }, // teammate P2 completes Brown!
+    5: { ownerId: 0, level: 0 }, // 90K solo
+  });
+
+  const ffaBrownPlan = callAutoSale(0, 60_000, brownTeamProps, undefined, players, 'FFA');
+  assert.deepEqual(ffaBrownPlan.tileIndicesToSell, [2]);
+
+  const teamBrownPlan = callAutoSale(0, 60_000, brownTeamProps, undefined, players, 'TEAMS_2V2');
+  assert.equal(teamBrownPlan.sufficient, true);
+  assert.deepEqual(
+    teamBrownPlan.tileIndicesToSell,
+    [5],
+    'In TEAMS_2V2, auto-sale must protect teammate-completed Brown monopoly [1,2] and sell solo tile 5'
+  );
+
+  // Case 2: Team 2-Resort set split across P0 (Resort 4 = 200K) and teammate P2 (Resort 14 = 200K);
+  // P0 also holds solo city tile 15 (200K) or tile 21 (220K). Need 190K.
+  // In FFA: P0 has 1 Resort (200K) vs tile 21 (220K) -> sells Resort 4 (lower keepWeight 200K < 220K).
+  // In TEAMS_2V2: Team has 2 Resorts -> Resort 4 gets +3M keepWeight -> MUST keep Resort 4 and sell solo tile 21!
+  const resortTeamProps = makeTestProps({
+    4: { ownerId: 0, level: 0 },  // Resort 1 (200K)
+    14: { ownerId: 2, level: 0 }, // Teammate P2 holds Resort 2
+    21: { ownerId: 0, level: 0 }, // Solo Red city (>200K)
+  });
+
+  const ffaResortPlan = callAutoSale(0, 190_000, resortTeamProps, undefined, players, 'FFA');
+  assert.deepEqual(ffaResortPlan.tileIndicesToSell, [4]);
+
+  const teamResortPlan = callAutoSale(0, 190_000, resortTeamProps, undefined, players, 'TEAMS_2V2');
+  assert.equal(teamResortPlan.sufficient, true);
+  assert.deepEqual(
+    teamResortPlan.tileIndicesToSell,
+    [21],
+    'In TEAMS_2V2, auto-sale must protect teammate-combined multi-Resort set and sell solo city instead'
+  );
+});
+
+test('BUG-07: Shared buy/championship decision validators enforce strict Offline/Online parity without ending turn on invalid payloads', async () => {
+  const rulesMod = (await import('./rules')) as Record<string, unknown>;
+  const validateInitialPropertyPurchase = rulesMod.validateInitialPropertyPurchase as
+    | ((
+        player: PlayerState,
+        tileIndex: number,
+        requestedInitialLevel: number
+      ) => { allowed: boolean; safeLevel: number; totalCost: number; reason?: string })
+    | undefined;
+  const validateChampionshipHostSelection = rulesMod.validateChampionshipHostSelection as
+    | ((
+        player: PlayerState,
+        targetTile: number,
+        properties: Record<number, PropertyState>,
+        isFreeChampionship: boolean
+      ) => { allowed: boolean; fee: number; reason?: string })
+    | undefined;
+
+  assert.equal(typeof validateInitialPropertyPurchase, 'function');
+  assert.equal(typeof validateChampionshipHostSelection, 'function');
+  if (!validateInitialPropertyPurchase || !validateChampionshipHostSelection) return;
+
+  // Lap 0 player on Hà Giang (tile 1: price 50K, houseCost 50K) with 80K cash
+  const buyer = makeTestPlayer({ id: 0, position: 1, laps: 0, cash: 80_000 });
+  // Level 3 is invalid on lap 0 (max 2)
+  assert.equal(validateInitialPropertyPurchase(buyer, 1, 3).allowed, false);
+  // Level 1 costs 100K > 80K cash -> rejected (must stay in BUY_DECISION, NOT end turn)
+  assert.equal(validateInitialPropertyPurchase(buyer, 1, 1).allowed, false);
+  // Level 0 costs 50K <= 80K cash -> allowed
+  const okBuy = validateInitialPropertyPurchase(buyer, 1, 0);
+  assert.equal(okBuy.allowed, true);
+  assert.equal(okBuy.safeLevel, 0);
+  assert.equal(okBuy.totalCost, 50_000);
+
+  // Resort (tile 4: price 200K) only allows level 0
+  const richBuyer = makeTestPlayer({ id: 0, position: 4, laps: 2, cash: 500_000 });
+  assert.equal(validateInitialPropertyPurchase(richBuyer, 4, 1).allowed, false);
+  assert.equal(validateInitialPropertyPurchase(richBuyer, 4, 0).allowed, true);
+
+  // Championship host selection: must be owned PROPERTY tile (CUSTOM rule: CHAMPIONSHIP_FEE = 0K)
+  const champProps = makeTestProps({
+    1: { ownerId: 0, level: 1 },
+    4: { ownerId: 0, level: 0 }, // Resort -> invalid host
+    2: { ownerId: 1, level: 0 }, // Opponent city -> invalid host
+  });
+  const owner = makeTestPlayer({ id: 0, cash: 50_000 });
+  assert.equal(validateChampionshipHostSelection(owner, 99, champProps, true).allowed, false);
+  assert.equal(validateChampionshipHostSelection(owner, 4, champProps, true).allowed, false);
+  assert.equal(validateChampionshipHostSelection(owner, 2, champProps, true).allowed, false);
+  assert.equal(validateChampionshipHostSelection(owner, 3, champProps, true).allowed, false);
+  // Free championship (0K) on owned city tile 1 -> allowed
+  const okFreeChamp = validateChampionshipHostSelection(owner, 1, champProps, true);
+  assert.equal(okFreeChamp.allowed, true);
+  assert.equal(okFreeChamp.fee, 0);
+  // Standard championship (CHAMPIONSHIP_FEE = 0K per CUSTOM rule) on owned city tile 1 -> allowed with fee 0
+  const okStdChamp = validateChampionshipHostSelection(owner, 1, champProps, false);
+  assert.equal(okStdChamp.allowed, true);
+  assert.equal(okStdChamp.fee, 0);
+});
+
+test('BUG-05 (Review Round 2): rankPlayersForVictory breaks Sudden Death Net Worth ties using debt-adjusted effective cash and laps identically to evaluateTimeLimitWinner', () => {
+  // P0 is #1 (2.0M cash).
+  // P1 has raw cash 400K + property tile 17 (worth 180K -> let's use tile 1 + 0 houses = 50K, or simpler: raw cash 500K + tile 4 Resort 200K = 700K, bank debt 200K -> eff NW 500K, eff cash 300K).
+  // P2 has raw cash 400K + tile 1 (50K) + tile 2 (50K) = 500K raw NW, no debt -> eff NW 500K, eff cash 400K!
+  // Both P1 & P2 tie at 500K effective Net Worth.
+  // Raw cash has P1 (500K) > P2 (400K), but debt-adjusted effective cash has P2 (400K) > P1 (300K)!
+  const players = [
+    makeTestPlayer({ id: 0, name: 'Winner', cash: 2_000_000, laps: 2 }),
+    makeTestPlayer({ id: 1, name: 'Debtor', cash: 500_000, laps: 1 }),
+    makeTestPlayer({ id: 2, name: 'Clean', cash: 400_000, laps: 1 }),
+  ];
+  const props = makeTestProps({
+    4: { ownerId: 1, level: 0 }, // 200K -> P1 raw NW = 700K
+    1: { ownerId: 2, level: 0 }, // 50K
+    2: { ownerId: 2, level: 0 }, // 50K -> P2 raw NW = 500K
+  });
+  const debts = [{ debtorId: 1, amount: 200_000, creditorId: null, reason: 'Thuế' }];
+
+  const timeRes = evaluateTimeLimitWinner(players, props, 'FFA', debts, 1);
+  assert.ok(timeRes);
+  assert.equal(timeRes.winner.id, 0);
+  const effCash = (timeRes as { effectiveCashByPlayerId?: Record<number, number> })
+    .effectiveCashByPlayerId;
+  assert.ok(effCash, 'evaluateTimeLimitWinner must expose effectiveCashByPlayerId when debts were settled');
+  assert.equal(effCash?.[1], 300_000);
+  assert.equal(effCash?.[2], 400_000);
+
+  const ranked = (
+    rankPlayersForVictory as (
+      players: PlayerState[],
+      properties: Record<number, PropertyState>,
+      winnerId: number,
+      matchMode?: 'FFA' | 'TEAMS_2V2',
+      winningTeamId?: 0 | 1,
+      effectiveNetWorthByPlayerId?: Record<number, number>,
+      effectiveCashByPlayerId?: Record<number, number>
+    ) => PlayerState[]
+  )(
+    players,
+    props,
+    timeRes.winner.id,
+    'FFA',
+    timeRes.winningTeamId,
+    timeRes.effectiveNetWorthByPlayerId,
+    effCash
+  );
+  assert.deepEqual(
+    ranked.map((p) => p.id),
+    [0, 2, 1],
+    'Victory leaderboard must rank P2 (eff cash 400K) ahead of P1 (eff cash 300K) on tied 500K effective Net Worth'
+  );
+
+  // Also verify laps tie-break consistency when effective NW and effective cash are both equal
+  const lapsPlayers = [
+    makeTestPlayer({ id: 0, name: 'Winner', cash: 2_000_000, laps: 5 }),
+    makeTestPlayer({ id: 1, name: 'FewerLaps', cash: 500_000, laps: 1 }),
+    makeTestPlayer({ id: 2, name: 'MoreLaps', cash: 500_000, laps: 4 }),
+  ];
+  const emptyProps = makeTestProps({});
+  const lapsRanked = rankPlayersForVictory(lapsPlayers, emptyProps, 0, 'FFA');
+  assert.deepEqual(
+    lapsRanked.map((p) => p.id),
+    [0, 2, 1],
+    'rankPlayersForVictory must break NW+cash ties by laps identically to evaluateTimeLimitWinner'
+  );
+});
+
+
+
+
+
 

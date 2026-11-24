@@ -151,6 +151,10 @@ export interface MatchWinnerResult {
   condition: VictoryConditionKind;
   label: string;
   winningTeamId?: TeamId;
+  /** Optional debt-adjusted Net Worth snapshot used for consistent Sudden Death ranking & VictoryModal display */
+  effectiveNetWorthByPlayerId?: Record<number, number>;
+  /** Optional debt-adjusted liquid cash snapshot used for consistent Sudden Death tie-breaking */
+  effectiveCashByPlayerId?: Record<number, number>;
 }
 
 export interface GameLogEntry {

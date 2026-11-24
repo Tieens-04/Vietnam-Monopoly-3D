@@ -36,6 +36,8 @@ export interface OnlineMatchSnapshot {
   activePlayerIndex: number;
   turnPhase: TurnPhase;
   turnCount: number;
+  /** Monotonic server revision incremented whenever decision state transitions (same-turn doubles/reroll/jail-pay safe). */
+  decisionRevision?: number;
   lastDice: [number, number] | null;
   lastDiceSum: number;
   lastRentPaid: number;
@@ -134,7 +136,14 @@ export type ClientToServerMessage =
   | { type: 'START_MATCH' }
   | { type: 'RETURN_TO_LOBBY' }
   | { type: 'RECLAIM_CONTROL' }
-  | { type: 'GAME_ACTION'; action: OnlineGameAction }
+  | {
+      type: 'GAME_ACTION';
+      action: OnlineGameAction;
+      expectedTurnCount?: number;
+      expectedPhase?: TurnPhase;
+      expectedDecisionRevision?: number;
+      actionId?: string;
+    }
   | { type: 'SEND_EMOTE'; emoteText: string }
   | { type: 'PING' };
 

@@ -57,6 +57,8 @@ export interface ProtrudingPriceTabRefs {
 
 export interface OwnershipBuildingSuiteRefs {
   root: THREE.Group;
+  buildBaseY: number;
+  innerZ: number;
   padMesh: THREE.Mesh;
   padMat: THREE.MeshStandardMaterial;
   facadeMat: THREE.MeshPhysicalMaterial;
@@ -1494,6 +1496,8 @@ export function createOwnershipBuildingSuite(
 
   return {
     root,
+    buildBaseY,
+    innerZ,
     padMesh,
     padMat,
     facadeMat,
@@ -2062,6 +2066,7 @@ export interface CourtyardAnimatedRefs {
   clockBellLeft: THREE.Mesh;
   clockBellRight: THREE.Mesh;
   updateTaxDisplay: (mainText: string, subtitle?: string) => void;
+  setCenterTextVisible: (visible: boolean) => void;
   updateCountdown: (
     secondsLeft: number,
     turnNumber: number,
@@ -2391,6 +2396,9 @@ export function createCourtyardDiorama(
       clockBellLeft,
       clockBellRight,
       updateTaxDisplay,
+      setCenterTextVisible: (visible: boolean) => {
+        taxGroup.visible = visible;
+      },
       updateCountdown,
       refreshTextTextures,
       disposeDynamicTextures,

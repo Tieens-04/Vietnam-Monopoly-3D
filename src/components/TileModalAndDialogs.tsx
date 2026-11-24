@@ -16,6 +16,7 @@ import {
   wouldOwnTileWinMatch,
 } from '../game/rules';
 import {
+  GraphicsQualityTier,
   LuckCard,
   MatchBoardModifiers,
   MatchMode,
@@ -912,10 +913,12 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
             player.id,
             cashNeededFromSales,
             properties,
-            boardModifiers
+            boardModifiers,
+            players,
+            matchMode
           )
         : null,
-    [boardModifiers, cashNeededFromSales, pendingDebt, player.id, properties]
+    [boardModifiers, cashNeededFromSales, matchMode, pendingDebt, player.id, players, properties]
   );
 
   const selectedRefund = useMemo(
@@ -1293,7 +1296,9 @@ export const PauseModal: React.FC<{
   );
 };
 
-const ConfettiOverlay: React.FC = () => {
+const ConfettiOverlay: React.FC<{ graphicsQualityTier?: GraphicsQualityTier }> = ({
+  graphicsQualityTier = 'medium',
+}) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -1315,8 +1320,11 @@ const ConfettiOverlay: React.FC = () => {
         : null;
 
     let raf = 0;
+    let startMs = 0;
+    const MAX_DURATION_MS = 3200;
+    const FADE_START_MS = 2400;
     const colors = ['#F5B800', '#66C61C', '#E91E63', '#29B6F6', '#FACC15', '#4ADE80'];
-    const pieces = Array.from({ length: 90 }, () => ({
+    const pieces = Array.from({ length: 72 }, () => ({
       x: Math.random() * canvas.width,
       y: Math.random() * -canvas.height,
       w: 8 + Math.random() * 6,
@@ -1328,8 +1336,23 @@ const ConfettiOverlay: React.FC = () => {
       color: colors[Math.floor(Math.random() * colors.length)],
     }));
 
-    const draw = () => {
+    const draw = (nowMs: number) => {
+      if (!startMs) startMs = nowMs;
+      const elapsedMs = nowMs - startMs;
+      if (elapsedMs >= MAX_DURATION_MS) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        raf = 0;
+        return;
+      }
+
+      const alpha =
+        elapsedMs >= FADE_START_MS
+          ? Math.max(0, 1 - (elapsedMs - FADE_START_MS) / (MAX_DURATION_MS - FADE_START_MS))
+          : 1;
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.globalAlpha = alpha;
       for (const p of pieces) {
         p.x += p.vx;
         p.y += p.vy;
@@ -1345,13 +1368,15 @@ const ConfettiOverlay: React.FC = () => {
         ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
         ctx.restore();
       }
+      ctx.restore();
       raf = requestAnimationFrame(draw);
     };
 
     const startOrStopForMotion = () => {
       cancelAnimationFrame(raf);
       raf = 0;
-      if (mediaQuery?.matches) {
+      startMs = 0;
+      if (graphicsQualityTier === 'low' || mediaQuery?.matches) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
       } else {
         raf = requestAnimationFrame(draw);
@@ -1366,7 +1391,7 @@ const ConfettiOverlay: React.FC = () => {
       window.removeEventListener('resize', syncSize);
       mediaQuery?.removeEventListener?.('change', startOrStopForMotion);
     };
-  }, []);
+  }, [graphicsQualityTier]);
 
   return (
     <canvas
@@ -1383,11 +1408,14 @@ export const VictoryModal: React.FC<{
   victoryCondition?: VictoryConditionKind;
   matchMode?: MatchMode;
   winningTeamId?: TeamId;
+  effectiveNetWorthByPlayerId?: Record<number, number>;
+  effectiveCashByPlayerId?: Record<number, number>;
   players: PlayerState[];
   properties: Record<number, PropertyState>;
   turnCount: number;
   isOnlineMatch?: boolean;
   isOnlineHost?: boolean;
+  graphicsQualityTier?: GraphicsQualityTier;
   trapFocus?: boolean;
   onReturnToOnlineLobby?: () => void;
   onPlayAgain: () => void;
@@ -1397,11 +1425,14 @@ export const VictoryModal: React.FC<{
   victoryCondition,
   matchMode = 'FFA',
   winningTeamId,
+  effectiveNetWorthByPlayerId,
+  effectiveCashByPlayerId,
   players,
   properties,
   turnCount,
   isOnlineMatch = false,
   isOnlineHost = false,
+  graphicsQualityTier = 'medium',
   trapFocus = true,
   onReturnToOnlineLobby,
   onPlayAgain,
@@ -1409,32 +1440,39 @@ export const VictoryModal: React.FC<{
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocusTrap(dialogRef, trapFocus);
 
+  const worthOf = (p: PlayerState): number =>
+    effectiveNetWorthByPlayerId && p.id in effectiveNetWorthByPlayerId
+      ? effectiveNetWorthByPlayerId[p.id]
+      : calculateNetWorth(p, properties);
+
   const ranked = rankPlayersForVictory(
     players,
     properties,
     winner.id,
     matchMode,
-    winningTeamId
+    winningTeamId,
+    effectiveNetWorthByPlayerId,
+    effectiveCashByPlayerId
   );
 
   const isTeamVictory = matchMode === 'TEAMS_2V2' && winningTeamId !== undefined;
   const teamATotal = isTeamVictory
     ? players
         .filter((p) => p.teamId === 0)
-        .reduce((acc, p) => acc + calculateNetWorth(p, properties), 0)
+        .reduce((acc, p) => acc + worthOf(p), 0)
     : 0;
   const teamBTotal = isTeamVictory
     ? players
         .filter((p) => p.teamId === 1)
-        .reduce((acc, p) => acc + calculateNetWorth(p, properties), 0)
+        .reduce((acc, p) => acc + worthOf(p), 0)
     : 0;
 
   return (
     <div
       data-testid="victory-modal"
-      className="fixed inset-0 z-30 flex items-center justify-center p-3 sm:p-4 bg-slate-950/48 pointer-events-auto"
+      className="fixed inset-0 z-30 flex items-center justify-center p-3 sm:p-4 bg-slate-950/34 pointer-events-auto"
     >
-      <ConfettiOverlay />
+      <ConfettiOverlay graphicsQualityTier={graphicsQualityTier} />
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -1508,7 +1546,7 @@ export const VictoryModal: React.FC<{
             </div>
             <div className="divide-y divide-sky-100">
               {ranked.map((pl, i) => {
-                const worth = calculateNetWorth(pl, properties);
+                const worth = worthOf(pl);
                 const isChamp = isTeamVictory
                   ? !pl.bankrupt && pl.teamId === winningTeamId
                   : pl.id === winner.id;

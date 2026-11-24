@@ -342,3 +342,319 @@ test('createBoardFrameScheduler prevents 2^N RAF fork bomb when OrbitControls di
   assert.equal(activeTimers.size, 0);
 });
 
+test('BUG-10: computeBoardFrameDeltas decouples gameplayAnimDt from visualAnimDt across 60/30/15/5/2.5 FPS and Pause/Resume', async () => {
+  const gqMod = (await import('./graphicsQuality')) as Record<string, unknown>;
+  const computeBoardFrameDeltas = gqMod.computeBoardFrameDeltas as
+    | ((input: {
+        rawDtSec: number;
+        isPaused: boolean;
+        wasPausedPrevFrame: boolean;
+        isDocumentHidden: boolean;
+        isSoftwareGl: boolean;
+      }) => { simDt: number; visualAnimDt: number; gameplayAnimDt: number })
+    | undefined;
+  assert.equal(typeof computeBoardFrameDeltas, 'function', 'computeBoardFrameDeltas must be exported');
+  if (!computeBoardFrameDeltas) return;
+
+  // Test across 60, 30, 15, 5, and 2.5 FPS on hardware WebGL (document visible)
+  const cases = [
+    { fps: 60, rawDt: 1 / 60, expectVisualMax: 0.06 },
+    { fps: 30, rawDt: 1 / 30, expectVisualMax: 0.06 },
+    { fps: 15, rawDt: 1 / 15, expectVisualMax: 0.06 },
+    { fps: 5, rawDt: 0.2, expectVisualMax: 0.06 },
+    { fps: 2.5, rawDt: 0.4, expectVisualMax: 0.06 },
+  ];
+  for (const c of cases) {
+    const d = computeBoardFrameDeltas({
+      rawDtSec: c.rawDt,
+      isPaused: false,
+      wasPausedPrevFrame: false,
+      isDocumentHidden: false,
+      isSoftwareGl: false,
+    });
+    assert.ok(d.visualAnimDt <= c.expectVisualMax + 1e-9, `visualAnimDt must stay <= 0.06 at ${c.fps} FPS`);
+    assert.ok(
+      Math.abs(d.gameplayAnimDt - c.rawDt) < 1e-6,
+      `gameplayAnimDt must track exact real time at ${c.fps} FPS (got ${d.gameplayAnimDt}, expected ${c.rawDt})`
+    );
+  }
+
+  // Pause freezes all deltas to 0; first frame after Resume caps gameplayAnimDt to <= 0.05s (zero catch-up jump!)
+  const paused = computeBoardFrameDeltas({
+    rawDtSec: 4.5,
+    isPaused: true,
+    wasPausedPrevFrame: false,
+    isDocumentHidden: false,
+    isSoftwareGl: false,
+  });
+  assert.deepEqual(paused, { simDt: 0, visualAnimDt: 0, gameplayAnimDt: 0 });
+
+  const resumed = computeBoardFrameDeltas({
+    rawDtSec: 4.5,
+    isPaused: false,
+    wasPausedPrevFrame: true,
+    isDocumentHidden: false,
+    isSoftwareGl: false,
+  });
+  assert.ok(resumed.gameplayAnimDt <= 0.05 + 1e-9, 'Resume frame must not leap forward by pause duration');
+
+  // Verify designed hop duration & exact onStep sequence across 60, 30, 15, 5, 2.5 FPS (11-tile path passing Start)
+  const path = [25, 26, 27, 28, 29, 30, 31, 0, 1, 2, 3];
+  const stepDuration = 0.22; // 11 * 0.22 = 2.42s designed duration
+  const designedTotalSec = path.length * stepDuration;
+
+  for (const fps of [60, 30, 15, 5, 2.5]) {
+    const frameDt = 1 / fps;
+    let stepIndex = 0;
+    let stepElapsed = 0;
+    let wallSec = 0;
+    let doneCount = 0;
+    const stepsSeen: Array<[number, number]> = [];
+
+    while (doneCount === 0 && wallSec < 20) {
+      wallSec += frameDt;
+      const { gameplayAnimDt } = computeBoardFrameDeltas({
+        rawDtSec: frameDt,
+        isPaused: false,
+        wasPausedPrevFrame: false,
+        isDocumentHidden: false,
+        isSoftwareGl: false,
+      });
+      let remaining = gameplayAnimDt;
+      while (remaining > 0 && doneCount === 0) {
+        const needed = Math.max(0, stepDuration - stepElapsed);
+        const consume = Math.min(remaining, needed);
+        stepElapsed += consume;
+        remaining -= consume;
+        if (stepElapsed / stepDuration >= 1 - 1e-9) {
+          stepsSeen.push([stepIndex, path[stepIndex]]);
+          stepIndex += 1;
+          if (stepIndex >= path.length) {
+            doneCount += 1;
+            break;
+          }
+          stepElapsed = 0;
+        }
+      }
+    }
+
+    assert.equal(doneCount, 1, `Completion callback must fire exactly once at ${fps} FPS`);
+    assert.deepEqual(
+      stepsSeen,
+      path.map((tile, idx) => [idx, tile]),
+      `onStep order (including Start tile 0) must be preserved at ${fps} FPS`
+    );
+    assert.ok(
+      wallSec >= designedTotalSec - 1e-6 && wallSec <= designedTotalSec + frameDt + 1e-6,
+      `Duration at ${fps} FPS (${wallSec.toFixed(3)}s) must match designed ${designedTotalSec.toFixed(2)}s within 1 frame`
+    );
+  }
+});
+
+test('BUG-10: createBoardFrameScheduler runs single-flight RAF fallback when RAF stalls during gameplay promises without duplicate ticks or idle timer leaks', () => {
+  let nowMs = 1000;
+  let nextId = 1;
+  const activeRafs = new Map<number, () => void>();
+  const activeTimers = new Map<number, { cb: () => void; ms: number; fireAt: number }>();
+
+  let hasPromises = false;
+  let frameCount = 0;
+  let gameplayElapsedSec = 0;
+
+  const scheduler = createBoardFrameScheduler({
+    isSoftwareGl: false,
+    now: () => nowMs,
+    isDocumentHidden: () => false,
+    hasPendingGameplayPromises: () => hasPromises,
+    requestRaf: (cb) => {
+      const id = nextId++;
+      activeRafs.set(id, cb);
+      return id;
+    },
+    cancelRaf: (id) => {
+      activeRafs.delete(id);
+    },
+    setTimer: (cb, ms) => {
+      const id = nextId++;
+      activeTimers.set(id, { cb, ms, fireAt: nowMs + ms });
+      return id;
+    },
+    clearTimer: (id) => {
+      activeTimers.delete(id);
+    },
+    onFrame: (rawDtSec) => {
+      frameCount++;
+      if (hasPromises) {
+        gameplayElapsedSec += rawDtSec;
+        if (gameplayElapsedSec >= 1.35) {
+          hasPromises = false;
+        }
+        return { mode: 'raf', intervalMs: 0 };
+      }
+      return { mode: 'stop', intervalMs: 0 };
+    },
+  });
+
+  // 1. Idle (no gameplay promises): Demand-Driven low tier schedules ZERO timers and ZERO RAFs
+  scheduler.runImmediateTick();
+  assert.equal(activeRafs.size, 0);
+  assert.equal(activeTimers.size, 0);
+
+  // 2. Start a 1.35s gameplay promise while RAF is completely stalled (0 Hz occluded window, document.hidden=false)
+  hasPromises = true;
+  gameplayElapsedSec = 0;
+  const startMs = nowMs;
+  scheduler.requestRender();
+
+  assert.equal(activeRafs.size, 1, 'Must request RAF');
+  assert.equal(activeTimers.size, 1, 'Must arm single-flight RAF watchdog timer when gameplay promises are pending');
+
+  // Keep reference to initial RAF callback to simulate a hostile late RAF firing AFTER fallback already fired
+  const staleRafCb = [...activeRafs.values()][0];
+
+  // Advance using ONLY fallback timers (RAF never fires!) until promise completes
+  let guard = 0;
+  while (hasPromises && guard++ < 40) {
+    assert.equal(activeTimers.size, 1, 'Must never accumulate multiple fallback timers');
+    const [[tid, timer]] = [...activeTimers.entries()];
+    activeTimers.delete(tid);
+    nowMs = timer.fireAt;
+    const beforeFrames = frameCount;
+    timer.cb();
+    assert.equal(frameCount, beforeFrames + 1);
+    // Even if the stale RAF callback fires right after fallback tick, token guard MUST block duplicate execution!
+    staleRafCb();
+    assert.equal(frameCount, beforeFrames + 1, 'Stale RAF callback must NOT execute duplicate tick');
+  }
+
+  assert.equal(hasPromises, false, 'Gameplay promise must complete even when RAF is stalled at 0 Hz');
+  const wallMs = nowMs - startMs;
+  assert.ok(wallMs >= 1300 && wallMs <= 1600, `Expected ~1350ms completion via fallback, got ${wallMs}ms`);
+
+  // One final settle frame returns 'stop' -> 0 timers and 0 RAFs left (Demand-Driven preserved!)
+  if (activeRafs.size > 0) {
+    const [, cb] = [...activeRafs.entries()][0];
+    activeRafs.clear();
+    nowMs += 16;
+    cb();
+  }
+  assert.equal(activeRafs.size, 0);
+  assert.equal(activeTimers.size, 0);
+
+  // 3. Normal 60 FPS: RAF fires first every time (<500ms default fallback) and cancels fallback timer cleanly
+  hasPromises = true;
+  gameplayElapsedSec = 0;
+  scheduler.requestRender();
+  assert.equal(activeRafs.size, 1);
+  assert.equal(activeTimers.size, 1);
+  const [[rafId, rafCb]] = [...activeRafs.entries()];
+  activeRafs.delete(rafId);
+  nowMs += 16.67;
+  const framesBeforeNormal = frameCount;
+  rafCb();
+  assert.equal(frameCount, framesBeforeNormal + 1);
+  // Previous fallback was cancelled and replaced by at most 1 fresh fallback
+  assert.equal(activeTimers.size, 1);
+
+  scheduler.dispose();
+  assert.equal(activeRafs.size, 0);
+  assert.equal(activeTimers.size, 0);
+});
+
+test('BUG-10 (Review Round 2): default RAF fallback does not preempt genuine 5 FPS / 2.5 FPS RAF frames, and handleVisibilityChange from idle does not leak stale idle time', () => {
+  let nowMs = 1000;
+  let nextId = 1;
+  const activeRafs = new Map<number, () => void>();
+  const activeTimers = new Map<number, { cb: () => void; ms: number; fireAt: number }>();
+  let docHidden = false;
+  let hasPromises = false;
+  const observedDts: number[] = [];
+
+  const scheduler = createBoardFrameScheduler({
+    isSoftwareGl: false,
+    now: () => nowMs,
+    isDocumentHidden: () => docHidden,
+    hasPendingGameplayPromises: () => hasPromises,
+    requestRaf: (cb) => {
+      const id = nextId++;
+      activeRafs.set(id, cb);
+      return id;
+    },
+    cancelRaf: (id) => {
+      activeRafs.delete(id);
+    },
+    setTimer: (cb, ms) => {
+      const id = nextId++;
+      activeTimers.set(id, { cb, ms, fireAt: nowMs + ms });
+      return id;
+    },
+    clearTimer: (id) => {
+      activeTimers.delete(id);
+    },
+    onFrame: (rawDtSec) => {
+      observedDts.push(rawDtSec);
+      if (hasPromises) {
+        return docHidden
+          ? { mode: 'background_sim', intervalMs: 80 }
+          : { mode: 'raf', intervalMs: 0 };
+      }
+      return { mode: 'stop', intervalMs: 0 };
+    },
+  });
+
+  // 1. Enter idle ('stop') at t=1000ms
+  scheduler.runImmediateTick();
+  assert.equal(activeRafs.size, 0);
+  assert.equal(activeTimers.size, 0);
+
+  // 2. Verify default rafFallbackMs is safely above 2.5 FPS (400ms + vsync jitter) so 5 FPS & 2.5 FPS stay pure RAF!
+  hasPromises = true;
+  nowMs = 2000;
+  scheduler.requestRender();
+  assert.equal(activeRafs.size, 1);
+  assert.equal(activeTimers.size, 1);
+  const [[, fallbackTimer]] = [...activeTimers.entries()];
+  assert.ok(
+    fallbackTimer.ms >= 450,
+    `Default rafFallbackMs (${fallbackTimer.ms}ms) must be >= 450ms so 5 FPS (200ms) and 2.5 FPS (400ms) never get preempted off-vsync`
+  );
+
+  // Simulate genuine 2.5 FPS RAF frame arriving at +416ms -> RAF wins before fallback timer fires!
+  nowMs += 416;
+  assert.ok(nowMs < fallbackTimer.fireAt, '2.5 FPS RAF (+416ms) must fire strictly before fallback timer');
+  const [[rafId, rafCb]] = [...activeRafs.entries()];
+  activeRafs.delete(rafId);
+  rafCb();
+  assert.equal(activeRafs.size, 1);
+  assert.equal(activeTimers.size, 1);
+
+  // Stop back to idle
+  hasPromises = false;
+  const [[rafId2, rafCb2]] = [...activeRafs.entries()];
+  activeRafs.delete(rafId2);
+  nowMs += 16;
+  rafCb2();
+  assert.equal(activeRafs.size, 0);
+  assert.equal(activeTimers.size, 0);
+
+  // 3. Sit idle for 25 seconds (scheduledMode === 'none'), then start a promise and immediately hide document
+  nowMs += 25_000;
+  hasPromises = true;
+  docHidden = true;
+  observedDts.length = 0;
+  scheduler.handleVisibilityChange();
+  assert.equal(activeTimers.size, 1);
+  const [[bgId, bgTimer]] = [...activeTimers.entries()];
+  activeTimers.delete(bgId);
+  nowMs = bgTimer.fireAt;
+  bgTimer.cb();
+  assert.equal(observedDts.length, 1);
+  assert.ok(
+    observedDts[0] < 0.25,
+    `First background_sim tick after 25s idle must not leak idle time into rawDtSec (got ${observedDts[0]}s)`
+  );
+
+  scheduler.dispose();
+});
+
+

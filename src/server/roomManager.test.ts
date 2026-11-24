@@ -223,7 +223,27 @@ test('Disconnect, AFK timeout auto-action, Bot AI takeover, and sessionToken rec
       assert.equal(afterFirstTimeout.snapshot.match?.turnPhase, 'BUY_DECISION');
     }
 
-    // Tick again to trigger 2nd missed turn -> Bot AI takeover + auto SKIP_BUY
+    // Tick BUY_DECISION timeout in Turn 1 -> still only 1 missed turn (auto SKIP_BUY, NO premature takeover!)
+    for (let s = 0; s < 13; s++) {
+      manager.tickOneSecond();
+    }
+    await flushMicrotasks(12);
+
+    const afterTurn1 = latestByClient.get('c2');
+    assert.equal(afterTurn1?.type, 'ROOM_SNAPSHOT');
+    if (afterTurn1?.type === 'ROOM_SNAPSHOT') {
+      assert.equal(afterTurn1.snapshot.match?.players[0].onlineBotTakeover, false);
+      assert.equal(afterTurn1.snapshot.match?.players[0].isBot, false);
+      assert.equal(afterTurn1.snapshot.match?.activePlayerIndex, 1);
+    }
+
+    // c2 completes Turn 2 -> returns turn to disconnected c1 (Turn 3)
+    manager.handleClientMessage('c2', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    manager.handleClientMessage('c2', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    await flushMicrotasks(8);
+
+    // Tick Turn 3 offline timeout -> 2nd consecutive missed turn triggers Bot AI takeover!
     for (let s = 0; s < 13; s++) {
       manager.tickOneSecond();
     }
@@ -1137,10 +1157,32 @@ test('BUG-12 & BUG-13: Connected AFK player gets Bot takeover after 2 missed tur
     assert.equal(afterMiss1.snapshot.match?.turnPhase, 'BUY_DECISION');
     assert.equal(afterMiss1.snapshot.match?.players[0].doublesStreak, 1);
 
-    // Drain BUY_DECISION timeout -> missed turn #2 triggers connected AFK Bot takeover (BUG-12)
-    // AND clears doublesStreak = 0 so turn passes to P2 (BUG-13)!
+    // Drain BUY_DECISION timeout in Turn 1 -> clears doublesStreak = 0 so turn passes to P2 (BUG-13),
+    // and still counts only as 1 missed turn (no premature takeover in Turn 1!)
     const buyTime = afterMiss1.snapshot.match?.turnTimeLeft ?? 18;
     for (let s = 0; s < buyTime; s++) {
+      manager.tickOneSecond();
+    }
+    await flushMicrotasks(12);
+
+    const afterTurn1 = latestByClient.get('c1') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(afterTurn1.snapshot.match?.players[0].onlineConnected, true);
+    assert.equal(afterTurn1.snapshot.match?.players[0].onlineBotTakeover, false);
+    assert.equal(afterTurn1.snapshot.match?.players[0].isBot, false);
+    assert.equal(afterTurn1.snapshot.match?.players[0].doublesStreak, 0);
+    assert.equal(afterTurn1.snapshot.match?.activePlayerIndex, 1);
+
+    // P2 completes Turn 2 -> returns turn to c1 (Turn 3)
+    manager.handleClientMessage('c2', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    // Note: diceRng returns [2, 2] (doubles), so P2 gets bonus roll -> lands on Lost Island (8) -> turn ends to P1!
+    manager.handleClientMessage('c2', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    await flushMicrotasks(8);
+    manager.handleClientMessage('c2', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+
+    // Drain Turn 3 AWAIT_ROLL timeout -> 2nd consecutive missed turn triggers connected AFK Bot takeover (BUG-12)!
+    for (let s = 0; s < 45; s++) {
       manager.tickOneSecond();
     }
     await flushMicrotasks(12);
@@ -1149,8 +1191,6 @@ test('BUG-12 & BUG-13: Connected AFK player gets Bot takeover after 2 missed tur
     assert.equal(afterMiss2.snapshot.match?.players[0].onlineConnected, true);
     assert.equal(afterMiss2.snapshot.match?.players[0].onlineBotTakeover, true);
     assert.equal(afterMiss2.snapshot.match?.players[0].isBot, true);
-    assert.equal(afterMiss2.snapshot.match?.players[0].doublesStreak, 0);
-    assert.equal(afterMiss2.snapshot.match?.activePlayerIndex, 1);
 
     // c1 sends RECLAIM_CONTROL -> restores human control!
     manager.handleClientMessage('c1', { type: 'RECLAIM_CONTROL' });
@@ -2286,5 +2326,1331 @@ test('Online room defaults festivalEnabled to false (0 Festival tiles) and enabl
     manager.dispose();
   }
 });
+
+test('BUG-02: startMatch preserves lobby seat order across 2v2 and FFA (with/without fillBots and non-contiguous seats)', async () => {
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const arr = allByClient.get(clientId) || [];
+    arr.push(msg);
+    allByClient.set(clientId, arr);
+  };
+
+  const diceSeq: Array<[number, number]> = [
+    [1, 2], // Case 1 Host A (seat 0, team 0): 0 -> 3 (Đà Lạt)
+    [2, 3], // Case 1 Bot 1 (seat 1, team 1): 0 -> 5 (Ninh Bình)
+    [1, 2], // Case 2 Bot 0 (seat 0, team 0): 0 -> 3 (Đà Lạt)
+  ];
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+    diceRng: () => diceSeq.shift() ?? [1, 2],
+  });
+
+  try {
+    // Case 1: TEAMS_2V2 with fillBots=true, humans at non-contiguous seats 0 & 2 (seat 1 joined then left)
+    manager.handleClientMessage('a', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host A',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      matchMode: 'TEAMS_2V2',
+    });
+    const joinedA = latestByClient.get('a');
+    assert.equal(joinedA?.type, 'ROOM_JOINED');
+    if (!joinedA || joinedA.type !== 'ROOM_JOINED') return;
+    const code1 = joinedA.roomCode;
+
+    manager.handleClientMessage('b', {
+      type: 'JOIN_ROOM',
+      roomCode: code1,
+      playerName: 'Temp B',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('c', {
+      type: 'JOIN_ROOM',
+      roomCode: code1,
+      playerName: 'Player C',
+      tokenType: 'jet',
+    });
+    const joinedC = (allByClient.get('c') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(joinedC?.type, 'ROOM_JOINED');
+    if (!joinedC || joinedC.type !== 'ROOM_JOINED') return;
+    assert.equal(joinedC.yourSeatIndex, 2);
+    const cToken = joinedC.sessionToken;
+
+    manager.handleClientMessage('b', { type: 'LEAVE_ROOM' });
+    const preStartSnap = latestByClient.get('a');
+    assert.equal(preStartSnap?.type, 'ROOM_SNAPSHOT');
+    if (!preStartSnap || preStartSnap.type !== 'ROOM_SNAPSHOT') return;
+    const lobbySeatTokens = preStartSnap.snapshot.seats.map((s) => s.tokenType);
+    const lobbySeatNames = preStartSnap.snapshot.seats.map((s) => s.playerName);
+
+    manager.handleClientMessage('a', { type: 'START_MATCH' });
+    const startSnapA = latestByClient.get('a');
+    const startSnapC = latestByClient.get('c');
+    assert.equal(startSnapA?.type, 'ROOM_SNAPSHOT');
+    assert.equal(startSnapC?.type, 'ROOM_SNAPSHOT');
+    if (
+      !startSnapA ||
+      startSnapA.type !== 'ROOM_SNAPSHOT' ||
+      !startSnapC ||
+      startSnapC.type !== 'ROOM_SNAPSHOT'
+    ) {
+      return;
+    }
+
+    const match1 = startSnapA.snapshot.match!;
+    assert.deepEqual(
+      match1.players.map((p) => p.teamId),
+      [0, 1, 0, 1],
+      '2v2 must alternate teams 0 -> 1 -> 0 -> 1'
+    );
+    assert.deepEqual(
+      match1.players.map((p) => p.isBot),
+      [false, true, false, true],
+      'Humans at seats 0 & 2 must stay at indices 0 & 2 with Bots filling seats 1 & 3'
+    );
+    assert.deepEqual(
+      match1.players.map((p) => p.id),
+      [0, 1, 2, 3]
+    );
+    assert.deepEqual(
+      match1.players.map((p) => p.tokenType),
+      lobbySeatTokens,
+      'Match token order must match lobby seat preview order'
+    );
+    assert.deepEqual(
+      match1.players.map((p) => p.name),
+      lobbySeatNames,
+      'Match player names must match lobby seat preview order'
+    );
+    assert.equal(startSnapA.yourPlayerId, 0);
+    assert.equal(startSnapC.yourPlayerId, 2);
+
+    // Verify actual turn progression alternates Team 0 -> Team 1 (Bot) -> Team 0 (Player C)
+    manager.handleClientMessage('a', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    manager.handleClientMessage('a', {
+      type: 'GAME_ACTION',
+      action: { kind: 'BUY_PROPERTY', initialLevel: 0 },
+    });
+    await flushMicrotasks(24);
+
+    // After Host A (seat 0, team 0) finishes, Bot at seat 1 (team 1) automatically completes its turn,
+    // advancing activePlayerIndex to Player C (seat 2, team 0).
+    const afterBot1 = latestByClient.get('c');
+    assert.equal(afterBot1?.type, 'ROOM_SNAPSHOT');
+    if (!afterBot1 || afterBot1.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterBot1.snapshot.match?.activePlayerIndex, 2);
+    assert.equal(afterBot1.snapshot.match?.players[2].name, 'Player C');
+    assert.equal(afterBot1.snapshot.match?.properties[3].ownerId, 0);
+    assert.equal(afterBot1.snapshot.match?.properties[5].ownerId, 1);
+
+    // Reconnect Player C via sessionToken -> still maps to playerId=2, seatIndex=2
+    manager.handleDisconnect('c');
+    manager.handleClientMessage('c-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: code1,
+      sessionToken: cToken,
+    });
+    const reC = (allByClient.get('c-re') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(reC?.type, 'ROOM_JOINED');
+    if (reC?.type === 'ROOM_JOINED') {
+      assert.equal(reC.yourSeatIndex, 2);
+      assert.equal(reC.yourPlayerId, 2);
+    }
+
+    // Case 2: TEAMS_2V2 with seat 0 vacated -> Host promoted to seat 1, humans at seats 1 & 3, bots at 0 & 2
+    manager.handleClientMessage('x0', {
+      type: 'CREATE_ROOM',
+      playerName: 'Temp X0',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      matchMode: 'TEAMS_2V2',
+    });
+    const jx0 = latestByClient.get('x0');
+    if (!jx0 || jx0.type !== 'ROOM_JOINED') return;
+    const code2 = jx0.roomCode;
+    manager.handleClientMessage('x1', {
+      type: 'JOIN_ROOM',
+      roomCode: code2,
+      playerName: 'Human X1',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('x2', {
+      type: 'JOIN_ROOM',
+      roomCode: code2,
+      playerName: 'Temp X2',
+      tokenType: 'jet',
+    });
+    manager.handleClientMessage('x3', {
+      type: 'JOIN_ROOM',
+      roomCode: code2,
+      playerName: 'Human X3',
+      tokenType: 'crown',
+    });
+    manager.handleClientMessage('x0', { type: 'LEAVE_ROOM' });
+    manager.handleClientMessage('x2', { type: 'LEAVE_ROOM' });
+    // Now x1 is host at seat 1, x3 is at seat 3, seats 0 & 2 are empty -> filled by Bots
+    manager.handleClientMessage('x1', { type: 'START_MATCH' });
+    const startSnapX1 = latestByClient.get('x1');
+    const startSnapX3 = latestByClient.get('x3');
+    assert.equal(startSnapX1?.type, 'ROOM_SNAPSHOT');
+    assert.equal(startSnapX3?.type, 'ROOM_SNAPSHOT');
+    if (
+      !startSnapX1 ||
+      startSnapX1.type !== 'ROOM_SNAPSHOT' ||
+      !startSnapX3 ||
+      startSnapX3.type !== 'ROOM_SNAPSHOT'
+    ) {
+      return;
+    }
+    assert.deepEqual(
+      startSnapX1.snapshot.match?.players.map((p) => p.isBot),
+      [true, false, true, false]
+    );
+    assert.deepEqual(
+      startSnapX1.snapshot.match?.players.map((p) => p.teamId),
+      [0, 1, 0, 1]
+    );
+    assert.equal(startSnapX1.yourPlayerId, 1);
+    assert.equal(startSnapX3.yourPlayerId, 3);
+
+    // Bot at seat 0 should auto-run Turn 1 and pass turn to Human X1 at playerId=1
+    await flushMicrotasks(24);
+    const afterBot0 = latestByClient.get('x1');
+    assert.equal(afterBot0?.type, 'ROOM_SNAPSHOT');
+    if (afterBot0?.type === 'ROOM_SNAPSHOT') {
+      assert.equal(afterBot0.snapshot.match?.activePlayerIndex, 1);
+      assert.equal(afterBot0.snapshot.match?.turnPhase, 'AWAIT_ROLL');
+    }
+
+    // Case 3: FFA 3-player with fillBots=true, humans at seats 0 & 2 -> [Human@0, Bot@1, Human@2]
+    manager.handleClientMessage('f0', {
+      type: 'CREATE_ROOM',
+      playerName: 'F0',
+      tokenType: 'car',
+      maxPlayers: 3,
+      startingCash: 2_000_000,
+      fillBots: true,
+      matchMode: 'FFA',
+    });
+    const jf0 = latestByClient.get('f0');
+    if (!jf0 || jf0.type !== 'ROOM_JOINED') return;
+    manager.handleClientMessage('f1', {
+      type: 'JOIN_ROOM',
+      roomCode: jf0.roomCode,
+      playerName: 'F1',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('f2', {
+      type: 'JOIN_ROOM',
+      roomCode: jf0.roomCode,
+      playerName: 'F2',
+      tokenType: 'jet',
+    });
+    manager.handleClientMessage('f1', { type: 'LEAVE_ROOM' });
+    manager.handleClientMessage('f0', { type: 'START_MATCH' });
+    const sf0 = latestByClient.get('f0');
+    const sf2 = latestByClient.get('f2');
+    assert.equal(sf0?.type, 'ROOM_SNAPSHOT');
+    assert.equal(sf2?.type, 'ROOM_SNAPSHOT');
+    if (sf0?.type === 'ROOM_SNAPSHOT' && sf2?.type === 'ROOM_SNAPSHOT') {
+      assert.deepEqual(
+        sf0.snapshot.match?.players.map((p) => p.isBot),
+        [false, true, false]
+      );
+      assert.equal(sf0.yourPlayerId, 0);
+      assert.equal(sf2.yourPlayerId, 2);
+    }
+
+    // Case 4: FFA maxPlayers=4 with fillBots=false, humans at non-contiguous seats 1 & 3
+    manager.handleClientMessage('n0', {
+      type: 'CREATE_ROOM',
+      playerName: 'N0',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: false,
+      matchMode: 'FFA',
+    });
+    const jn0 = latestByClient.get('n0');
+    if (!jn0 || jn0.type !== 'ROOM_JOINED') return;
+    manager.handleClientMessage('n1', {
+      type: 'JOIN_ROOM',
+      roomCode: jn0.roomCode,
+      playerName: 'N1',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('n2', {
+      type: 'JOIN_ROOM',
+      roomCode: jn0.roomCode,
+      playerName: 'N2',
+      tokenType: 'jet',
+    });
+    manager.handleClientMessage('n3', {
+      type: 'JOIN_ROOM',
+      roomCode: jn0.roomCode,
+      playerName: 'N3',
+      tokenType: 'crown',
+    });
+    manager.handleClientMessage('n0', { type: 'LEAVE_ROOM' });
+    manager.handleClientMessage('n2', { type: 'LEAVE_ROOM' });
+    manager.handleClientMessage('n1', { type: 'START_MATCH' });
+    const sn1 = latestByClient.get('n1');
+    const sn3 = latestByClient.get('n3');
+    assert.equal(sn1?.type, 'ROOM_SNAPSHOT');
+    assert.equal(sn3?.type, 'ROOM_SNAPSHOT');
+    if (sn1?.type === 'ROOM_SNAPSHOT' && sn3?.type === 'ROOM_SNAPSHOT') {
+      assert.deepEqual(
+        sn1.snapshot.match?.players.map((p) => p.name),
+        ['N1', 'N3']
+      );
+      assert.equal(sn1.yourPlayerId, 0);
+      assert.equal(sn3.yourPlayerId, 1);
+    }
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('BUG-01: AFK takeover counts full missed turns (not sub-phase timeouts), handles partial interaction, doubles, disconnect/reconnect, and RECLAIM_CONTROL', async () => {
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+  };
+
+  // Sub-case A: Multi-phase timeout in Turn 1 (tacticalDice ON -> AWAIT_ROLL + REROLL_DECISION + BUY_DECISION)
+  // must only count as 1 AFK turn (no takeover until Turn 3).
+  const diceSeqA: Array<[number, number]> = [
+    [1, 2], // Turn 1 P0: 0 -> 3 (Đà Lạt, REROLL_DECISION -> BUY_DECISION)
+    [2, 3], // Turn 2 P1: 0 -> 5 (Ninh Bình)
+    [1, 2], // Turn 3 P0: 3 -> 6 (Huế) -> 2nd consecutive full AFK turn -> Bot takeover!
+    [1, 2], // Extra
+  ];
+  const managerA = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+    diceRng: () => diceSeqA.shift() ?? [1, 2],
+  });
+
+  try {
+    managerA.handleClientMessage('p0', {
+      type: 'CREATE_ROOM',
+      playerName: 'AFK P0',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+      tacticalDiceEnabled: true,
+    });
+    const j0 = latestByClient.get('p0');
+    if (!j0 || j0.type !== 'ROOM_JOINED') return;
+    managerA.handleClientMessage('p1', {
+      type: 'JOIN_ROOM',
+      roomCode: j0.roomCode,
+      playerName: 'Active P1',
+      tokenType: 'yacht',
+    });
+    managerA.handleClientMessage('p0', { type: 'START_MATCH' });
+
+    // 1) Drain AWAIT_ROLL (45s) on Turn 1 -> REROLL_DECISION
+    for (let s = 0; s < 45; s++) managerA.tickOneSecond();
+    await flushMicrotasks(12);
+    let snap = latestByClient.get('p0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snap.snapshot.match?.turnPhase, 'REROLL_DECISION');
+    assert.equal(snap.snapshot.match?.players[0].isBot, false);
+
+    // 2) Drain REROLL_DECISION -> BUY_DECISION (still Turn 1!)
+    const rerollLeft = snap.snapshot.match?.turnTimeLeft ?? 18;
+    for (let s = 0; s < rerollLeft; s++) managerA.tickOneSecond();
+    await flushMicrotasks(12);
+    snap = latestByClient.get('p0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snap.snapshot.match?.turnPhase, 'BUY_DECISION');
+    assert.equal(
+      snap.snapshot.match?.players[0].isBot,
+      false,
+      'Must NOT take over mid-Turn 1 after REROLL_DECISION timeout'
+    );
+
+    // 3) Drain BUY_DECISION -> Turn 1 ends, turn passes to P1 (Turn 2)
+    const buyLeft = snap.snapshot.match?.turnTimeLeft ?? 18;
+    for (let s = 0; s < buyLeft; s++) managerA.tickOneSecond();
+    await flushMicrotasks(12);
+    snap = latestByClient.get('p0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snap.snapshot.match?.activePlayerIndex, 1);
+    assert.equal(snap.snapshot.match?.turnCount, 2);
+    assert.equal(
+      snap.snapshot.match?.players[0].isBot,
+      false,
+      'After 1 full AFK turn (3 sub-phase timeouts), P0 must still be human'
+    );
+    assert.equal(snap.snapshot.match?.players[0].onlineBotTakeover, false);
+
+    // P1 plays Turn 2 actively
+    managerA.handleClientMessage('p1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    managerA.handleClientMessage('p1', { type: 'GAME_ACTION', action: { kind: 'CONFIRM_ROLL_MOVE' } });
+    await flushMicrotasks(12);
+    managerA.handleClientMessage('p1', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    await flushMicrotasks(8);
+
+    snap = latestByClient.get('p0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snap.snapshot.match?.activePlayerIndex, 0);
+    assert.equal(snap.snapshot.match?.turnCount, 3);
+
+    // Turn 3 (P0's 2nd consecutive AFK turn): drain AWAIT_ROLL -> NOW Bot takes over!
+    for (let s = 0; s < 45; s++) managerA.tickOneSecond();
+    await flushMicrotasks(12);
+    snap = latestByClient.get('p0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snap.snapshot.match?.players[0].isBot, true);
+    assert.equal(snap.snapshot.match?.players[0].onlineBotTakeover, true);
+
+    // Reclaim control -> resets AFK counter; P0 won't be taken over again after just 1 more missed turn
+    managerA.handleClientMessage('p0', { type: 'RECLAIM_CONTROL' });
+    snap = latestByClient.get('p0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snap.snapshot.match?.players[0].isBot, false);
+    assert.equal(snap.snapshot.match?.players[0].onlineBotTakeover, false);
+  } finally {
+    managerA.dispose();
+  }
+
+  // Sub-case B: Partial interaction in Turn 1 (P0 actively rolls, then times out on BUY_DECISION)
+  // does NOT count as an AFK turn; Turn 3 full AFK is only missed #1 (still human!); Turn 5 triggers takeover.
+  const diceSeqB: Array<[number, number]> = [
+    [1, 2], // Turn 1 P0 (rolls actively, times out on BUY)
+    [2, 3], // Turn 2 P1
+    [2, 2], // Turn 3 P0 (full AFK, auto-rolls doubles -> BUY_DECISION timeout clears doublesStreak -> still missed=1!)
+    [1, 2], // Turn 4 P1
+    [1, 2], // Turn 5 P0 (2nd full AFK -> Bot takeover!)
+  ];
+  const managerB = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+    diceRng: () => diceSeqB.shift() ?? [1, 2],
+  });
+
+  try {
+    managerB.handleClientMessage('b0', {
+      type: 'CREATE_ROOM',
+      playerName: 'Partial P0',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+      tacticalDiceEnabled: false,
+    });
+    const jb0 = latestByClient.get('b0');
+    if (!jb0 || jb0.type !== 'ROOM_JOINED') return;
+    managerB.handleClientMessage('b1', {
+      type: 'JOIN_ROOM',
+      roomCode: jb0.roomCode,
+      playerName: 'Active B1',
+      tokenType: 'yacht',
+    });
+    managerB.handleClientMessage('b0', { type: 'START_MATCH' });
+
+    // Turn 1: b0 rolls actively, then lets BUY_DECISION time out
+    managerB.handleClientMessage('b0', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    let snapB = latestByClient.get('b0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snapB.snapshot.match?.turnPhase, 'BUY_DECISION');
+    const b1BuyTime = snapB.snapshot.match?.turnTimeLeft ?? 45;
+    for (let s = 0; s < b1BuyTime; s++) managerB.tickOneSecond();
+    await flushMicrotasks(12);
+    snapB = latestByClient.get('b0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snapB.snapshot.match?.activePlayerIndex, 1);
+    assert.equal(snapB.snapshot.match?.players[0].isBot, false);
+
+    // Turn 2: b1 plays
+    managerB.handleClientMessage('b1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    managerB.handleClientMessage('b1', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    await flushMicrotasks(8);
+
+    // Turn 3: b0 is fully AFK (auto-rolls doubles [2,2], then times out BUY_DECISION) -> only AFK turn #1!
+    for (let s = 0; s < 45; s++) managerB.tickOneSecond();
+    await flushMicrotasks(12);
+    snapB = latestByClient.get('b0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snapB.snapshot.match?.players[0].isBot, false, 'Turn 3 must only be 1st full AFK turn');
+    const b3BuyTime = snapB.snapshot.match?.turnTimeLeft ?? 18;
+    for (let s = 0; s < b3BuyTime; s++) managerB.tickOneSecond();
+    await flushMicrotasks(12);
+    snapB = latestByClient.get('b0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snapB.snapshot.match?.players[0].isBot, false, 'Must still be human after 1st full AFK turn');
+    assert.equal(snapB.snapshot.match?.players[0].doublesStreak, 0);
+    assert.equal(snapB.snapshot.match?.activePlayerIndex, 1);
+
+    // Turn 4: b1 plays
+    managerB.handleClientMessage('b1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    managerB.handleClientMessage('b1', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    await flushMicrotasks(8);
+
+    // Turn 5: b0 is AFK for 2nd consecutive full turn -> NOW Bot takes over!
+    for (let s = 0; s < 45; s++) managerB.tickOneSecond();
+    await flushMicrotasks(12);
+    snapB = latestByClient.get('b0') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(snapB.snapshot.match?.players[0].isBot, true);
+    assert.equal(snapB.snapshot.match?.players[0].onlineBotTakeover, true);
+  } finally {
+    managerB.dispose();
+  }
+});
+
+test('BUG-06: Server responds with ERROR INVALID_STATE / INVALID_ACTION on phase-mismatched or invalid actions instead of silently ignoring', async () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  // Use small positive timingScale so ROLLING_DICE stays active briefly for testing
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0.05,
+    enableTickInterval: false,
+    diceRng: () => [1, 2], // 3 -> Đà Lạt (BUY_DECISION)
+  });
+
+  try {
+    manager.handleClientMessage('p1', {
+      type: 'CREATE_ROOM',
+      playerName: 'P1',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const j1 = latestByClient.get('p1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+    manager.handleClientMessage('p2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'P2',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('p1', { type: 'START_MATCH' });
+
+    const expectErrorCode = (action: OnlineGameAction, expectedCode: string) => {
+      const before = (allByClient.get('p1') || []).length;
+      manager.handleClientMessage('p1', { type: 'GAME_ACTION', action });
+      const added = (allByClient.get('p1') || []).slice(before);
+      const err = added.find((m) => m.type === 'ERROR');
+      assert.ok(
+        err && err.type === 'ERROR',
+        `Expected ERROR for action ${action.kind}, got ${JSON.stringify(added)}`
+      );
+      if (err && err.type === 'ERROR') {
+        assert.equal(err.code, expectedCode);
+      }
+    };
+
+    // During AWAIT_ROLL (not in jail)
+    expectErrorCode({ kind: 'BUY_PROPERTY', initialLevel: 0 }, 'INVALID_STATE');
+    expectErrorCode({ kind: 'SKIP_BUY' }, 'INVALID_STATE');
+    expectErrorCode({ kind: 'DECLARE_BANKRUPTCY' }, 'INVALID_STATE');
+    expectErrorCode({ kind: 'CONFIRM_CARD' }, 'INVALID_STATE');
+    expectErrorCode({ kind: 'PAY_JAIL_FINE' }, 'INVALID_ACTION');
+    expectErrorCode({ kind: 'USE_JAIL_CARD' }, 'INVALID_ACTION');
+
+    // Start rolling -> synchronously enters ROLLING_DICE; duplicate ROLL_DICE must return INVALID_STATE!
+    manager.handleClientMessage('p1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    const midRollSnap = latestByClient.get('p1') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(midRollSnap.snapshot.match?.turnPhase, 'ROLLING_DICE');
+    expectErrorCode({ kind: 'ROLL_DICE' }, 'INVALID_STATE');
+
+    // Wait for dice + hop beats to complete -> BUY_DECISION
+    await new Promise<void>((resolve) => setTimeout(resolve, 400));
+    const atBuy = latestByClient.get('p1') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(atBuy.snapshot.match?.turnPhase, 'BUY_DECISION');
+
+    // During BUY_DECISION: sending ROLL_DICE or SKIP_UPGRADE must return INVALID_STATE
+    expectErrorCode({ kind: 'ROLL_DICE' }, 'INVALID_STATE');
+    expectErrorCode({ kind: 'SKIP_UPGRADE' }, 'INVALID_STATE');
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('BUG-04: Server validates expectedTurnCount, expectedPhase, expectedDecisionRevision (same-turn repeated phases), and duplicate actionId without breaking valid flows', async () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const seq: Array<[number, number]> = [
+    [3, 5], // Turn 1 P0 -> tile 8 (Lost Island!)
+    [1, 2], // Turn 2 P1 -> tile 3 (Đà Lạt)
+    [1, 1], // Turn 3 P0 (after PAY_JAIL_FINE): doubles 8+2=10 (Tuy Hòa), triggers bonus roll at SAME turnCount=3!
+    [1, 2], // Turn 3 P0 bonus roll: 10+3=13 (Vũng Tàu), enters REROLL_DECISION #2 at SAME turnCount=3!
+  ];
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+    diceRng: () => seq.shift() ?? [1, 2],
+  });
+
+  try {
+    manager.handleClientMessage('p0', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+      tacticalDiceEnabled: true,
+    });
+    const j0 = latestByClient.get('p0');
+    if (!j0 || j0.type !== 'ROOM_JOINED') return;
+    manager.handleClientMessage('p1', {
+      type: 'JOIN_ROOM',
+      roomCode: j0.roomCode,
+      playerName: 'Guest',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('p0', { type: 'START_MATCH' });
+
+    const getSnap = (cid: string) =>
+      (latestByClient.get(cid) as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>).snapshot.match!;
+
+    const revTurn1 = getSnap('p0').decisionRevision;
+    assert.equal(typeof revTurn1, 'number');
+    assert.ok((revTurn1 ?? 0) >= 1);
+
+    // 1. Unrelated snapshot events (ticking clock, opponent disconnect/reconnect) must NOT break valid action!
+    manager.tickOneSecond();
+    manager.handleDisconnect('p1');
+    const revAfterNoise = getSnap('p0').decisionRevision;
+    assert.equal(revAfterNoise, revTurn1, 'Clock ticks / disconnect must not bump decisionRevision');
+
+    // Valid action with matching turnCount, phase, decisionRevision, and actionId succeeds
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'ROLL_DICE' },
+      expectedTurnCount: 1,
+      expectedPhase: 'AWAIT_ROLL',
+      expectedDecisionRevision: revTurn1,
+      actionId: 'act-t1-roll',
+    });
+    await flushMicrotasks(12);
+    const snapReroll1 = getSnap('p0');
+    assert.equal(snapReroll1.turnPhase, 'REROLL_DECISION');
+    assert.ok((snapReroll1.decisionRevision ?? 0) > (revTurn1 ?? 0));
+
+    // Confirm move to Lost Island (tile 8) -> Turn 2 for P1
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'CONFIRM_ROLL_MOVE' },
+      expectedTurnCount: 1,
+      expectedPhase: 'REROLL_DECISION',
+      expectedDecisionRevision: snapReroll1.decisionRevision,
+      actionId: 'act-t1-confirm',
+    });
+    await flushMicrotasks(12);
+
+    // Reconnect P1 and complete Turn 2 -> Turn 3 for P0 (in Lost Island, AWAIT_ROLL!)
+    const j1 = (allByClient.get('p1') || []).find((m) => m.type === 'ROOM_JOINED');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+    manager.handleClientMessage('p1-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: j0.roomCode,
+      sessionToken: j1.sessionToken,
+    });
+    manager.handleClientMessage('p1-re', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    manager.handleClientMessage('p1-re', { type: 'GAME_ACTION', action: { kind: 'CONFIRM_ROLL_MOVE' } });
+    await flushMicrotasks(12);
+    manager.handleClientMessage('p1-re', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    await flushMicrotasks(8);
+
+    const snapTurn3Jail = getSnap('p0');
+    assert.equal(snapTurn3Jail.turnCount, 3);
+    assert.equal(snapTurn3Jail.activePlayerIndex, 0);
+    assert.equal(snapTurn3Jail.turnPhase, 'AWAIT_ROLL');
+    assert.equal(snapTurn3Jail.players[0].inJail, true);
+    assert.equal(snapTurn3Jail.players[0].jailTurns, 0);
+
+    // 2. Stale Turn 1 ROLL_DICE replayed on Turn 3 (same phase AWAIT_ROLL!) MUST be rejected with STALE_ACTION!
+    const beforeStale = (allByClient.get('p0') || []).length;
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'ROLL_DICE' },
+      expectedTurnCount: 1,
+      expectedPhase: 'AWAIT_ROLL',
+      expectedDecisionRevision: revTurn1,
+      actionId: 'act-stale-turn1',
+    });
+    const staleMsgs = (allByClient.get('p0') || []).slice(beforeStale);
+    assert.ok(staleMsgs.some((m) => m.type === 'ERROR' && m.code === 'STALE_ACTION'));
+    assert.equal(getSnap('p0').turnCount, 3);
+    assert.equal(getSnap('p0').players[0].jailTurns, 0);
+
+    // 3. Duplicate actionId replay ('act-t1-roll') MUST be rejected with DUPLICATE_ACTION!
+    const beforeDup = (allByClient.get('p0') || []).length;
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'ROLL_DICE' },
+      expectedTurnCount: 3,
+      expectedPhase: 'AWAIT_ROLL',
+      expectedDecisionRevision: snapTurn3Jail.decisionRevision,
+      actionId: 'act-t1-roll',
+    });
+    const dupMsgs = (allByClient.get('p0') || []).slice(beforeDup);
+    assert.ok(dupMsgs.some((m) => m.type === 'ERROR' && m.code === 'DUPLICATE_ACTION'));
+    assert.equal(getSnap('p0').players[0].jailTurns, 0);
+
+    // 4. Same turnCount & same phase ('AWAIT_ROLL') after PAY_JAIL_FINE: decisionRevision bumps!
+    const revBeforePay = snapTurn3Jail.decisionRevision!;
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'PAY_JAIL_FINE' },
+      expectedTurnCount: 3,
+      expectedPhase: 'AWAIT_ROLL',
+      expectedDecisionRevision: revBeforePay,
+      actionId: 'act-t3-pay-jail',
+    });
+    const snapAfterPay = getSnap('p0');
+    assert.equal(snapAfterPay.players[0].inJail, false);
+    assert.equal(snapAfterPay.turnCount, 3);
+    assert.equal(snapAfterPay.turnPhase, 'AWAIT_ROLL');
+    assert.ok((snapAfterPay.decisionRevision ?? 0) > revBeforePay);
+
+    // Stale ROLL_DICE using pre-PAY_JAIL_FINE revision MUST be rejected with STALE_ACTION even though turnCount & phase match!
+    const beforeOldRev = (allByClient.get('p0') || []).length;
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'ROLL_DICE' },
+      expectedTurnCount: 3,
+      expectedPhase: 'AWAIT_ROLL',
+      expectedDecisionRevision: revBeforePay,
+      actionId: 'act-t3-stale-rev',
+    });
+    assert.ok(
+      (allByClient.get('p0') || [])
+        .slice(beforeOldRev)
+        .some((m) => m.type === 'ERROR' && m.code === 'STALE_ACTION')
+    );
+
+    // Valid ROLL_DICE with fresh revision rolls doubles [1, 1] -> enters REROLL_DECISION #1 at turnCount=3
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'ROLL_DICE' },
+      expectedTurnCount: 3,
+      expectedPhase: 'AWAIT_ROLL',
+      expectedDecisionRevision: snapAfterPay.decisionRevision,
+      actionId: 'act-t3-roll-1',
+    });
+    await flushMicrotasks(12);
+    const snapRerollA = getSnap('p0');
+    assert.equal(snapRerollA.turnCount, 3);
+    assert.equal(snapRerollA.turnPhase, 'REROLL_DECISION');
+
+    // Confirm move (doubles 1+1 -> tile 10 Tuy Hòa) -> SKIP_BUY -> doubles bonus roll stays at turnCount=3!
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'CONFIRM_ROLL_MOVE' },
+      expectedTurnCount: 3,
+      expectedPhase: 'REROLL_DECISION',
+      expectedDecisionRevision: snapRerollA.decisionRevision,
+      actionId: 'act-t3-confirm-1',
+    });
+    await flushMicrotasks(12);
+    const snapBuy1 = getSnap('p0');
+    assert.equal(snapBuy1.turnPhase, 'BUY_DECISION');
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'SKIP_BUY' },
+      expectedTurnCount: 3,
+      expectedPhase: 'BUY_DECISION',
+      expectedDecisionRevision: snapBuy1.decisionRevision,
+      actionId: 'act-t3-skip-1',
+    });
+    await flushMicrotasks(8);
+
+    const snapBonusRoll = getSnap('p0');
+    assert.equal(snapBonusRoll.turnCount, 3, 'Doubles bonus roll keeps turnCount=3');
+    assert.equal(snapBonusRoll.turnPhase, 'AWAIT_ROLL');
+    assert.ok((snapBonusRoll.decisionRevision ?? 0) > (snapAfterPay.decisionRevision ?? 0));
+
+    // Roll bonus dice -> enters REROLL_DECISION #2 at the SAME turnCount=3!
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'ROLL_DICE' },
+      expectedTurnCount: 3,
+      expectedPhase: 'AWAIT_ROLL',
+      expectedDecisionRevision: snapBonusRoll.decisionRevision,
+      actionId: 'act-t3-roll-2',
+    });
+    await flushMicrotasks(12);
+    const snapRerollB = getSnap('p0');
+    assert.equal(snapRerollB.turnCount, 3);
+    assert.equal(snapRerollB.turnPhase, 'REROLL_DECISION');
+    assert.ok((snapRerollB.decisionRevision ?? 0) > (snapRerollA.decisionRevision ?? 0));
+
+    // Stale CONFIRM_ROLL_MOVE from REROLL_DECISION #1 (same turnCount=3, same phase!) MUST be rejected with STALE_ACTION!
+    const beforeOldReroll = (allByClient.get('p0') || []).length;
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'CONFIRM_ROLL_MOVE' },
+      expectedTurnCount: 3,
+      expectedPhase: 'REROLL_DECISION',
+      expectedDecisionRevision: snapRerollA.decisionRevision,
+      actionId: 'act-t3-old-confirm',
+    });
+    assert.ok(
+      (allByClient.get('p0') || [])
+        .slice(beforeOldReroll)
+        .some((m) => m.type === 'ERROR' && m.code === 'STALE_ACTION')
+    );
+
+    // Fresh CONFIRM_ROLL_MOVE from REROLL_DECISION #2 succeeds -> moves 10 + 3 = 13 (Vũng Tàu)
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'CONFIRM_ROLL_MOVE' },
+      expectedTurnCount: 3,
+      expectedPhase: 'REROLL_DECISION',
+      expectedDecisionRevision: snapRerollB.decisionRevision,
+      actionId: 'act-t3-fresh-confirm',
+    });
+    await flushMicrotasks(12);
+    assert.equal(getSnap('p0').turnPhase, 'BUY_DECISION');
+    assert.equal(getSnap('p0').players[0].position, 13);
+
+    // 5. Malformed metadata types rejected safely with BAD_MESSAGE
+    const beforeBadMeta = (allByClient.get('p0') || []).length;
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'SKIP_BUY' },
+      expectedTurnCount: '3' as unknown as number,
+    });
+    assert.ok(
+      (allByClient.get('p0') || [])
+        .slice(beforeBadMeta)
+        .some((m) => m.type === 'ERROR' && m.code === 'BAD_MESSAGE')
+    );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('BUG-05 (Audit): Online TIME_LIMIT Sudden Death settles pendingDebt and pendingDebtQueue and clears pending debt state', () => {
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Debtor P0',
+      tokenType: 'car',
+      maxPlayers: 3,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const j1 = latestByClient.get('c1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Creditor P1',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('c3', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Debtor P2',
+      tokenType: 'jet',
+    });
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+
+    const roomsMap = (manager as unknown as {
+      rooms: Map<
+        string,
+        {
+          match: {
+            players: Array<{ cash: number }>;
+            properties: Record<number, { tileIndex: number; ownerId: number | null; level: number }>;
+            activePlayerIndex: number;
+            turnPhase: string;
+            matchTimeLeft: number;
+            pendingDebt: { amount: number; creditorId: number | null; reason: string; debtorId?: number } | null;
+            pendingDebtQueue: Array<{ amount: number; creditorId: number | null; reason: string; debtorId?: number }>;
+            debtReturnToPlayerIndex: number | null;
+          };
+        }
+      >;
+    }).rooms;
+    const m = roomsMap.get(j1.roomCode)!.match;
+    // P0 raw NW = 10K + 1,150K (Hà Nội lv3) = 1,160K; P1 raw NW = 600K; P2 raw NW = 900K
+    // P0 owes P1 900K (pendingDebt, no explicit debtorId -> activePlayerIndex=0)
+    // P2 owes P1 200K (pendingDebtQueue, explicit debtorId=2)
+    // Expected effective NWs: P1 = 600K + 900K + 200K = 1,700K (#1!), P2 = 700K (#2), P0 = 260K (#3)
+    m.players[0].cash = 10_000;
+    m.properties[29] = { tileIndex: 29, ownerId: 0, level: 3 }; // 400K + 750K = 1,150K
+    m.players[1].cash = 600_000;
+    m.players[2].cash = 900_000;
+    m.activePlayerIndex = 0;
+    m.turnPhase = 'DEBT_RESOLUTION';
+    m.pendingDebt = { amount: 900_000, creditorId: 1, reason: 'Thuê nhà' };
+    m.pendingDebtQueue = [{ amount: 200_000, creditorId: 1, debtorId: 2, reason: 'Sinh Nhật' }];
+    m.debtReturnToPlayerIndex = 1;
+    m.matchTimeLeft = 1;
+
+    manager.tickOneSecond();
+
+    const endSnap = latestByClient.get('c1') as Extract<ServerToClientMessage, { type: 'ROOM_SNAPSHOT' }>;
+    assert.equal(endSnap.snapshot.status, 'gameover');
+    const endMatch = endSnap.snapshot.match!;
+    assert.equal(endMatch.turnPhase, 'GAME_OVER');
+    assert.equal(endMatch.pendingDebt, null, 'pendingDebt must be cleared on TIME_LIMIT gameover');
+    assert.deepEqual(endMatch.pendingDebtQueue, []);
+    assert.equal(endMatch.debtReturnToPlayerIndex, null);
+    assert.equal(endMatch.matchWinnerResult?.condition, 'TIME_LIMIT');
+    assert.equal(endMatch.matchWinnerResult?.winner.id, 1);
+    assert.equal(endMatch.matchWinnerResult?.effectiveNetWorthByPlayerId?.[1], 1_700_000);
+    assert.equal(endMatch.matchWinnerResult?.effectiveNetWorthByPlayerId?.[2], 700_000);
+    assert.equal(endMatch.matchWinnerResult?.effectiveNetWorthByPlayerId?.[0], 260_000);
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('BUG-09: Bot watchdog recovers dropped timer without duplicate concurrent actions, respects async chains, and cleans up on turn change / GAME_OVER / dispose', async () => {
+  const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  const waitUntil = async (predicate: () => boolean, timeoutMs = 2500): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate() && Date.now() < deadline) {
+      await waitMs(15);
+    }
+  };
+  const eventsByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  let diceRolls = 0;
+
+  const manager = new OnlineRoomManager(
+    (clientId, msg) => {
+      latestByClient.set(clientId, msg);
+      const arr = eventsByClient.get(clientId) || [];
+      arr.push(msg);
+      eventsByClient.set(clientId, arr);
+    },
+    {
+      enableTickInterval: false,
+      timingScale: 0.04, // ~50ms Bot action delay, ~58ms dice beat
+      diceRng: () => {
+        diceRolls += 1;
+        return [1, 2]; // Non-doubles so each roll ends cleanly after buy/skip
+      },
+    }
+  );
+
+  try {
+    // Create 2P room: Seat 0 = Human, Seat 1 = Bot
+    manager.handleClientMessage('h1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: true,
+    });
+    const j1 = (eventsByClient.get('h1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j1?.type, 'ROOM_JOINED');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+    const roomCode = j1.roomCode;
+
+    manager.handleClientMessage('h1', { type: 'START_MATCH' });
+
+    const roomsMap = (manager as unknown as {
+      rooms: Map<
+        string,
+        {
+          pendingTimers: Set<ReturnType<typeof setTimeout>>;
+          botActionTimer: ReturnType<typeof setTimeout> | null;
+          match: {
+            activePlayerIndex: number;
+            turnPhase: string;
+            turnTimeLeft: number;
+            matchTimeLeft: number;
+            turnCount: number;
+          };
+        }
+      >;
+    }).rooms;
+    const room = roomsMap.get(roomCode)!;
+
+    // Human rolls and skips buying Tile 3 so turn passes to Bot (Seat 1)
+    manager.handleClientMessage('h1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await waitUntil(() => room.match.turnPhase === 'BUY_DECISION');
+    manager.handleClientMessage('h1', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+
+    assert.equal(room.match.activePlayerIndex, 1, 'Turn should now belong to Bot (seat 1)');
+    assert.equal(room.match.turnPhase, 'AWAIT_ROLL');
+    assert.ok(room.botActionTimer !== null, 'Bot timer should initially be scheduled');
+
+    // Case 1: Simulate dropped botActionTimer (cleared & nulled) — watchdog MUST recover cleanly
+    clearTimeout(room.botActionTimer!);
+    room.pendingTimers.delete(room.botActionTimer!);
+    room.botActionTimer = null;
+
+    const rollsBeforeRecovery = diceRolls;
+    // Tick down (including past 0) — watchdog must recover without hanging at turnTimeLeft === 0
+    for (let i = 0; i < 50; i++) {
+      manager.tickOneSecond();
+    }
+    assert.ok(
+      room.botActionTimer !== null,
+      'Watchdog must reschedule dropped Bot timer instead of leaving Bot stranded at turnTimeLeft === 0'
+    );
+    // Calling tickOneSecond 50x synchronously while rescheduled timer is pending must NOT spawn duplicate concurrent rolls
+    await waitUntil(() => room.match.activePlayerIndex === 0);
+    assert.equal(
+      diceRolls - rollsBeforeRecovery,
+      1,
+      'Bot must execute exactly ONE dice roll after watchdog recovery (no duplicate concurrent actions)'
+    );
+    assert.equal(
+      room.match.activePlayerIndex,
+      0,
+      'Bot turn must complete and return control to Human (seat 0)'
+    );
+
+    // Case 2: Async chain protection — Human finishes turn -> Bot starts ROLLING_DICE -> tickOneSecond during async chain must NOT double-roll
+    const rollsBeforeBotTurn2 = diceRolls;
+    manager.handleClientMessage('h1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await waitUntil(() => room.match.turnPhase === 'BUY_DECISION' || room.match.activePlayerIndex === 1);
+    // Finish whatever landing phase Human is in (Tile 6 unowned -> SKIP_BUY)
+    if ((room.match.turnPhase as string) === 'BUY_DECISION') {
+      manager.handleClientMessage('h1', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    }
+    assert.equal(room.match.activePlayerIndex, 1, 'Turn 2 should belong to Bot');
+    // Wait until Bot starts rolling (ROLLING_DICE / MOVING_TOKEN)
+    await waitUntil(
+      () => room.match.turnPhase === 'ROLLING_DICE' || room.match.turnPhase === 'MOVING_TOKEN'
+    );
+    // Tick repeatedly during Bot's in-flight async chain
+    for (let i = 0; i < 10; i++) {
+      manager.tickOneSecond();
+    }
+    await waitUntil(() => room.match.activePlayerIndex === 0);
+    assert.equal(
+      diceRolls - rollsBeforeBotTurn2,
+      2, // 1 for Human + 1 for Bot
+      'Ticking during Bot async chain must never trigger a second concurrent Bot roll'
+    );
+
+    // Case 3: GAME_OVER cleans up all Bot timers with zero timer leaks
+    if (room.match.activePlayerIndex === 0) {
+      manager.handleClientMessage('h1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+      await waitUntil(
+        () => room.match.turnPhase === 'BUY_DECISION' || room.match.activePlayerIndex === 1
+      );
+      if ((room.match.turnPhase as string) === 'BUY_DECISION') {
+        manager.handleClientMessage('h1', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+      }
+    }
+    room.match.matchTimeLeft = 1;
+    manager.tickOneSecond();
+    assert.equal(room.match.turnPhase, 'GAME_OVER');
+    assert.equal(room.botActionTimer, null, 'GAME_OVER must clear botActionTimer');
+    assert.equal(room.pendingTimers.size, 0, 'GAME_OVER must leave zero pending match timers');
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('Audit Hardening: Rejected INVALID_ACTION payloads (BUY_PROPERTY invalid level) must not reset AFK counter or poison processedActionIds', async () => {
+  const errorsByClient = new Map<string, string[]>();
+  const manager = new OnlineRoomManager(
+    (clientId, msg) => {
+      if (msg.type === 'ERROR') {
+        const arr = errorsByClient.get(clientId) || [];
+        arr.push(msg.code);
+        errorsByClient.set(clientId, arr);
+      }
+    },
+    { enableTickInterval: false, timingScale: 0, diceRng: () => [1, 2] }
+  );
+
+  try {
+    manager.handleClientMessage('h1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: true,
+    });
+    manager.handleClientMessage('h1', { type: 'START_MATCH' });
+    const roomsMap = (manager as unknown as {
+      rooms: Map<
+        string,
+        {
+          match: {
+            turnPhase: string;
+            missedTurnsByPlayer: Record<number, number>;
+            processedActionIds: Set<string>;
+          };
+        }
+      >;
+    }).rooms;
+    const room = [...roomsMap.values()][0];
+
+    // Roll into BUY_DECISION on Tile 3, then simulate prior 1 missed turn
+    manager.handleClientMessage('h1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(20);
+    assert.equal(room.match.turnPhase, 'BUY_DECISION');
+    room.match.missedTurnsByPlayer[0] = 1;
+
+    // Send INVALID BUY_PROPERTY (initialLevel: 99)
+    manager.handleClientMessage('h1', {
+      type: 'GAME_ACTION',
+      action: { kind: 'BUY_PROPERTY', initialLevel: 99 },
+      actionId: 'invalid-buy-99',
+    });
+    assert.equal(room.match.turnPhase, 'BUY_DECISION', 'Invalid buy must leave BUY_DECISION open');
+    assert.ok((errorsByClient.get('h1') || []).includes('INVALID_ACTION'));
+    assert.equal(
+      room.match.missedTurnsByPlayer[0],
+      1,
+      'Rejected INVALID_ACTION must NOT reset missedTurnsByPlayer'
+    );
+    assert.equal(
+      room.match.processedActionIds.has('invalid-buy-99') ||
+        room.match.processedActionIds.has('0:invalid-buy-99'),
+      false,
+      'Rejected INVALID_ACTION must NOT be recorded in processedActionIds'
+    );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('Review Round 2 (BUG-04, BUG-01, BUG-05, BUG-07): per-player actionId scoping, reconnect preserving partial-turn credit + decision time floor, invalid buyout rejection, and simultaneous reconnect + TIME_LIMIT during debt', async () => {
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const errorsByClient = new Map<string, string[]>();
+  const diceQueue: Array<[number, number]> = [
+    [1, 2], // Turn 1 P0 -> Tile 3 (Đà Lạt)
+    [1, 2], // Turn 2 P1 -> Tile 3
+    [2, 3], // Turn 3 P0
+  ];
+  let dIdx = 0;
+
+  const manager = new OnlineRoomManager(
+    (clientId, msg) => {
+      latestByClient.set(clientId, msg);
+      if (msg.type === 'ERROR') {
+        const arr = errorsByClient.get(clientId) || [];
+        arr.push(msg.code);
+        errorsByClient.set(clientId, arr);
+      }
+    },
+    {
+      enableTickInterval: false,
+      timingScale: 0,
+      diceRng: () => diceQueue[dIdx++ % diceQueue.length],
+    }
+  );
+
+  try {
+    manager.handleClientMessage('p0', {
+      type: 'CREATE_ROOM',
+      playerName: 'P0',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const j0 = latestByClient.get('p0') as Extract<ServerToClientMessage, { type: 'ROOM_JOINED' }>;
+    const roomCode = j0.roomCode;
+    const p0Token = j0.sessionToken;
+
+    manager.handleClientMessage('p1', {
+      type: 'JOIN_ROOM',
+      roomCode,
+      playerName: 'P1',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('p0', { type: 'START_MATCH' });
+
+    const roomsMap = (manager as unknown as {
+      rooms: Map<
+        string,
+        {
+          status: string;
+          match: {
+            turnCount: number;
+            turnPhase: string;
+            turnTimeLeft: number;
+            matchTimeLeft: number;
+            activePlayerIndex: number;
+            missedTurnsByPlayer: Record<number, number>;
+            pendingDebt: { amount: number; creditorId: number | null; reason: string; debtorId?: number } | null;
+            matchWinnerResult: {
+              condition: string;
+              winner: { id: number };
+              effectiveNetWorthByPlayerId?: Record<number, number>;
+              effectiveCashByPlayerId?: Record<number, number>;
+            } | null;
+            players: Array<{ id: number; cash: number; isBot: boolean; onlineBotTakeover?: boolean }>;
+          };
+        }
+      >;
+    }).rooms;
+    const room = roomsMap.get(roomCode)!;
+
+    // 1. P0 actively rolls in Turn 1 using actionId "shared-act-1", then briefly disconnects & reconnects mid-turn during BUY_DECISION
+    manager.handleClientMessage('p0', {
+      type: 'GAME_ACTION',
+      action: { kind: 'ROLL_DICE' },
+      actionId: 'shared-act-1',
+    });
+    await flushMicrotasks(20);
+    assert.equal(room.match.turnPhase, 'BUY_DECISION');
+
+    manager.handleDisconnect('p0');
+    manager.handleClientMessage('p0-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode,
+      sessionToken: p0Token,
+    });
+    // Now BUY_DECISION times out in Turn 1 -> because P0 ALREADY interacted in Turn 1, missedTurnsByPlayer[0] MUST stay 0!
+    room.match.turnTimeLeft = 1;
+    manager.tickOneSecond();
+    await flushMicrotasks(12);
+    assert.equal(
+      room.match.missedTurnsByPlayer[0] ?? 0,
+      0,
+      'Brief RECONNECT_ROOM mid-turn must NOT erase partial-turn human interaction credit'
+    );
+    assert.equal(room.match.activePlayerIndex, 1);
+
+    // 2. P1 submits Turn 2 ROLL_DICE using the SAME actionId "shared-act-1" -> MUST succeed (per-player scoping)!
+    manager.handleClientMessage('p1', {
+      type: 'GAME_ACTION',
+      action: { kind: 'ROLL_DICE' },
+      actionId: 'shared-act-1',
+    });
+    await flushMicrotasks(20);
+    assert.equal(
+      (errorsByClient.get('p1') || []).includes('DUPLICATE_ACTION'),
+      false,
+      'Player 1 must NOT get DUPLICATE_ACTION for an actionId previously used by Player 0'
+    );
+    assert.equal(room.match.turnPhase, 'BUY_DECISION');
+
+    // Same player replaying "shared-act-1" still gets DUPLICATE_ACTION
+    manager.handleClientMessage('p1', {
+      type: 'GAME_ACTION',
+      action: { kind: 'SKIP_BUY' },
+      actionId: 'shared-act-1',
+    });
+    assert.ok(
+      (errorsByClient.get('p1') || []).includes('DUPLICATE_ACTION'),
+      'Same player replaying own actionId must still get DUPLICATE_ACTION'
+    );
+
+    // P1 skips buy -> Turn 3 P0
+    manager.handleClientMessage('p1', {
+      type: 'GAME_ACTION',
+      action: { kind: 'SKIP_BUY' },
+      actionId: 'p1-skip-1',
+    });
+    await flushMicrotasks(12);
+    assert.equal(room.match.activePlayerIndex, 0);
+
+    // 3. Simulate P0 taken over by Bot with turnTimeLeft=1 -> P0 clicks RECLAIM_CONTROL -> must get safe floor >= 18s (not instant timeout!)
+    room.match.players[0].isBot = true;
+    room.match.players[0].onlineBotTakeover = true;
+    room.match.turnTimeLeft = 1;
+    manager.handleClientMessage('p0-re', { type: 'RECLAIM_CONTROL' });
+    assert.equal(room.match.players[0].isBot, false);
+    assert.ok(
+      room.match.turnTimeLeft >= 18,
+      `RECLAIM_CONTROL during own active decision phase must restore >= 18s floor (got ${room.match.turnTimeLeft})`
+    );
+    // Tick once -> must NOT time out immediately!
+    manager.tickOneSecond();
+    assert.equal(room.match.turnPhase, 'AWAIT_ROLL');
+    assert.equal(room.match.missedTurnsByPlayer[0] ?? 0, 0);
+
+    // 4. Invalid CONFIRM_BUYOUT must return INVALID_ACTION and NOT reset AFK counter
+    room.match.turnPhase = 'BUYOUT_DECISION';
+    room.match.missedTurnsByPlayer[0] = 1;
+    manager.handleClientMessage('p0-re', {
+      type: 'GAME_ACTION',
+      action: { kind: 'CONFIRM_BUYOUT' },
+      actionId: 'invalid-buyout-1',
+    });
+    assert.ok((errorsByClient.get('p0-re') || []).includes('INVALID_ACTION'));
+    assert.equal(room.match.turnPhase, 'BUYOUT_DECISION');
+    assert.equal(room.match.missedTurnsByPlayer[0], 1);
+
+    // 5. Simultaneous disconnect + TIME_LIMIT during DEBT_RESOLUTION + reconnect race (BUG-04 + BUG-05)
+    manager.handleDisconnect('p0-re');
+    room.match.players[0].cash = 1_500_000;
+    room.match.players[1].cash = 1_000_000;
+    room.match.turnPhase = 'DEBT_RESOLUTION';
+    room.match.pendingDebt = { amount: 900_000, creditorId: 1, reason: 'Thuê nhà', debtorId: 0 };
+    room.match.matchTimeLeft = 1;
+    manager.tickOneSecond();
+    assert.equal(room.status, 'gameover');
+
+    manager.handleClientMessage('p0-re2', {
+      type: 'RECONNECT_ROOM',
+      roomCode,
+      sessionToken: p0Token,
+    });
+    const reJoin = latestByClient.get('p0-re2');
+    assert.ok(reJoin && (reJoin.type === 'ROOM_JOINED' || reJoin.type === 'ROOM_SNAPSHOT'));
+    const snap = reJoin.snapshot;
+    assert.equal(snap.status, 'gameover');
+    assert.equal(snap.match?.pendingDebt, null);
+    assert.equal(snap.match?.matchWinnerResult?.winner.id, 1);
+    assert.equal(snap.match?.matchWinnerResult?.effectiveNetWorthByPlayerId?.[0], 600_000);
+    assert.equal(snap.match?.matchWinnerResult?.effectiveNetWorthByPlayerId?.[1], 1_900_000);
+    assert.equal(snap.match?.matchWinnerResult?.effectiveCashByPlayerId?.[0], 600_000);
+    assert.equal(snap.match?.matchWinnerResult?.effectiveCashByPlayerId?.[1], 1_900_000);
+  } finally {
+    manager.dispose();
+  }
+});
+
+
+
+
+
+
+
 
 

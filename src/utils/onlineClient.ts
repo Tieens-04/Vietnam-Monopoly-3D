@@ -92,6 +92,7 @@ export function useOnlineMultiplayer(
   });
 
   const [connectionStatus, setConnectionStatus] = useState<OnlineConnectionStatus>('idle');
+  const [isSynced, setIsSynced] = useState<boolean>(false);
   const [roomSnapshot, setRoomSnapshot] = useState<OnlineRoomSnapshot | null>(null);
   const [yourSeatIndex, setYourSeatIndex] = useState<number | null>(null);
   const [yourPlayerId, setYourPlayerId] = useState<number | null>(null);
@@ -101,6 +102,9 @@ export function useOnlineMultiplayer(
 
   const wsRef = useRef<WebSocket | null>(null);
   const pendingQueueRef = useRef<ClientToServerMessage[]>([]);
+  const roomSnapshotRef = useRef<OnlineRoomSnapshot | null>(null);
+  const isSyncedRef = useRef<boolean>(false);
+  const actionSeqRef = useRef<number>(0);
   const sessionRef = useRef<StoredSession | null>(readStoredSession());
   const intentionalCloseRef = useRef<boolean>(false);
   const reconnectTimerRef = useRef<number>(0);
@@ -137,14 +141,21 @@ export function useOnlineMultiplayer(
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return;
       reconnectAttemptsRef.current = 0;
-      setConnectionStatus('connected');
 
-      // If we are reconnecting to a stored session and no explicit create/join is queued
-      const hasRoomInitQueued = pendingQueueRef.current.some(
+      // Filter queue to room bootstrap messages only — never replay stale in-match actions across reconnects.
+      const bootstrapQueued = pendingQueueRef.current.filter(
         (m) => m.type === 'CREATE_ROOM' || m.type === 'JOIN_ROOM' || m.type === 'RECONNECT_ROOM'
       );
+      pendingQueueRef.current = [];
+
+      const hasRoomInitQueued = bootstrapQueued.length > 0;
       if (!hasRoomInitQueued && sessionRef.current) {
+        // Stay in 'reconnecting' & unsynced until the server responds with a fresh ROOM_JOINED / ROOM_SNAPSHOT.
+        isSyncedRef.current = false;
+        setIsSynced(false);
+        setConnectionStatus('reconnecting');
         ws.send(
           JSON.stringify({
             type: 'RECONNECT_ROOM',
@@ -152,15 +163,17 @@ export function useOnlineMultiplayer(
             sessionToken: sessionRef.current.sessionToken,
           } satisfies ClientToServerMessage)
         );
+      } else {
+        setConnectionStatus('connected');
       }
 
-      const queued = pendingQueueRef.current.splice(0, pendingQueueRef.current.length);
-      for (const msg of queued) {
+      for (const msg of bootstrapQueued) {
         ws.send(JSON.stringify(msg));
       }
     };
 
     ws.onmessage = (evt) => {
+      if (wsRef.current !== ws) return;
       let msg: ServerToClientMessage;
       try {
         msg = JSON.parse(String(evt.data)) as ServerToClientMessage;
@@ -179,6 +192,10 @@ export function useOnlineMultiplayer(
         writeStoredSession(stored);
         syncRoomQueryParam(msg.roomCode);
         lastEventSeqRef.current = 0;
+        roomSnapshotRef.current = msg.snapshot;
+        isSyncedRef.current = true;
+        setIsSynced(true);
+        setConnectionStatus('connected');
         setYourSeatIndex(msg.yourSeatIndex);
         setYourPlayerId(msg.yourPlayerId);
         setRoomSnapshot(msg.snapshot);
@@ -188,6 +205,10 @@ export function useOnlineMultiplayer(
       }
 
       if (msg.type === 'ROOM_SNAPSHOT') {
+        roomSnapshotRef.current = msg.snapshot;
+        isSyncedRef.current = true;
+        setIsSynced(true);
+        setConnectionStatus('connected');
         setYourSeatIndex(msg.yourSeatIndex);
         setYourPlayerId(msg.yourPlayerId);
         setRoomSnapshot(msg.snapshot);
@@ -205,6 +226,9 @@ export function useOnlineMultiplayer(
 
       if (msg.type === 'LEFT_ROOM') {
         sessionRef.current = null;
+        roomSnapshotRef.current = null;
+        isSyncedRef.current = false;
+        setIsSynced(false);
         writeStoredSession(null);
         syncRoomQueryParam(null);
         setRoomSnapshot(null);
@@ -222,6 +246,9 @@ export function useOnlineMultiplayer(
           msg.code === 'SESSION_REPLACED'
         ) {
           sessionRef.current = null;
+          roomSnapshotRef.current = null;
+          isSyncedRef.current = false;
+          setIsSynced(false);
           if (msg.code !== 'SESSION_REPLACED') {
             writeStoredSession(null);
           }
@@ -229,6 +256,9 @@ export function useOnlineMultiplayer(
           setRoomSnapshot(null);
           setYourSeatIndex(null);
           setYourPlayerId(null);
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            setConnectionStatus('connected');
+          }
         }
         setErrorMessage(msg.message);
         setErrorSeq((prev) => prev + 1);
@@ -236,9 +266,16 @@ export function useOnlineMultiplayer(
     };
 
     ws.onclose = () => {
-      if (wsRef.current === ws) {
-        wsRef.current = null;
+      if (wsRef.current !== ws) {
+        return;
       }
+      wsRef.current = null;
+      isSyncedRef.current = false;
+      setIsSynced(false);
+      // Drop any non-bootstrap messages that shouldn't survive a socket close.
+      pendingQueueRef.current = pendingQueueRef.current.filter(
+        (m) => m.type === 'CREATE_ROOM' || m.type === 'JOIN_ROOM' || m.type === 'RECONNECT_ROOM'
+      );
       if (intentionalCloseRef.current) {
         setConnectionStatus('idle');
         return;
@@ -263,14 +300,35 @@ export function useOnlineMultiplayer(
   }, []);
 
   const sendMessage = useCallback(
-    (msg: ClientToServerMessage) => {
+    (msg: ClientToServerMessage): boolean => {
+      const isBootstrapMessage =
+        msg.type === 'CREATE_ROOM' || msg.type === 'JOIN_ROOM' || msg.type === 'RECONNECT_ROOM';
       const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(msg));
-        return;
+
+      if (isBootstrapMessage) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(msg));
+          return true;
+        }
+        pendingQueueRef.current.push(msg);
+        openSocket(Boolean(sessionRef.current));
+        return true;
       }
-      pendingQueueRef.current.push(msg);
-      openSocket(Boolean(sessionRef.current));
+
+      // Live in-room / in-match actions require an OPEN socket synced with the latest server snapshot.
+      if (ws && ws.readyState === WebSocket.OPEN && isSyncedRef.current) {
+        ws.send(JSON.stringify(msg));
+        return true;
+      }
+
+      if (msg.type !== 'SEND_EMOTE') {
+        if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+          openSocket(Boolean(sessionRef.current));
+        }
+        setErrorMessage('Đang đồng bộ lại kết nối máy chủ, vui lòng thử lại sau giây lát.');
+        setErrorSeq((prev) => prev + 1);
+      }
+      return false;
     },
     [openSocket]
   );
@@ -353,6 +411,9 @@ export function useOnlineMultiplayer(
   const leaveRoom = useCallback(() => {
     const hadSession = Boolean(sessionRef.current);
     sessionRef.current = null;
+    roomSnapshotRef.current = null;
+    isSyncedRef.current = false;
+    setIsSynced(false);
     pendingQueueRef.current = [];
     writeStoredSession(null);
     syncRoomQueryParam(null);
@@ -407,7 +468,16 @@ export function useOnlineMultiplayer(
 
   const sendGameAction = useCallback(
     (action: OnlineGameAction) => {
-      sendMessage({ type: 'GAME_ACTION', action });
+      const match = roomSnapshotRef.current?.match;
+      const actionId = `act-${++actionSeqRef.current}-${Date.now().toString(36)}`;
+      return sendMessage({
+        type: 'GAME_ACTION',
+        action,
+        expectedTurnCount: match?.turnCount,
+        expectedPhase: match?.turnPhase,
+        expectedDecisionRevision: match?.decisionRevision,
+        actionId,
+      });
     },
     [sendMessage]
   );
@@ -430,6 +500,7 @@ export function useOnlineMultiplayer(
 
   return {
     connectionStatus,
+    isSynced,
     roomSnapshot,
     yourSeatIndex,
     yourPlayerId,

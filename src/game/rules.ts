@@ -6,6 +6,7 @@ import {
   MatchBoardModifiers,
   MatchMode,
   MatchWinnerResult,
+  PendingDebt,
   PlayerSetupConfig,
   PlayerState,
   PropertyState,
@@ -846,6 +847,90 @@ export function canBuyoutProperty(
   return { allowed: true, cost };
 }
 
+export interface InitialPropertyPurchaseValidation {
+  allowed: boolean;
+  safeLevel: number;
+  totalCost: number;
+  reason?: string;
+}
+
+/**
+ * Shared Buy-decision validator used by both Offline (`App.tsx`) and Online (`roomManager.ts`)
+ * so invalid initial levels or insufficient cash are rejected symmetrically without ending the turn.
+ */
+export function validateInitialPropertyPurchase(
+  player: PlayerState,
+  tileIndex: number,
+  requestedInitialLevel: number
+): InitialPropertyPurchaseValidation {
+  if (!isValidTileIndex(tileIndex)) {
+    return { allowed: false, safeLevel: 0, totalCost: 0, reason: 'Ô mua bất động sản không hợp lệ.' };
+  }
+  const tile = BOARD_TILES[tileIndex];
+  if (!tile || !isPurchasableTile(tile)) {
+    return { allowed: false, safeLevel: 0, totalCost: 0, reason: 'Ô này không thể mua.' };
+  }
+  const maxInitialLevel =
+    tile.kind === TileKind.PROPERTY ? (player.laps === 0 ? 2 : 3) : 0;
+  if (!isValidInitialPurchaseLevel(requestedInitialLevel, maxInitialLevel)) {
+    return {
+      allowed: false,
+      safeLevel: 0,
+      totalCost: 0,
+      reason: 'Cấp độ mua ban đầu không hợp lệ.',
+    };
+  }
+  const safeLevel = tile.kind === TileKind.PROPERTY ? requestedInitialLevel : 0;
+  const totalCost = (tile.price || 0) + safeLevel * (tile.houseCost ?? 0);
+  if (player.cash < totalCost) {
+    return {
+      allowed: false,
+      safeLevel,
+      totalCost,
+      reason: 'Không đủ tiền mặt để mua theo mức đã chọn.',
+    };
+  }
+  return { allowed: true, safeLevel, totalCost };
+}
+
+export interface ChampionshipSelectionValidation {
+  allowed: boolean;
+  fee: number;
+  reason?: string;
+}
+
+/**
+ * Shared Championship-host validator used by both Offline (`App.tsx`) and Online (`roomManager.ts`)
+ * so invalid target tiles or insufficient fees are rejected symmetrically without losing `isFreeChampionship` or ending the turn.
+ */
+export function validateChampionshipHostSelection(
+  player: PlayerState,
+  targetTile: number,
+  properties: Record<number, PropertyState>,
+  isFreeChampionship: boolean
+): ChampionshipSelectionValidation {
+  if (!isValidTileIndex(targetTile)) {
+    return { allowed: false, fee: 0, reason: 'Ô đăng cai Cúp Quốc Gia không hợp lệ.' };
+  }
+  const prop = properties[targetTile];
+  const tile = BOARD_TILES[targetTile];
+  const fee = isFreeChampionship ? 0 : CHAMPIONSHIP_FEE;
+  if (
+    !tile ||
+    tile.kind !== TileKind.PROPERTY ||
+    !prop ||
+    prop.ownerId !== player.id ||
+    player.cash < fee
+  ) {
+    return {
+      allowed: false,
+      fee,
+      reason: 'Không thể đăng cai Cúp Quốc Gia tại ô này.',
+    };
+  }
+  return { allowed: true, fee };
+}
+
 /**
  * Computes optimal 100%-refund property sale plan to cover `cashNeeded` (debt - currentCash).
  * Preserves Lv4 Hotels > full Color Monopolies > multi-Resort sets > Championship host city > higher value.
@@ -854,7 +939,9 @@ export function computeOptimalAutoSale(
   playerId: number,
   cashNeeded: number,
   properties: Record<number, PropertyState>,
-  modifiers?: MatchBoardModifiers
+  modifiers?: MatchBoardModifiers,
+  players?: PlayerState[],
+  matchMode: MatchMode = 'FFA'
 ): AutoSalePlan {
   if (cashNeeded <= 0) {
     return {
@@ -878,16 +965,21 @@ export function computeOptimalAutoSale(
     };
   }
 
-  const ownedResortCount = RESORT_TILE_INDICES.filter(
-    (idx) => properties[idx]?.ownerId === playerId
-  ).length;
+  const teamOwnerIds = getTeamOwnerIds(playerId, players, matchMode);
+  const ownedResortCount = RESORT_TILE_INDICES.filter((idx) => {
+    const ownerId = properties[idx]?.ownerId;
+    return ownerId !== null && ownerId !== undefined && teamOwnerIds.has(ownerId);
+  }).length;
 
   const items = owned.map((prop) => {
     const tile = BOARD_TILES[prop.tileIndex];
     const refund = calculatePropertyInvestedValue(prop.tileIndex, prop.level);
     let keepWeight = refund;
     if (prop.level >= 4) keepWeight += 10_000_000;
-    if (tile?.group && ownsFullColorGroup(playerId, tile.group, properties)) {
+    if (
+      tile?.group &&
+      ownsFullColorGroup(playerId, tile.group, properties, players, matchMode)
+    ) {
       keepWeight += 5_000_000;
     }
     if (tile?.kind === TileKind.RESORT && ownedResortCount >= 2) {
@@ -1233,17 +1325,98 @@ export function evaluateMatchWinner(
 }
 
 /**
+ * Computes debt-adjusted effective Net Worth & effective cash for all players
+ * without mutating player bankruptcy or property ownership.
+ *
+ * Rules aligned with project Spec §3.6 (100% real-estate liquidation value):
+ * - Processes `pendingDebts` in FIFO order (deduplicating identical object references).
+ * - Each debt resolves `debtorId = debt.debtorId ?? fallbackDebtorId`.
+ * - Transferable amount is capped at debtor's remaining effective Net Worth (`Math.min(available, amount)`),
+ *   so debtor Net Worth never drops below 0 and creditors never receive phantom funds beyond debtor assets.
+ * - Bank debts (`creditorId === null`) deduct from debtor without crediting any player.
+ * - Player debts (`creditorId !== null`) credit the surviving creditor with the actual paid amount.
+ */
+export function computeEffectiveNetWorths(
+  players: PlayerState[],
+  properties: Record<number, PropertyState>,
+  pendingDebts?: PendingDebt[],
+  fallbackDebtorId?: number
+): {
+  netWorthByPlayerId: Record<number, number>;
+  cashByPlayerId: Record<number, number>;
+  settledDebtCount: number;
+} {
+  const netWorthByPlayerId: Record<number, number> = {};
+  const cashByPlayerId: Record<number, number> = {};
+  const playerById = new Map<number, PlayerState>();
+
+  for (const p of players) {
+    playerById.set(p.id, p);
+    netWorthByPlayerId[p.id] = p.bankrupt ? 0 : calculateNetWorth(p, properties);
+    cashByPlayerId[p.id] = p.bankrupt ? 0 : Math.max(0, p.cash);
+  }
+
+  let settledDebtCount = 0;
+  if (pendingDebts && pendingDebts.length > 0) {
+    const seenRefs = new Set<PendingDebt>();
+    for (const debt of pendingDebts) {
+      if (!debt || seenRefs.has(debt)) continue;
+      seenRefs.add(debt);
+
+      const rawAmount = Number.isFinite(debt.amount) ? Math.max(0, debt.amount) : 0;
+      if (rawAmount <= 0) continue;
+
+      const debtorId = debt.debtorId ?? fallbackDebtorId;
+      if (debtorId === undefined) continue;
+      const debtor = playerById.get(debtorId);
+      if (!debtor || debtor.bankrupt) continue;
+
+      if (debt.creditorId !== null && debt.creditorId === debtorId) continue;
+
+      const available = Math.max(0, netWorthByPlayerId[debtorId] ?? 0);
+      const paid = Math.min(available, rawAmount);
+      netWorthByPlayerId[debtorId] = available - paid;
+      cashByPlayerId[debtorId] = Math.max(0, (cashByPlayerId[debtorId] ?? 0) - paid);
+
+      if (debt.creditorId !== null) {
+        const creditor = playerById.get(debt.creditorId);
+        if (creditor && !creditor.bankrupt) {
+          netWorthByPlayerId[creditor.id] = (netWorthByPlayerId[creditor.id] ?? 0) + paid;
+          cashByPlayerId[creditor.id] = (cashByPlayerId[creditor.id] ?? 0) + paid;
+        }
+      }
+      settledDebtCount += 1;
+    }
+  }
+
+  return { netWorthByPlayerId, cashByPlayerId, settledDebtCount };
+}
+
+/**
  * Evaluates Sudden Death winner when the 20-minute match timer expires:
- * - FFA: Net Worth -> cash -> laps -> id.
- * - TEAMS_2V2: Team total Net Worth -> team total cash -> team total laps -> highest member Net Worth -> teamId 0.
+ * - FFA: Effective Net Worth (after pendingDebt & pendingDebtQueue) -> cash -> laps -> id.
+ * - TEAMS_2V2: Team total Effective Net Worth -> team total cash -> team total laps -> highest member Net Worth -> teamId 0.
  */
 export function evaluateTimeLimitWinner(
   players: PlayerState[],
   properties: Record<number, PropertyState>,
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  pendingDebts?: PendingDebt[],
+  fallbackDebtorId?: number
 ): MatchWinnerResult | null {
   const alive = players.filter((p) => !p.bankrupt);
   if (alive.length === 0) return null;
+
+  const { netWorthByPlayerId, cashByPlayerId, settledDebtCount } = computeEffectiveNetWorths(
+    players,
+    properties,
+    pendingDebts,
+    fallbackDebtorId
+  );
+  const nwOf = (p: PlayerState): number => netWorthByPlayerId[p.id] ?? calculateNetWorth(p, properties);
+  const cashOf = (p: PlayerState): number => cashByPlayerId[p.id] ?? Math.max(0, p.cash);
+  const effectiveMap = settledDebtCount > 0 ? netWorthByPlayerId : undefined;
+  const effectiveCashMap = settledDebtCount > 0 ? cashByPlayerId : undefined;
 
   if (matchMode === 'TEAMS_2V2') {
     const teamStats = ([0, 1] as TeamId[])
@@ -1252,21 +1425,18 @@ export function evaluateTimeLimitWinner(
         if (members.length === 0) return null;
         const sortedMembers = [...members].sort(
           (a, b) =>
-            calculateNetWorth(b, properties) - calculateNetWorth(a, properties) ||
-            b.cash - a.cash ||
+            nwOf(b) - nwOf(a) ||
+            cashOf(b) - cashOf(a) ||
             b.laps - a.laps ||
             a.id - b.id
         );
-        const totalNetWorth = members.reduce(
-          (acc, m) => acc + calculateNetWorth(m, properties),
-          0
-        );
-        const totalCash = members.reduce((acc, m) => acc + Math.max(0, m.cash), 0);
+        const totalNetWorth = members.reduce((acc, m) => acc + nwOf(m), 0);
+        const totalCash = members.reduce((acc, m) => acc + cashOf(m), 0);
         const totalLaps = members.reduce((acc, m) => acc + m.laps, 0);
         return {
           teamId,
           bestMember: sortedMembers[0],
-          bestMemberNetWorth: calculateNetWorth(sortedMembers[0], properties),
+          bestMemberNetWorth: nwOf(sortedMembers[0]),
           totalNetWorth,
           totalCash,
           totalLaps,
@@ -1290,14 +1460,16 @@ export function evaluateTimeLimitWinner(
         winningTeamId: winTeam.teamId,
         condition: 'TIME_LIMIT',
         label: `Hết giờ (20:00) — Đội ${winTeam.teamId === 0 ? 'Xanh' : 'Đỏ'} thắng theo Tổng Tài Sản Ròng!`,
+        ...(effectiveMap ? { effectiveNetWorthByPlayerId: effectiveMap } : {}),
+        ...(effectiveCashMap ? { effectiveCashByPlayerId: effectiveCashMap } : {}),
       };
     }
   }
 
   const sorted = [...alive].sort((a, b) => {
-    const nwDiff = calculateNetWorth(b, properties) - calculateNetWorth(a, properties);
+    const nwDiff = nwOf(b) - nwOf(a);
     if (nwDiff !== 0) return nwDiff;
-    const cashDiff = b.cash - a.cash;
+    const cashDiff = cashOf(b) - cashOf(a);
     if (cashDiff !== 0) return cashDiff;
     const lapsDiff = b.laps - a.laps;
     if (lapsDiff !== 0) return lapsDiff;
@@ -1308,6 +1480,8 @@ export function evaluateTimeLimitWinner(
     winner: sorted[0],
     condition: 'TIME_LIMIT',
     label: 'Hết giờ (20:00) — Chiến thắng theo Tổng Tài Sản Ròng!',
+    ...(effectiveMap ? { effectiveNetWorthByPlayerId: effectiveMap } : {}),
+    ...(effectiveCashMap ? { effectiveCashByPlayerId: effectiveCashMap } : {}),
   };
 }
 
@@ -1316,15 +1490,26 @@ export function evaluateTimeLimitWinner(
  * 1. In TEAMS_2V2 (with `winningTeamId`), winning team survivors rank #1–#2 (with `winnerId` #1),
  *    followed by opposing team survivors, then bankrupt players.
  * 2. In FFA, `winnerId` ALWAYS ranks #1, surviving players above bankrupt players,
- *    then descending Net Worth -> cash -> id.
+ *    then descending (debt-adjusted) Net Worth -> (debt-adjusted) cash -> laps -> id.
  */
 export function rankPlayersForVictory(
   players: PlayerState[],
   properties: Record<number, PropertyState>,
   winnerId: number,
   matchMode: MatchMode = 'FFA',
-  winningTeamId?: TeamId
+  winningTeamId?: TeamId,
+  effectiveNetWorthByPlayerId?: Record<number, number>,
+  effectiveCashByPlayerId?: Record<number, number>
 ): PlayerState[] {
+  const nwOf = (p: PlayerState): number =>
+    effectiveNetWorthByPlayerId && p.id in effectiveNetWorthByPlayerId
+      ? effectiveNetWorthByPlayerId[p.id]
+      : calculateNetWorth(p, properties);
+  const cashOf = (p: PlayerState): number =>
+    effectiveCashByPlayerId && p.id in effectiveCashByPlayerId
+      ? effectiveCashByPlayerId[p.id]
+      : p.cash;
+
   return [...players].sort((a, b) => {
     if (matchMode === 'TEAMS_2V2' && winningTeamId !== undefined) {
       const aWinTeamAlive = !a.bankrupt && a.teamId === winningTeamId;
@@ -1342,11 +1527,14 @@ export function rankPlayersForVictory(
 
     if (a.bankrupt !== b.bankrupt) return a.bankrupt ? 1 : -1;
 
-    const nwDiff = calculateNetWorth(b, properties) - calculateNetWorth(a, properties);
+    const nwDiff = nwOf(b) - nwOf(a);
     if (nwDiff !== 0) return nwDiff;
 
-    const cashDiff = b.cash - a.cash;
+    const cashDiff = cashOf(b) - cashOf(a);
     if (cashDiff !== 0) return cashDiff;
+
+    const lapsDiff = b.laps - a.laps;
+    if (lapsDiff !== 0) return lapsDiff;
 
     return a.id - b.id;
   });
@@ -2409,6 +2597,25 @@ const ODD_DICE_PAIRS: ReadonlyArray<readonly [number, number]> = (() => {
   }
   return list;
 })();
+
+/**
+ * Coerces a requested tactical dice choice to `'NORMAL'` whenever Even/Odd is not legally usable
+ * (feature disabled, player currently jailed on Lost Island, or 0 charges remaining).
+ */
+export function normalizeTacticalDiceChoice(
+  choice: TacticalDiceChoice,
+  opts: {
+    tacticalDiceEnabled: boolean;
+    inJail?: boolean;
+    evenOddCharges?: number;
+  }
+): TacticalDiceChoice {
+  if (choice !== 'EVEN' && choice !== 'ODD') return 'NORMAL';
+  if (!opts.tacticalDiceEnabled || opts.inJail || (opts.evenOddCharges ?? 0) <= 0) {
+    return 'NORMAL';
+  }
+  return choice;
+}
 
 /**
  * Rolls two six-sided dice honoring Business Tour Tactical Dice parity ('NORMAL' | 'EVEN' | 'ODD').

@@ -43,6 +43,31 @@ export default defineConfig(() => {
         '@': path.resolve(import.meta.dirname, '.'),
       },
     },
+    build: {
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              {
+                name: 'vendor-three',
+                test: /node_modules[\\/]three[\\/](?!examples[\\/]jsm[\\/](loaders[\\/]GLTFLoader|utils[\\/]SkeletonUtils))/,
+                priority: 20,
+              },
+              {
+                name: 'vendor-motion',
+                test: /node_modules[\\/](gsap|motion|framer-motion|cannon-es)[\\/]/,
+                priority: 15,
+              },
+              {
+                name: 'vendor-react',
+                test: /node_modules[\\/](react|react-dom|scheduler|lucide-react)[\\/]/,
+                priority: 10,
+              },
+            ],
+          },
+        },
+      },
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.

@@ -553,9 +553,10 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                     <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1.5 px-2 py-1 rounded-full bt-casual-modal">
                       <button
                         type="button"
+                        disabled={isActionPending}
                         aria-pressed={selectedDiceChoice === 'NORMAL'}
                         onClick={() => onSelectDiceChoice?.('NORMAL')}
-                        className={`px-2.5 py-1.5 rounded-full text-[11px] font-black uppercase transition-colors cursor-pointer whitespace-nowrap ${
+                        className={`px-2.5 py-1.5 rounded-full text-[11px] font-black uppercase transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap ${
                           selectedDiceChoice === 'NORMAL'
                             ? 'bt-btn-cyan'
                             : 'text-sky-900 hover:bg-sky-100'
@@ -566,15 +567,15 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                       <button
                         type="button"
                         data-testid="bt-dice-even-btn"
-                        disabled={evenOddCharges <= 0}
-                        aria-pressed={selectedDiceChoice === 'EVEN'}
+                        disabled={isActionPending || evenOddCharges <= 0}
+                        aria-pressed={evenOddCharges > 0 && selectedDiceChoice === 'EVEN'}
                         onClick={() =>
                           onSelectDiceChoice?.(
                             selectedDiceChoice === 'EVEN' ? 'NORMAL' : 'EVEN'
                           )
                         }
                         className={`px-2.5 py-1.5 rounded-full text-[11px] font-black uppercase transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
-                          selectedDiceChoice === 'EVEN'
+                          evenOddCharges > 0 && selectedDiceChoice === 'EVEN'
                             ? 'bt-btn-gold text-slate-950'
                             : 'text-sky-900 hover:bg-sky-100'
                         }`}
@@ -584,15 +585,15 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                       <button
                         type="button"
                         data-testid="bt-dice-odd-btn"
-                        disabled={evenOddCharges <= 0}
-                        aria-pressed={selectedDiceChoice === 'ODD'}
+                        disabled={isActionPending || evenOddCharges <= 0}
+                        aria-pressed={evenOddCharges > 0 && selectedDiceChoice === 'ODD'}
                         onClick={() =>
                           onSelectDiceChoice?.(
                             selectedDiceChoice === 'ODD' ? 'NORMAL' : 'ODD'
                           )
                         }
                         className={`px-2.5 py-1.5 rounded-full text-[11px] font-black uppercase transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
-                          selectedDiceChoice === 'ODD'
+                          evenOddCharges > 0 && selectedDiceChoice === 'ODD'
                             ? 'bt-btn-gold text-slate-950'
                             : 'text-sky-900 hover:bg-sky-100'
                         }`}
@@ -700,8 +701,9 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
           <button
             type="button"
             data-testid="bt-reclaim-control-btn"
+            disabled={isActionPending}
             onClick={onReclaimControl}
-            className="bt-btn-gold text-slate-950 px-5 py-2.5 rounded-full font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer shadow-xl whitespace-normal text-center"
+            className="bt-btn-gold text-slate-950 px-5 py-2.5 rounded-full disabled:opacity-45 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer disabled:cursor-not-allowed shadow-xl whitespace-normal text-center"
           >
             🙋 Lấy Lại Quyền Điều Khiển
           </button>
