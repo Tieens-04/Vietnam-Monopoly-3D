@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { CHARACTER_PERSONAS } from '../game/avatarLogic';
 import { BOARD_TILES, CHANCE_CARDS } from '../game/boardData';
 import {
+  BotDifficulty,
   ChatChannel,
   ClientToServerMessage,
   LobbySeatInfo,
@@ -11,6 +12,7 @@ import {
   OnlineRoomStatus,
   OnlineSoundEffect,
   OnlineVisualEvent,
+  PendingSeatSwapRequest,
   RoomChatMessage,
   RoomParticipantSummary,
   RtcSignalPayload,
@@ -102,6 +104,7 @@ const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ALL_TOKENS: TokenArchetype[] = ['car', 'yacht', 'jet', 'crown'];
 const DISCONNECT_BOT_TAKEOVER_MS = 90_000;
 const EMPTY_LOBBY_CLEANUP_MS = 10_000;
+const SEAT_SWAP_EXPIRY_MS = 15_000;
 const MAX_ROOMS = 100;
 const EMOTE_COOLDOWN_MS = 1500;
 const CHAT_COOLDOWN_MS = 800;
@@ -146,6 +149,11 @@ function normalizeStartingCash(val: unknown): number {
 
 function normalizeMatchMode(val: unknown): MatchMode {
   return val === 'TEAMS_2V2' ? 'TEAMS_2V2' : 'FFA';
+}
+
+function normalizeBotDifficulty(val: unknown): BotDifficulty {
+  if (val === 'easy' || val === 'hard') return val;
+  return 'normal';
 }
 
 function isValidTacticalDiceChoice(val: unknown): val is TacticalDiceChoice {
@@ -245,11 +253,13 @@ interface RoomRecord {
   maxPlayers: 2 | 3 | 4;
   startingCash: number;
   fillBots: boolean;
+  botDifficulty: BotDifficulty;
   matchMode: MatchMode;
   tacticalDiceEnabled: boolean;
   festivalEnabled: boolean;
   hostSeatIndex: number;
   humans: HumanSeatRecord[];
+  pendingSeatSwap: (PendingSeatSwapRequest & { timer: ReturnType<typeof setTimeout> }) | null;
   allChatHistory: RoomChatMessage[];
   teamChatHistory: Record<TeamId, RoomChatMessage[]>;
   nextChatId: number;
@@ -343,7 +353,16 @@ export class OnlineRoomManager {
     room.botWatchdogAttempts = 0;
   }
 
+  private clearPendingSeatSwap(room: RoomRecord): boolean {
+    if (!room.pendingSeatSwap) return false;
+    clearTimeout(room.pendingSeatSwap.timer);
+    room.pendingTimers.delete(room.pendingSeatSwap.timer);
+    room.pendingSeatSwap = null;
+    return true;
+  }
+
   private clearRoomTimers(room: RoomRecord): void {
+    this.clearPendingSeatSwap(room);
     this.clearMatchTimers(room);
     if (room.cleanupTimer) {
       clearTimeout(room.cleanupTimer);
@@ -411,6 +430,7 @@ export class OnlineRoomManager {
       .sort((a, b) => a.seatIndex - b.seatIndex)[0];
     if (nextConnected && nextConnected.seatIndex !== room.hostSeatIndex) {
       room.hostSeatIndex = nextConnected.seatIndex;
+      nextConnected.ready = true;
       return true;
     }
     return false;
@@ -444,9 +464,51 @@ export class OnlineRoomManager {
         tokenType: h.tokenType,
         connected: h.connected,
         isHost: h.seatIndex === room.hostSeatIndex,
-        ready: h.ready,
+        ready: h.seatIndex === room.hostSeatIndex ? true : h.ready,
         micEnabled: h.micEnabled,
       }));
+  }
+
+  private isValidLobbySeatIndex(room: RoomRecord, val: unknown): val is number {
+    return (
+      typeof val === 'number' &&
+      Number.isInteger(val) &&
+      val >= 0 &&
+      val < room.maxPlayers
+    );
+  }
+
+  private swapLobbySeatAssignments(room: RoomRecord, seatA: number, seatB: number): void {
+    const humanA = room.humans.find((h) => !h.explicitlyLeft && h.seatIndex === seatA);
+    const humanB = room.humans.find((h) => !h.explicitlyLeft && h.seatIndex === seatB);
+    if (humanA) humanA.seatIndex = seatB;
+    if (humanB) humanB.seatIndex = seatA;
+    if (room.hostSeatIndex === seatA) {
+      room.hostSeatIndex = seatB;
+      if (humanA) humanA.ready = true;
+    } else if (room.hostSeatIndex === seatB) {
+      room.hostSeatIndex = seatA;
+      if (humanB) humanB.ready = true;
+    }
+  }
+
+  private appendSystemLobbyChat(room: RoomRecord, text: string): void {
+    const chatMessage: RoomChatMessage = {
+      id: room.nextChatId++,
+      participantId: 'system',
+      playerId: null,
+      senderName: 'Hệ thống',
+      senderColor: '#0284c7',
+      role: 'player',
+      channel: 'ALL',
+      text,
+      createdAt: Date.now(),
+    };
+    room.allChatHistory.push(chatMessage);
+    if (room.allChatHistory.length > MAX_ALL_CHAT_HISTORY) {
+      room.allChatHistory.splice(0, room.allChatHistory.length - MAX_ALL_CHAT_HISTORY);
+    }
+    this.emitVisualEvent(room, { kind: 'CHAT_MESSAGE', message: chatMessage });
   }
 
   private getSeatTeamId(room: RoomRecord, seat: HumanSeatRecord | undefined): TeamId | undefined {
@@ -555,14 +617,24 @@ export class OnlineRoomManager {
       maxPlayers: room.maxPlayers,
       startingCash: room.startingCash,
       fillBots: room.fillBots,
-      botDifficulty: 'normal',
+      botDifficulty: room.botDifficulty,
       matchMode: room.matchMode,
       tacticalDiceEnabled: room.tacticalDiceEnabled,
       festivalEnabled: room.festivalEnabled,
       seats,
       participants: this.buildParticipantsList(room),
       spectators: [],
-      pendingSeatSwap: null,
+      pendingSeatSwap: room.pendingSeatSwap
+        ? {
+            requestId: room.pendingSeatSwap.requestId,
+            fromParticipantId: room.pendingSeatSwap.fromParticipantId,
+            fromSeatIndex: room.pendingSeatSwap.fromSeatIndex,
+            fromPlayerName: room.pendingSeatSwap.fromPlayerName,
+            toParticipantId: room.pendingSeatSwap.toParticipantId,
+            toSeatIndex: room.pendingSeatSwap.toSeatIndex,
+            expiresAt: room.pendingSeatSwap.expiresAt,
+          }
+        : null,
       pendingTakeoverRequest: null,
       chatHistory,
       hostSeatIndex: room.hostSeatIndex,
@@ -677,11 +749,13 @@ export class OnlineRoomManager {
         maxPlayers,
         startingCash: normalizeStartingCash(msg.startingCash),
         fillBots: Boolean(msg.fillBots),
+        botDifficulty: normalizeBotDifficulty(msg.botDifficulty),
         matchMode,
         tacticalDiceEnabled,
         festivalEnabled,
         hostSeatIndex: 0,
         humans: [creator],
+        pendingSeatSwap: null,
         allChatHistory: [],
         teamChatHistory: { 0: [], 1: [] },
         nextChatId: 1,
@@ -932,30 +1006,40 @@ export class OnlineRoomManager {
         return;
       }
 
-      if (msg.matchMode !== undefined) {
-        room.matchMode = normalizeMatchMode(msg.matchMode);
-        if (room.matchMode === 'TEAMS_2V2') {
-          room.maxPlayers = 4;
-        }
+      const prevMatchMode = room.matchMode;
+      const prevMaxPlayers = room.maxPlayers;
+      const prevStartingCash = room.startingCash;
+      const prevFillBots = room.fillBots;
+      const prevTacticalDice = room.tacticalDiceEnabled;
+      const prevFestival = room.festivalEnabled;
+      const prevBotDifficulty = room.botDifficulty;
+
+      const nextMatchMode =
+        msg.matchMode !== undefined ? normalizeMatchMode(msg.matchMode) : room.matchMode;
+      let nextMaxPlayers = room.maxPlayers;
+      if (nextMatchMode === 'TEAMS_2V2') {
+        nextMaxPlayers = 4;
+      } else if (msg.maxPlayers !== undefined) {
+        nextMaxPlayers = normalizeMaxPlayers(msg.maxPlayers);
       }
 
-      if (msg.maxPlayers !== undefined) {
-        const requestedMax = normalizeMaxPlayers(msg.maxPlayers);
-        const targetMax = room.matchMode === 'TEAMS_2V2' ? 4 : requestedMax;
-        if (targetMax < room.humans.length) {
-          this.sendError(
-            clientId,
-            'INVALID_MAX_PLAYERS',
-            'Số người tối đa không thể nhỏ hơn số người đang có mặt trong phòng.'
-          );
-          return;
-        }
-        room.maxPlayers = targetMax;
-        // Compact seats downward if any human currently sits at >= targetMax
+      if (nextMaxPlayers < room.humans.length) {
+        this.sendError(
+          clientId,
+          'INVALID_MAX_PLAYERS',
+          'Số người tối đa không thể nhỏ hơn số người đang có mặt trong phòng.'
+        );
+        return;
+      }
+
+      room.matchMode = nextMatchMode;
+      if (nextMaxPlayers !== room.maxPlayers) {
+        room.maxPlayers = nextMaxPlayers;
+        // Compact seats downward if any human currently sits at >= nextMaxPlayers
         const sorted = [...room.humans].sort((a, b) => a.seatIndex - b.seatIndex);
         for (const h of sorted) {
-          if (h.seatIndex >= targetMax) {
-            for (let s = 0; s < targetMax; s++) {
+          if (h.seatIndex >= nextMaxPlayers) {
+            for (let s = 0; s < nextMaxPlayers; s++) {
               if (!room.humans.some((other) => other !== h && other.seatIndex === s)) {
                 const wasHost = h.seatIndex === room.hostSeatIndex;
                 h.seatIndex = s;
@@ -964,6 +1048,13 @@ export class OnlineRoomManager {
               }
             }
           }
+        }
+        if (
+          room.pendingSeatSwap &&
+          (room.pendingSeatSwap.fromSeatIndex >= nextMaxPlayers ||
+            room.pendingSeatSwap.toSeatIndex >= nextMaxPlayers)
+        ) {
+          this.clearPendingSeatSwap(room);
         }
       }
 
@@ -979,6 +1070,228 @@ export class OnlineRoomManager {
       if (msg.festivalEnabled !== undefined) {
         room.festivalEnabled = Boolean(msg.festivalEnabled);
       }
+      if (msg.botDifficulty !== undefined) {
+        room.botDifficulty = normalizeBotDifficulty(msg.botDifficulty);
+      }
+
+      const rulesChanged =
+        room.matchMode !== prevMatchMode ||
+        room.maxPlayers !== prevMaxPlayers ||
+        room.startingCash !== prevStartingCash ||
+        room.fillBots !== prevFillBots ||
+        room.tacticalDiceEnabled !== prevTacticalDice ||
+        room.festivalEnabled !== prevFestival ||
+        room.botDifficulty !== prevBotDifficulty;
+
+      if (rulesChanged) {
+        for (const h of room.humans) {
+          h.ready = h.seatIndex === room.hostSeatIndex;
+        }
+        this.appendSystemLobbyChat(
+          room,
+          '⚙️ Chủ phòng đã thay đổi cài đặt luật — các khách cần Sẵn sàng lại.'
+        );
+      }
+      this.broadcastSnapshot(room);
+      return;
+    }
+
+    if (msg.type === 'MOVE_TO_SEAT') {
+      if (room.status !== 'lobby' || seat.explicitlyLeft) {
+        this.sendError(clientId, 'INVALID_STATE', 'Chỉ có thể đổi ghế ở sảnh chờ.');
+        return;
+      }
+      const targetSeatIndex = msg.targetSeatIndex;
+      if (!this.isValidLobbySeatIndex(room, targetSeatIndex)) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Vị trí ghế mục tiêu không hợp lệ.');
+        return;
+      }
+      if (seat.seatIndex === targetSeatIndex) {
+        return;
+      }
+      const occupied = room.humans.some(
+        (h) => h !== seat && !h.explicitlyLeft && h.seatIndex === targetSeatIndex
+      );
+      if (occupied) {
+        this.sendError(
+          clientId,
+          'SEAT_OCCUPIED',
+          'Ghế này đã có người chơi khác. Hãy gửi lời mời đổi ghế.'
+        );
+        return;
+      }
+      const prevSeatIndex = seat.seatIndex;
+      this.swapLobbySeatAssignments(room, prevSeatIndex, targetSeatIndex);
+      if (
+        room.pendingSeatSwap &&
+        (room.pendingSeatSwap.fromParticipantId === seat.participantId ||
+          room.pendingSeatSwap.toParticipantId === seat.participantId ||
+          room.pendingSeatSwap.fromSeatIndex === prevSeatIndex ||
+          room.pendingSeatSwap.toSeatIndex === prevSeatIndex ||
+          room.pendingSeatSwap.fromSeatIndex === targetSeatIndex ||
+          room.pendingSeatSwap.toSeatIndex === targetSeatIndex)
+      ) {
+        this.clearPendingSeatSwap(room);
+      }
+      this.broadcastSnapshot(room);
+      return;
+    }
+
+    if (msg.type === 'REQUEST_SEAT_SWAP') {
+      if (room.status !== 'lobby' || seat.explicitlyLeft) {
+        this.sendError(clientId, 'INVALID_STATE', 'Chỉ có thể mời đổi ghế ở sảnh chờ.');
+        return;
+      }
+      const targetSeatIndex = msg.targetSeatIndex;
+      if (!this.isValidLobbySeatIndex(room, targetSeatIndex)) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Vị trí ghế mục tiêu không hợp lệ.');
+        return;
+      }
+      if (targetSeatIndex === seat.seatIndex) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Không thể gửi lời mời đổi ghế cho chính mình.');
+        return;
+      }
+      if (room.pendingSeatSwap) {
+        this.sendError(
+          clientId,
+          'SWAP_PENDING',
+          'Đang có một lời mời đổi ghế chờ phản hồi trong phòng.'
+        );
+        return;
+      }
+      const target = room.humans.find(
+        (h) => !h.explicitlyLeft && h.seatIndex === targetSeatIndex
+      );
+      if (!target) {
+        this.sendError(
+          clientId,
+          'SEAT_EMPTY',
+          'Ghế này đang trống, bạn có thể chuyển sang trực tiếp.'
+        );
+        return;
+      }
+      if (!target.connected) {
+        this.sendError(clientId, 'TARGET_OFFLINE', 'Người chơi ở ghế này đang mất kết nối.');
+        return;
+      }
+
+      const requestId = `swap_${crypto.randomBytes(6).toString('hex')}`;
+      const expiresAt = Date.now() + SEAT_SWAP_EXPIRY_MS;
+      const timer = this.scheduleRoomTimeout(room, SEAT_SWAP_EXPIRY_MS, () => {
+        if (
+          room.status === 'lobby' &&
+          room.pendingSeatSwap &&
+          room.pendingSeatSwap.requestId === requestId
+        ) {
+          room.pendingSeatSwap = null;
+          this.broadcastSnapshot(room);
+        }
+      });
+      room.pendingSeatSwap = {
+        requestId,
+        fromParticipantId: seat.participantId,
+        fromSeatIndex: seat.seatIndex,
+        fromPlayerName: seat.playerName,
+        toParticipantId: target.participantId,
+        toSeatIndex: target.seatIndex,
+        expiresAt,
+        timer,
+      };
+      this.broadcastSnapshot(room);
+      return;
+    }
+
+    if (msg.type === 'RESPOND_SEAT_SWAP') {
+      if (room.status !== 'lobby' || seat.explicitlyLeft) {
+        this.sendError(clientId, 'INVALID_STATE', 'Chỉ có thể phản hồi đổi ghế ở sảnh chờ.');
+        return;
+      }
+      const pending = room.pendingSeatSwap;
+      if (!pending) {
+        this.sendError(clientId, 'SWAP_EXPIRED', 'Lời mời đổi ghế không tồn tại hoặc đã hết hạn.');
+        return;
+      }
+      if (typeof msg.requestId !== 'string' || msg.requestId !== pending.requestId) {
+        this.sendError(clientId, 'SWAP_EXPIRED', 'Mã lời mời đổi ghế không khớp hoặc đã hết hạn.');
+        return;
+      }
+      if (Date.now() > pending.expiresAt) {
+        this.clearPendingSeatSwap(room);
+        this.broadcastSnapshot(room);
+        this.sendError(clientId, 'SWAP_EXPIRED', 'Lời mời đổi ghế đã hết hạn.');
+        return;
+      }
+      if (seat.participantId !== pending.toParticipantId) {
+        this.sendError(clientId, 'FORBIDDEN', 'Chỉ người được mời mới có thể phản hồi đổi ghế.');
+        return;
+      }
+
+      this.clearPendingSeatSwap(room);
+      if (msg.accept === true) {
+        const fromSeat = room.humans.find(
+          (h) => !h.explicitlyLeft && h.participantId === pending.fromParticipantId
+        );
+        const toSeat = room.humans.find(
+          (h) => !h.explicitlyLeft && h.participantId === pending.toParticipantId
+        );
+        if (!fromSeat || !toSeat) {
+          this.sendError(clientId, 'INVALID_STATE', 'Người chơi đổi ghế không còn trong phòng.');
+          this.broadcastSnapshot(room);
+          return;
+        }
+        this.swapLobbySeatAssignments(room, fromSeat.seatIndex, toSeat.seatIndex);
+      }
+      this.broadcastSnapshot(room);
+      return;
+    }
+
+    if (msg.type === 'HOST_SWAP_SEATS') {
+      if (seat.seatIndex !== room.hostSeatIndex) {
+        this.sendError(clientId, 'FORBIDDEN', 'Chỉ chủ phòng mới có thể sắp xếp lại vị trí ghế.');
+        return;
+      }
+      if (room.status !== 'lobby') {
+        this.sendError(clientId, 'INVALID_STATE', 'Chỉ có thể sắp xếp ghế ở sảnh chờ.');
+        return;
+      }
+      const { seatA, seatB } = msg;
+      if (
+        !this.isValidLobbySeatIndex(room, seatA) ||
+        !this.isValidLobbySeatIndex(room, seatB) ||
+        seatA === seatB
+      ) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Cặp ghế cần hoán đổi không hợp lệ.');
+        return;
+      }
+      this.swapLobbySeatAssignments(room, seatA, seatB);
+      if (
+        room.pendingSeatSwap &&
+        (room.pendingSeatSwap.fromSeatIndex === seatA ||
+          room.pendingSeatSwap.fromSeatIndex === seatB ||
+          room.pendingSeatSwap.toSeatIndex === seatA ||
+          room.pendingSeatSwap.toSeatIndex === seatB)
+      ) {
+        this.clearPendingSeatSwap(room);
+      }
+      this.broadcastSnapshot(room);
+      return;
+    }
+
+    if (msg.type === 'SET_READY') {
+      if (room.status !== 'lobby' || seat.explicitlyLeft) {
+        this.sendError(
+          clientId,
+          'INVALID_STATE',
+          'Chỉ có thể thay đổi trạng thái sẵn sàng ở sảnh chờ.'
+        );
+        return;
+      }
+      if (seat.seatIndex === room.hostSeatIndex) {
+        seat.ready = true;
+        this.broadcastSnapshot(room);
+        return;
+      }
+      seat.ready = Boolean(msg.ready);
       this.broadcastSnapshot(room);
       return;
     }
@@ -1249,6 +1562,15 @@ export class OnlineRoomManager {
       this.promoteConnectedHostIfNeeded(room);
     }
 
+    if (
+      room.status === 'lobby' &&
+      room.pendingSeatSwap &&
+      (room.pendingSeatSwap.fromParticipantId === seat.participantId ||
+        room.pendingSeatSwap.toParticipantId === seat.participantId)
+    ) {
+      this.clearPendingSeatSwap(room);
+    }
+
     this.broadcastSnapshot(room);
 
     if (scheduleGraceCleanup) {
@@ -1264,6 +1586,13 @@ export class OnlineRoomManager {
     this.sendMessage(clientId, { type: 'LEFT_ROOM' });
 
     if (room.status === 'lobby') {
+      if (
+        room.pendingSeatSwap &&
+        (room.pendingSeatSwap.fromParticipantId === seat.participantId ||
+          room.pendingSeatSwap.toParticipantId === seat.participantId)
+      ) {
+        this.clearPendingSeatSwap(room);
+      }
       room.humans = room.humans.filter((h) => h !== seat);
       if (room.humans.length === 0) {
         this.clearRoomTimers(room);
@@ -1273,7 +1602,10 @@ export class OnlineRoomManager {
       if (seat.seatIndex === room.hostSeatIndex) {
         if (!this.promoteConnectedHostIfNeeded(room)) {
           const fallbackHost = [...room.humans].sort((a, b) => a.seatIndex - b.seatIndex)[0];
-          if (fallbackHost) room.hostSeatIndex = fallbackHost.seatIndex;
+          if (fallbackHost) {
+            room.hostSeatIndex = fallbackHost.seatIndex;
+            fallbackHost.ready = true;
+          }
         }
       }
       this.broadcastSnapshot(room);
@@ -1335,6 +1667,9 @@ export class OnlineRoomManager {
         room.hostSeatIndex = [...room.humans].sort((a, b) => a.seatIndex - b.seatIndex)[0].seatIndex;
       }
     }
+    for (const h of room.humans) {
+      h.ready = h.seatIndex === room.hostSeatIndex;
+    }
     this.scheduleGraceCleanupIfEmpty(room);
     this.broadcastSnapshot(room);
   }
@@ -1362,6 +1697,14 @@ export class OnlineRoomManager {
         'NOT_ENOUGH_PLAYERS',
         'Cần ít nhất 2 người chơi (hoặc bật "Bù Bot AI") để bắt đầu ván đấu!'
       );
+      return;
+    }
+
+    const unreadyGuest = orderedHumans.find(
+      (h) => h.connected && h.seatIndex !== room.hostSeatIndex && !h.ready
+    );
+    if (unreadyGuest) {
+      this.sendError(requesterClientId, 'GUESTS_NOT_READY', 'Vẫn còn người chơi chưa nhấn Sẵn sàng!');
       return;
     }
 
@@ -3517,7 +3860,7 @@ export class OnlineRoomManager {
     if (!room.match) return;
     if (phase === 'AWAIT_ROLL') {
       if (bot.inJail) {
-        const decision = botChooseJailAction(bot);
+        const decision = botChooseJailAction(bot, room.botDifficulty);
         if (decision === 'USE_CARD') {
           this.executeAction(room, { kind: 'USE_JAIL_CARD' });
           return;
@@ -3533,7 +3876,8 @@ export class OnlineRoomManager {
             room.match.players,
             room.match.properties,
             room.match.boardModifiers,
-            room.match.matchMode
+            room.match.matchMode,
+            room.botDifficulty
           )
         : 'NORMAL';
       this.executeAction(room, { kind: 'ROLL_DICE', diceChoice });
@@ -3548,7 +3892,8 @@ export class OnlineRoomManager {
           room.match.players,
           room.match.properties,
           room.match.boardModifiers,
-          room.match.matchMode
+          room.match.matchMode,
+          room.botDifficulty
         )
       ) {
         this.executeAction(room, { kind: 'REROLL_DICE' });
@@ -3562,7 +3907,8 @@ export class OnlineRoomManager {
           bot.position,
           room.match.players,
           room.match.properties,
-          room.match.matchMode
+          room.match.matchMode,
+          room.botDifficulty
         )
       ) {
         const tier = botPickInitialPurchaseTier(
@@ -3570,14 +3916,20 @@ export class OnlineRoomManager {
           bot.position,
           room.match.properties,
           room.match.players,
-          room.match.matchMode
+          room.match.matchMode,
+          room.botDifficulty
         );
         this.executeAction(room, { kind: 'BUY_PROPERTY', initialLevel: tier });
       } else {
         this.executeAction(room, { kind: 'SKIP_BUY' });
       }
     } else if (phase === 'UPGRADE_DECISION') {
-      const lvl = botPickOnTileUpgradeTargetLevel(bot, bot.position, room.match.properties);
+      const lvl = botPickOnTileUpgradeTargetLevel(
+        bot,
+        bot.position,
+        room.match.properties,
+        room.botDifficulty
+      );
       if (lvl !== null) {
         this.executeAction(room, { kind: 'UPGRADE_PROPERTY', targetLevel: lvl });
       } else {
@@ -3591,7 +3943,8 @@ export class OnlineRoomManager {
           room.match.players,
           room.match.properties,
           room.match.boardModifiers,
-          room.match.matchMode
+          room.match.matchMode,
+          room.botDifficulty
         )
       ) {
         this.executeAction(room, { kind: 'CONFIRM_BUYOUT' });
@@ -3605,7 +3958,8 @@ export class OnlineRoomManager {
         room.match.boardModifiers,
         room.match.isFreeChampionship,
         room.match.players,
-        room.match.matchMode
+        room.match.matchMode,
+        room.botDifficulty
       );
       if (target !== null) {
         this.executeAction(room, { kind: 'CONFIRM_CHAMPIONSHIP', targetTile: target });
@@ -3618,7 +3972,8 @@ export class OnlineRoomManager {
         room.match.properties,
         room.match.boardModifiers,
         room.match.players,
-        room.match.matchMode
+        room.match.matchMode,
+        room.botDifficulty
       );
       if (dest !== null) {
         this.executeAction(room, { kind: 'SELECT_WORLD_TOUR', targetTile: dest });
@@ -3634,7 +3989,8 @@ export class OnlineRoomManager {
         room.match.players,
         room.match.properties,
         room.match.boardModifiers,
-        room.match.matchMode
+        room.match.matchMode,
+        room.botDifficulty
       );
       if (target !== null) {
         this.executeAction(room, { kind: 'APPLY_TACTICAL_CARD', targetTile: target });

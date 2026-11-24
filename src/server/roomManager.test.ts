@@ -12,6 +12,12 @@ async function flushMicrotasks(rounds = 6): Promise<void> {
   }
 }
 
+function markAllGuestsReady(manager: OnlineRoomManager, guestClientIds: string[]): void {
+  for (const guestId of guestClientIds) {
+    manager.handleClientMessage(guestId, { type: 'SET_READY', ready: true });
+  }
+}
+
 test('Room lifecycle: create, join, duplicate token resolution, and bot fill on start', () => {
   const inbox = new Map<string, ServerToClientMessage[]>();
   const record = (clientId: string, msg: ServerToClientMessage) => {
@@ -57,6 +63,7 @@ test('Room lifecycle: create, join, duplicate token resolution, and bot fill on 
     assert.equal(joined.yourSeatIndex, 1);
     assert.notEqual(joined.snapshot.seats[1].tokenType, 'car');
 
+    markAllGuestsReady(manager, ['c2']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
     const latestC1 = (inbox.get('c1') || []).at(-1);
     assert.equal(latestC1?.type, 'ROOM_SNAPSHOT');
@@ -113,6 +120,7 @@ test('Turn ownership enforcement and deterministic roll -> buy -> end turn progr
       tokenType: 'yacht',
     });
 
+    markAllGuestsReady(manager, ['c2']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     // Non-active player c2 cannot roll on c1's turn
@@ -195,6 +203,7 @@ test('Disconnect, AFK timeout auto-action, Bot AI takeover, and sessionToken rec
       playerName: 'Lan',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['c2']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     // c1 disconnects on their turn
@@ -343,6 +352,11 @@ test('WebSocket integration: two clients create, join, start match, and roll dic
     );
     await waitForMsg<'ROOM_JOINED'>(c2.messages, (m) => m.type === 'ROOM_JOINED');
 
+    c2.ws.send(JSON.stringify({ type: 'SET_READY', ready: true }));
+    await waitForMsg<'ROOM_SNAPSHOT'>(
+      c1.messages,
+      (m) => m.type === 'ROOM_SNAPSHOT' && m.snapshot.seats[1]?.ready === true
+    );
     c1.ws.send(JSON.stringify({ type: 'START_MATCH' }));
     await waitForMsg<'ROOM_SNAPSHOT'>(
       c2.messages,
@@ -410,6 +424,7 @@ test('World Tour restricts targets to unowned/own tiles, Start landing only pays
       playerName: 'P2',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['c2']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     // Turn 1: P1 rolls 11 -> buys Phan Thiết -> auto-ends turn to P2
@@ -607,6 +622,7 @@ test('Insufficient cash skips BuyDecisionModal; 0-property debt auto-bankrupts; 
       playerName: 'P2',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['c2']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     // T1 P1 -> 7 buys lv2
@@ -865,6 +881,7 @@ test('BUG-04: 20-minute match timer counts down and settles Sudden Death winner 
       playerName: 'P2',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['c2']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     const snap0 = latestByClient.get('c1');
@@ -953,6 +970,7 @@ test('BUG-05: 2v2 Doubles mode enforces 4 seats, teammate rent/buyout exemption,
       playerName: 'B2',
       tokenType: 'crown',
     });
+    markAllGuestsReady(manager, ['c2', 'c3', 'c4']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     // P1 buys Đà Lạt (3)
@@ -1053,6 +1071,7 @@ test('BUG-10: Tactical Dice EVEN/ODD parity & charges, and REROLL_DECISION -> RE
       playerName: 'P2',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['c2']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     // P1 rolls EVEN tactical dice -> sum MUST be even, evenOddCharges decremented 3 -> 2, enters REROLL_DECISION
@@ -1145,6 +1164,7 @@ test('BUG-12 & BUG-13: Connected AFK player gets Bot takeover after 2 missed tur
       playerName: 'P2',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['c2']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     // Drain 45s while c1 is STILL CONNECTED -> missed turn #1 auto-rolls [2, 2] (doubles!)
@@ -1256,6 +1276,7 @@ test('BUG-14 & BUG-18: ch-10 COLLECT_FROM_ALL queues debtor into DEBT_RESOLUTION
       playerName: 'P3',
       tokenType: 'jet',
     });
+    markAllGuestsReady(manager, ['c2', 'c3']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     // Inspect internal match for precise setup of cash/chanceDeck while exercising real public actions
@@ -1449,6 +1470,7 @@ test('BUG-22, BUG-23, BUG-24, BUG-25, BUG-27, BUG-28, BUG-29, BUG-30: validation
     assert.equal(manager.getActiveRoomCount(), 1);
 
     // Start match in roomCode (c2 is host after c1 switched? No, c1 didn't switch above; start with c1)
+    markAllGuestsReady(manager, ['c2']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     // BUG-27: RETURN_TO_LOBBY rejected while playing
@@ -1541,6 +1563,7 @@ test('BUG-22, BUG-23, BUG-24, BUG-25, BUG-27, BUG-28, BUG-29, BUG-30: validation
         playerName: 'G2',
         tokenType: 'yacht',
       });
+      markAllGuestsReady(manager, ['g2']);
       manager.handleClientMessage('g1', { type: 'START_MATCH' });
       // Fast-forward match to gameover via 20-min timer
       for (let t = 0; t < 1200; t++) {
@@ -1730,6 +1753,7 @@ test('Iteration 2 lifecycle & REROLL_DECISION regressions: zombie lobby leak, se
       type: 'UPDATE_LOBBY_SETTINGS',
       tacticalDiceEnabled: true,
     });
+    markAllGuestsReady(manager, ['gJoin']);
     manager.handleClientMessage('h1', { type: 'START_MATCH' });
     manager.handleDisconnect('h1');
     const gJoinAfterHostDrop = (inbox.get('gJoin') || []).at(-1);
@@ -1843,6 +1867,7 @@ test('BUG-14: ch-10 queues >= 2 simultaneous property-owning debtors, settles SE
       playerName: 'P3',
       tokenType: 'jet',
     });
+    markAllGuestsReady(manager, ['c2', 'c3']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     const roomsMap = (manager as unknown as {
@@ -1979,6 +2004,7 @@ test('BUG-05, BUG-14 & BUG-18 (TEAMS_2V2): ch-10 exempts teammate while charging
       playerName: 'T1B',
       tokenType: 'crown',
     });
+    markAllGuestsReady(manager, ['c1', 'c2', 'c3']);
     manager.handleClientMessage('c0', { type: 'START_MATCH' });
 
     const roomsMap = (manager as unknown as {
@@ -2196,6 +2222,7 @@ test('Boundary & negative input validation: CREATE_ROOM clamping, SELL_AND_PAY_D
       playerName: 'D2',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['d2']);
     manager.handleClientMessage('d1', { type: 'START_MATCH' });
 
     const roomsMap = (manager as unknown as {
@@ -2391,6 +2418,7 @@ test('BUG-02: startMatch preserves lobby seat order across 2v2 and FFA (with/wit
     const lobbySeatTokens = preStartSnap.snapshot.seats.map((s) => s.tokenType);
     const lobbySeatNames = preStartSnap.snapshot.seats.map((s) => s.playerName);
 
+    markAllGuestsReady(manager, ['c']);
     manager.handleClientMessage('a', { type: 'START_MATCH' });
     const startSnapA = latestByClient.get('a');
     const startSnapC = latestByClient.get('c');
@@ -2500,6 +2528,7 @@ test('BUG-02: startMatch preserves lobby seat order across 2v2 and FFA (with/wit
     manager.handleClientMessage('x0', { type: 'LEAVE_ROOM' });
     manager.handleClientMessage('x2', { type: 'LEAVE_ROOM' });
     // Now x1 is host at seat 1, x3 is at seat 3, seats 0 & 2 are empty -> filled by Bots
+    markAllGuestsReady(manager, ['x3']);
     manager.handleClientMessage('x1', { type: 'START_MATCH' });
     const startSnapX1 = latestByClient.get('x1');
     const startSnapX3 = latestByClient.get('x3');
@@ -2558,6 +2587,7 @@ test('BUG-02: startMatch preserves lobby seat order across 2v2 and FFA (with/wit
       tokenType: 'jet',
     });
     manager.handleClientMessage('f1', { type: 'LEAVE_ROOM' });
+    markAllGuestsReady(manager, ['f2']);
     manager.handleClientMessage('f0', { type: 'START_MATCH' });
     const sf0 = latestByClient.get('f0');
     const sf2 = latestByClient.get('f2');
@@ -2604,6 +2634,7 @@ test('BUG-02: startMatch preserves lobby seat order across 2v2 and FFA (with/wit
     });
     manager.handleClientMessage('n0', { type: 'LEAVE_ROOM' });
     manager.handleClientMessage('n2', { type: 'LEAVE_ROOM' });
+    markAllGuestsReady(manager, ['n3']);
     manager.handleClientMessage('n1', { type: 'START_MATCH' });
     const sn1 = latestByClient.get('n1');
     const sn3 = latestByClient.get('n3');
@@ -2662,6 +2693,7 @@ test('BUG-01: AFK takeover counts full missed turns (not sub-phase timeouts), ha
       playerName: 'Active P1',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(managerA, ['p1']);
     managerA.handleClientMessage('p0', { type: 'START_MATCH' });
 
     // 1) Drain AWAIT_ROLL (45s) on Turn 1 -> REROLL_DECISION
@@ -2758,6 +2790,7 @@ test('BUG-01: AFK takeover counts full missed turns (not sub-phase timeouts), ha
       playerName: 'Active B1',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(managerB, ['b1']);
     managerB.handleClientMessage('b0', { type: 'START_MATCH' });
 
     // Turn 1: b0 rolls actively, then lets BUY_DECISION time out
@@ -2844,6 +2877,7 @@ test('BUG-06: Server responds with ERROR INVALID_STATE / INVALID_ACTION on phase
       playerName: 'P2',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['p2']);
     manager.handleClientMessage('p1', { type: 'START_MATCH' });
 
     const expectErrorCode = (action: OnlineGameAction, expectedCode: string) => {
@@ -2930,6 +2964,7 @@ test('BUG-04: Server validates expectedTurnCount, expectedPhase, expectedDecisio
       playerName: 'Guest',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['p1']);
     manager.handleClientMessage('p0', { type: 'START_MATCH' });
 
     const getSnap = (cid: string) =>
@@ -3191,6 +3226,7 @@ test('BUG-05 (Audit): Online TIME_LIMIT Sudden Death settles pendingDebt and pen
       playerName: 'Debtor P2',
       tokenType: 'jet',
     });
+    markAllGuestsReady(manager, ['c2', 'c3']);
     manager.handleClientMessage('c1', { type: 'START_MATCH' });
 
     const roomsMap = (manager as unknown as {
@@ -3501,6 +3537,7 @@ test('Review Round 2 (BUG-04, BUG-01, BUG-05, BUG-07): per-player actionId scopi
       playerName: 'P1',
       tokenType: 'yacht',
     });
+    markAllGuestsReady(manager, ['p1']);
     manager.handleClientMessage('p0', { type: 'START_MATCH' });
 
     const roomsMap = (manager as unknown as {
@@ -3854,6 +3891,7 @@ test('Chat channel security: TEAM chat stays isolated in TEAMS_2V2 across live e
     );
 
     // Start 2v2 match
+    markAllGuestsReady(manager, ['c1', 'c2', 'c3']);
     manager.handleClientMessage('c0', { type: 'START_MATCH' });
 
     const origNow = Date.now;
@@ -4105,6 +4143,7 @@ test('Chat validation & rate limit: empty ignored, 220 chars truncated to 160, <
     assert.equal(t1Rejoined.snapshot.chatHistory.length, 0);
 
     // Also verify chat works in gameover status
+    markAllGuestsReady(manager, ['t1-re']);
     manager.handleClientMessage('t0-re', { type: 'START_MATCH' });
     const roomsMap = (manager as unknown as {
       rooms: Map<string, { status: string; match: { matchTimeLeft: number } | null }>;
@@ -4368,6 +4407,595 @@ test('RECONNECT_ROOM resets micEnabled to false on active-session replacement an
       )?.micEnabled,
       false
     );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('MOVE_TO_SEAT: switches to empty seat, preserves 2v2 fair teamId, updates hostSeatIndex, and cancels conflicting pendingSeatSwap', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      matchMode: 'TEAMS_2V2',
+    });
+    const created = latestByClient.get('c1');
+    assert.equal(created?.type, 'ROOM_JOINED');
+    if (!created || created.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: created.roomCode,
+      playerName: 'Guest2',
+      tokenType: 'yacht',
+    });
+
+    // c2 at seat 1 (Team 1) moves to empty seat 2 (Team 0)
+    manager.handleClientMessage('c2', { type: 'MOVE_TO_SEAT', targetSeatIndex: 2 });
+    const c2AfterMove = latestByClient.get('c2');
+    assert.equal(c2AfterMove?.type, 'ROOM_SNAPSHOT');
+    if (!c2AfterMove || c2AfterMove.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(c2AfterMove.yourSeatIndex, 2);
+    assert.equal(c2AfterMove.snapshot.seats[2].occupiedByHuman, true);
+    assert.equal(c2AfterMove.snapshot.seats[2].teamId, 0);
+    assert.equal(c2AfterMove.snapshot.seats[1].occupiedByHuman, false);
+    assert.equal(
+      c2AfterMove.snapshot.participants.find((p) => p.participantId === c2AfterMove.yourParticipantId)
+        ?.seatIndex,
+      2
+    );
+
+    // Moving onto occupied seat 0 is rejected
+    const beforeOccupied = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('c2', { type: 'MOVE_TO_SEAT', targetSeatIndex: 0 });
+    assert.ok(
+      (allByClient.get('c2') || [])
+        .slice(beforeOccupied)
+        .some((m) => m.type === 'ERROR' && m.code === 'SEAT_OCCUPIED')
+    );
+
+    // Moving out of range is rejected
+    const beforeBad = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('c2', { type: 'MOVE_TO_SEAT', targetSeatIndex: 4 });
+    assert.ok(
+      (allByClient.get('c2') || [])
+        .slice(beforeBad)
+        .some((m) => m.type === 'ERROR' && m.code === 'BAD_MESSAGE')
+    );
+
+    // Host moves from seat 0 -> seat 3 -> hostSeatIndex updates and ready stays true
+    manager.handleClientMessage('c1', { type: 'MOVE_TO_SEAT', targetSeatIndex: 3 });
+    const c1AfterHostMove = latestByClient.get('c1');
+    assert.equal(c1AfterHostMove?.type, 'ROOM_SNAPSHOT');
+    if (!c1AfterHostMove || c1AfterHostMove.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(c1AfterHostMove.yourSeatIndex, 3);
+    assert.equal(c1AfterHostMove.snapshot.hostSeatIndex, 3);
+    assert.equal(c1AfterHostMove.snapshot.seats[3].isHost, true);
+    assert.equal(c1AfterHostMove.snapshot.seats[3].ready, true);
+    assert.equal(c1AfterHostMove.snapshot.seats[0].isHost, false);
+
+    // Moving a seat cancels any pendingSeatSwap involving that seat
+    manager.handleClientMessage('c2', { type: 'REQUEST_SEAT_SWAP', targetSeatIndex: 3 });
+    const withPending = latestByClient.get('c1');
+    assert.equal(withPending?.type, 'ROOM_SNAPSHOT');
+    if (!withPending || withPending.type !== 'ROOM_SNAPSHOT') return;
+    assert.ok(withPending.snapshot.pendingSeatSwap);
+
+    manager.handleClientMessage('c2', { type: 'MOVE_TO_SEAT', targetSeatIndex: 1 });
+    const afterCancelMove = latestByClient.get('c1');
+    assert.equal(afterCancelMove?.type, 'ROOM_SNAPSHOT');
+    if (!afterCancelMove || afterCancelMove.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterCancelMove.snapshot.pendingSeatSwap, null);
+    assert.equal(afterCancelMove.snapshot.seats[1].teamId, 1);
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('REQUEST_SEAT_SWAP & RESPOND_SEAT_SWAP: handles accept, decline, authorization, SWAP_PENDING, and 15s timeout expiry', async () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host1',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: false,
+      matchMode: 'TEAMS_2V2',
+    });
+    const j1 = (allByClient.get('c1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j1?.type, 'ROOM_JOINED');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest2',
+      tokenType: 'yacht',
+    });
+    const j2 = (allByClient.get('c2') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j2?.type, 'ROOM_JOINED');
+    if (!j2 || j2.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c3', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest3',
+      tokenType: 'jet',
+    });
+    const j3 = (allByClient.get('c3') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j3?.type, 'ROOM_JOINED');
+    if (!j3 || j3.type !== 'ROOM_JOINED') return;
+
+    // 1. c2 (seat 1) requests swap with c3 (seat 2)
+    manager.handleClientMessage('c2', { type: 'REQUEST_SEAT_SWAP', targetSeatIndex: 2 });
+    const reqSnap = latestByClient.get('c3');
+    assert.equal(reqSnap?.type, 'ROOM_SNAPSHOT');
+    if (!reqSnap || reqSnap.type !== 'ROOM_SNAPSHOT') return;
+    const req1 = reqSnap.snapshot.pendingSeatSwap;
+    assert.ok(req1);
+    assert.equal(req1.fromParticipantId, j2.yourParticipantId);
+    assert.equal(req1.fromSeatIndex, 1);
+    assert.equal(req1.toParticipantId, j3.yourParticipantId);
+    assert.equal(req1.toSeatIndex, 2);
+    assert.ok(req1.expiresAt > Date.now());
+
+    // Duplicate / concurrent request in same room rejected with SWAP_PENDING
+    const beforeDupSwap = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', { type: 'REQUEST_SEAT_SWAP', targetSeatIndex: 1 });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeDupSwap)
+        .some((m) => m.type === 'ERROR' && m.code === 'SWAP_PENDING')
+    );
+
+    // Non-target c1 cannot respond
+    const beforeNonTarget = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'RESPOND_SEAT_SWAP',
+      requestId: req1.requestId,
+      accept: true,
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeNonTarget)
+        .some((m) => m.type === 'ERROR' && m.code === 'FORBIDDEN')
+    );
+
+    // Target c3 declines -> pendingSeatSwap cleared, seats unchanged
+    manager.handleClientMessage('c3', {
+      type: 'RESPOND_SEAT_SWAP',
+      requestId: req1.requestId,
+      accept: false,
+    });
+    const afterDecline = latestByClient.get('c2');
+    assert.equal(afterDecline?.type, 'ROOM_SNAPSHOT');
+    if (!afterDecline || afterDecline.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterDecline.snapshot.pendingSeatSwap, null);
+    assert.equal(afterDecline.yourSeatIndex, 1);
+
+    // 2. c2 requests again and c3 accepts -> seats 1 and 2 swap!
+    manager.handleClientMessage('c2', { type: 'REQUEST_SEAT_SWAP', targetSeatIndex: 2 });
+    const req2Snap = latestByClient.get('c3');
+    assert.equal(req2Snap?.type, 'ROOM_SNAPSHOT');
+    if (!req2Snap || req2Snap.type !== 'ROOM_SNAPSHOT') return;
+    const req2 = req2Snap.snapshot.pendingSeatSwap!;
+    assert.ok(req2);
+
+    manager.handleClientMessage('c3', {
+      type: 'RESPOND_SEAT_SWAP',
+      requestId: req2.requestId,
+      accept: true,
+    });
+    const c2Swapped = latestByClient.get('c2');
+    const c3Swapped = latestByClient.get('c3');
+    assert.equal(c2Swapped?.type, 'ROOM_SNAPSHOT');
+    assert.equal(c3Swapped?.type, 'ROOM_SNAPSHOT');
+    if (
+      !c2Swapped ||
+      c2Swapped.type !== 'ROOM_SNAPSHOT' ||
+      !c3Swapped ||
+      c3Swapped.type !== 'ROOM_SNAPSHOT'
+    ) {
+      return;
+    }
+    assert.equal(c2Swapped.snapshot.pendingSeatSwap, null);
+    assert.equal(c2Swapped.yourSeatIndex, 2);
+    assert.equal(c3Swapped.yourSeatIndex, 1);
+    assert.equal(c2Swapped.snapshot.seats[2].participantId, j2.yourParticipantId);
+    assert.equal(c2Swapped.snapshot.seats[2].teamId, 0);
+    assert.equal(c2Swapped.snapshot.seats[1].participantId, j3.yourParticipantId);
+    assert.equal(c2Swapped.snapshot.seats[1].teamId, 1);
+
+    // 3. Swapping with Host updates hostSeatIndex and preserves host.ready === true
+    manager.handleClientMessage('c3', { type: 'REQUEST_SEAT_SWAP', targetSeatIndex: 0 });
+    const req3Snap = latestByClient.get('c1');
+    assert.equal(req3Snap?.type, 'ROOM_SNAPSHOT');
+    if (!req3Snap || req3Snap.type !== 'ROOM_SNAPSHOT') return;
+    const req3 = req3Snap.snapshot.pendingSeatSwap!;
+    assert.ok(req3);
+    manager.handleClientMessage('c1', {
+      type: 'RESPOND_SEAT_SWAP',
+      requestId: req3.requestId,
+      accept: true,
+    });
+    const afterHostSwap = latestByClient.get('c1');
+    assert.equal(afterHostSwap?.type, 'ROOM_SNAPSHOT');
+    if (!afterHostSwap || afterHostSwap.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterHostSwap.yourSeatIndex, 1);
+    assert.equal(afterHostSwap.snapshot.hostSeatIndex, 1);
+    assert.equal(afterHostSwap.snapshot.seats[1].isHost, true);
+    assert.equal(afterHostSwap.snapshot.seats[1].ready, true);
+
+    // 4. 15s expiry (timingScale: 0) auto-clears pendingSeatSwap
+    manager.handleClientMessage('c2', { type: 'REQUEST_SEAT_SWAP', targetSeatIndex: 0 });
+    const beforeExpire = latestByClient.get('c3');
+    assert.equal(beforeExpire?.type, 'ROOM_SNAPSHOT');
+    if (!beforeExpire || beforeExpire.type !== 'ROOM_SNAPSHOT') return;
+    const expiredId = beforeExpire.snapshot.pendingSeatSwap!.requestId;
+
+    await flushMicrotasks(6);
+
+    const afterExpire = latestByClient.get('c3');
+    assert.equal(afterExpire?.type, 'ROOM_SNAPSHOT');
+    if (!afterExpire || afterExpire.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterExpire.snapshot.pendingSeatSwap, null);
+
+    const beforeLateReply = (allByClient.get('c3') || []).length;
+    manager.handleClientMessage('c3', {
+      type: 'RESPOND_SEAT_SWAP',
+      requestId: expiredId,
+      accept: true,
+    });
+    assert.ok((allByClient.get('c3') || []).slice(beforeLateReply).some((m) => m.type === 'ERROR'));
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('HOST_SWAP_SEATS: host swaps occupied or empty seats directly and updates hostSeatIndex', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      matchMode: 'TEAMS_2V2',
+    });
+    const j1 = latestByClient.get('c1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest2',
+      tokenType: 'yacht',
+    });
+
+    // Non-host rejected
+    const beforeForbidden = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('c2', { type: 'HOST_SWAP_SEATS', seatA: 1, seatB: 2 });
+    assert.ok(
+      (allByClient.get('c2') || [])
+        .slice(beforeForbidden)
+        .some((m) => m.type === 'ERROR' && m.code === 'FORBIDDEN')
+    );
+
+    // Swap occupied seat 1 with empty seat 2
+    manager.handleClientMessage('c1', { type: 'HOST_SWAP_SEATS', seatA: 1, seatB: 2 });
+    const afterEmptySwap = latestByClient.get('c2');
+    assert.equal(afterEmptySwap?.type, 'ROOM_SNAPSHOT');
+    if (!afterEmptySwap || afterEmptySwap.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterEmptySwap.yourSeatIndex, 2);
+    assert.equal(afterEmptySwap.snapshot.seats[2].teamId, 0);
+    assert.equal(afterEmptySwap.snapshot.seats[1].occupiedByHuman, false);
+
+    // Swap Host seat 0 with Guest seat 2 -> hostSeatIndex updates to 2 and Host stays ready
+    manager.handleClientMessage('c1', { type: 'HOST_SWAP_SEATS', seatA: 0, seatB: 2 });
+    const c1AfterSwap = latestByClient.get('c1');
+    const c2AfterSwap = latestByClient.get('c2');
+    assert.equal(c1AfterSwap?.type, 'ROOM_SNAPSHOT');
+    assert.equal(c2AfterSwap?.type, 'ROOM_SNAPSHOT');
+    if (
+      !c1AfterSwap ||
+      c1AfterSwap.type !== 'ROOM_SNAPSHOT' ||
+      !c2AfterSwap ||
+      c2AfterSwap.type !== 'ROOM_SNAPSHOT'
+    ) {
+      return;
+    }
+    assert.equal(c1AfterSwap.yourSeatIndex, 2);
+    assert.equal(c1AfterSwap.snapshot.hostSeatIndex, 2);
+    assert.equal(c1AfterSwap.snapshot.seats[2].isHost, true);
+    assert.equal(c1AfterSwap.snapshot.seats[2].ready, true);
+    assert.equal(c2AfterSwap.yourSeatIndex, 0);
+    assert.equal(c2AfterSwap.snapshot.seats[0].isHost, false);
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('Ready Check: blocks START_MATCH when guests unready, resets ready + posts system notice on rule change, and enforces carried-over host/lobby rules', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const j1 = latestByClient.get('c1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest',
+      tokenType: 'yacht',
+    });
+
+    // 1. Unready guest blocks START_MATCH with GUESTS_NOT_READY
+    const beforeBlock = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeBlock)
+        .some((m) => m.type === 'ERROR' && m.code === 'GUESTS_NOT_READY')
+    );
+
+    // 2. Guest marks ready -> reflected in seats and participants
+    manager.handleClientMessage('c2', { type: 'SET_READY', ready: true });
+    const snapReady = latestByClient.get('c1');
+    assert.equal(snapReady?.type, 'ROOM_SNAPSHOT');
+    if (!snapReady || snapReady.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(snapReady.snapshot.seats[1].ready, true);
+    assert.equal(snapReady.snapshot.participants.find((p) => p.seatIndex === 1)?.ready, true);
+
+    // 3. Host changes rule (startingCash) -> resets guest ready=false and appends system chat notice
+    manager.handleClientMessage('c1', {
+      type: 'UPDATE_LOBBY_SETTINGS',
+      startingCash: 3_000_000,
+    });
+    const snapAfterRule = latestByClient.get('c2');
+    assert.equal(snapAfterRule?.type, 'ROOM_SNAPSHOT');
+    if (!snapAfterRule || snapAfterRule.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(snapAfterRule.snapshot.startingCash, 3_000_000);
+    assert.equal(snapAfterRule.snapshot.seats[1].ready, false);
+    assert.equal(snapAfterRule.snapshot.participants.find((p) => p.seatIndex === 1)?.ready, false);
+    assert.equal(snapAfterRule.snapshot.seats[0].ready, true);
+    assert.equal(snapAfterRule.snapshot.chatHistory.length, 1);
+    assert.equal(snapAfterRule.snapshot.chatHistory[0].senderName, 'Hệ thống');
+    assert.equal(snapAfterRule.snapshot.chatHistory[0].participantId, 'system');
+    assert.equal(snapAfterRule.snapshot.chatHistory[0].senderColor, '#0284c7');
+    assert.equal(snapAfterRule.snapshot.chatHistory[0].channel, 'ALL');
+
+    const sysChatEvents = (allByClient.get('c2') || []).filter(
+      (m) =>
+        m.type === 'GAME_EVENT' &&
+        m.event.kind === 'CHAT_MESSAGE' &&
+        m.event.message.participantId === 'system'
+    );
+    assert.equal(sysChatEvents.length, 1);
+
+    // Sending identical setting does NOT reset ready or duplicate system message
+    manager.handleClientMessage('c2', { type: 'SET_READY', ready: true });
+    manager.handleClientMessage('c1', {
+      type: 'UPDATE_LOBBY_SETTINGS',
+      startingCash: 3_000_000,
+    });
+    const snapNoChange = latestByClient.get('c2');
+    assert.equal(snapNoChange?.type, 'ROOM_SNAPSHOT');
+    if (!snapNoChange || snapNoChange.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(snapNoChange.snapshot.seats[1].ready, true);
+    assert.equal(snapNoChange.snapshot.chatHistory.length, 1);
+
+    // Changing botDifficulty ALSO resets ready and posts another system notice
+    manager.handleClientMessage('c1', {
+      type: 'UPDATE_LOBBY_SETTINGS',
+      botDifficulty: 'hard',
+    });
+    const snapDiffChange = latestByClient.get('c2');
+    assert.equal(snapDiffChange?.type, 'ROOM_SNAPSHOT');
+    if (!snapDiffChange || snapDiffChange.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(snapDiffChange.snapshot.botDifficulty, 'hard');
+    assert.equal(snapDiffChange.snapshot.seats[1].ready, false);
+    assert.equal(snapDiffChange.snapshot.chatHistory.length, 2);
+
+    // 4. Ready again -> START_MATCH succeeds; RETURN_TO_LOBBY resets guest ready=false & host ready=true
+    manager.handleClientMessage('c2', { type: 'SET_READY', ready: true });
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+    const started = latestByClient.get('c1');
+    assert.equal(started?.type, 'ROOM_SNAPSHOT');
+    if (!started || started.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(started.snapshot.status, 'playing');
+
+    const roomsMap = (manager as unknown as {
+      rooms: Map<string, { match: { matchTimeLeft: number } | null }>;
+    }).rooms;
+    roomsMap.get(j1.roomCode)!.match!.matchTimeLeft = 1;
+    manager.tickOneSecond();
+
+    manager.handleClientMessage('c1', { type: 'RETURN_TO_LOBBY' });
+    const returned = latestByClient.get('c2');
+    assert.equal(returned?.type, 'ROOM_SNAPSHOT');
+    if (!returned || returned.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(returned.snapshot.status, 'lobby');
+    assert.equal(returned.snapshot.seats[0].ready, true);
+    assert.equal(returned.snapshot.seats[1].ready, false);
+
+    // 5. Carried-over ruling: promoteConnectedHostIfNeeded sets newHost.ready = true
+    manager.handleDisconnect('c1');
+    const afterHostDrop = latestByClient.get('c2');
+    assert.equal(afterHostDrop?.type, 'ROOM_SNAPSHOT');
+    if (!afterHostDrop || afterHostDrop.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterHostDrop.snapshot.hostSeatIndex, 1);
+    assert.equal(afterHostDrop.snapshot.seats[1].isHost, true);
+    assert.equal(afterHostDrop.snapshot.seats[1].ready, true);
+    assert.equal(afterHostDrop.snapshot.participants.find((p) => p.seatIndex === 1)?.ready, true);
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('botDifficulty: persists in CREATE_ROOM/UPDATE_LOBBY_SETTINGS and drives Bot AI decisions in runBotDecision', async () => {
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+    diceRng: () => [1, 2], // non-doubles so jailed Bot without paying fine stays in jail
+  });
+
+  try {
+    // Hard room: Bot in jail with 500_000 cash (>= 450_000 hard threshold) pays 200_000 fine!
+    manager.handleClientMessage('h-hard', {
+      type: 'CREATE_ROOM',
+      playerName: 'HostHard',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: true,
+      botDifficulty: 'hard',
+    });
+    const jHard = latestByClient.get('h-hard');
+    assert.equal(jHard?.type, 'ROOM_JOINED');
+    if (!jHard || jHard.type !== 'ROOM_JOINED') return;
+    assert.equal(jHard.snapshot.botDifficulty, 'hard');
+    manager.handleClientMessage('h-hard', { type: 'START_MATCH' });
+
+    // Easy room: Bot in jail with 500_000 cash (< 950_000 easy threshold) does NOT pay fine!
+    manager.handleClientMessage('h-easy', {
+      type: 'CREATE_ROOM',
+      playerName: 'HostEasy',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: true,
+      botDifficulty: 'easy',
+    });
+    const jEasy = latestByClient.get('h-easy');
+    assert.equal(jEasy?.type, 'ROOM_JOINED');
+    if (!jEasy || jEasy.type !== 'ROOM_JOINED') return;
+    assert.equal(jEasy.snapshot.botDifficulty, 'easy');
+    manager.handleClientMessage('h-easy', { type: 'START_MATCH' });
+
+    const roomsMap = (manager as unknown as {
+      rooms: Map<
+        string,
+        {
+          match: {
+            players: Array<{
+              cash: number;
+              position: number;
+              inJail: boolean;
+              jailTurns: number;
+              jailFreeCards: number;
+            }>;
+          };
+        }
+      >;
+    }).rooms;
+
+    const hardBot = roomsMap.get(jHard.roomCode)!.match.players[1];
+    hardBot.inJail = true;
+    hardBot.position = 8;
+    hardBot.cash = 500_000;
+    hardBot.jailFreeCards = 0;
+
+    const easyBot = roomsMap.get(jEasy.roomCode)!.match.players[1];
+    easyBot.inJail = true;
+    easyBot.position = 8;
+    easyBot.cash = 500_000;
+    easyBot.jailFreeCards = 0;
+
+    // Humans skip Turn 1 (roll 1+2=3 -> skip buy Đà Lạt) -> triggers Bot Turn 2 in both rooms
+    manager.handleClientMessage('h-hard', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    manager.handleClientMessage('h-easy', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    manager.handleClientMessage('h-hard', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    manager.handleClientMessage('h-easy', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    await flushMicrotasks(32);
+
+    assert.equal(hardBot.inJail, false, 'Hard bot with 500K must pay JAIL_FINE and exit jail');
+    assert.ok(hardBot.position !== 8, 'Hard bot must roll out of Lost Island after paying fine');
+    assert.equal(easyBot.inJail, true, 'Easy bot with 500K must not pay JAIL_FINE');
+    assert.equal(easyBot.cash, 500_000, 'Easy bot must retain 500K after failing to roll doubles');
   } finally {
     manager.dispose();
   }
