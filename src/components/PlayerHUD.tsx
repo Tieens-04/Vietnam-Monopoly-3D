@@ -5,6 +5,7 @@ import {
   getPlayerPersona,
 } from '../game/avatarLogic';
 import { BOARD_TILES } from '../game/boardData';
+import { BoardTauntKind } from '../game/onlineTypes';
 import {
   calculateNetWorth,
   formatBusinessTourCompact,
@@ -36,7 +37,22 @@ interface PlayerHUDProps {
   playerChatBubbles?: Record<number, { id: number; text: string; isTeam?: boolean }>;
   onDismissBubble: (botId: number) => void;
   onSelectTile: (tileIndex: number) => void;
+  onSendBoardTaunt?: (targetPlayerId: number, kind: BoardTauntKind) => void;
+  tauntCooldownUntil?: number;
+  openTauntTargetPlayerId?: number | null;
+  onChangeOpenTauntTargetPlayerId?: (targetPlayerId: number | null) => void;
 }
+
+const BOARD_TAUNT_OPTIONS: ReadonlyArray<{
+  kind: BoardTauntKind;
+  emoji: string;
+  label: string;
+}> = [
+  { kind: 'slipper', emoji: '🩴', label: 'Dép tổ ong' },
+  { kind: 'tomato', emoji: '🍅', label: 'Cà chua' },
+  { kind: 'confetti', emoji: '🎉', label: 'Pháo giấy' },
+  { kind: 'cash_stack', emoji: '💸', label: 'Cọc tiền' },
+];
 
 function getBubbleBadgeMeta(kind: BotQuipEventKind): {
   label: string;
@@ -242,6 +258,11 @@ interface PlayerCornerCardProps {
   bubble?: BotChatBubbleState;
   onDismissBubble: (botId: number) => void;
   onSelectTile: (tileIndex: number) => void;
+  canTaunt?: boolean;
+  isTauntOpen?: boolean;
+  tauntCooldownSecondsLeft?: number;
+  onToggleTauntPopover?: (open: boolean) => void;
+  onSendBoardTaunt?: (targetPlayerId: number, kind: BoardTauntKind) => void;
 }
 
 const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
@@ -263,6 +284,11 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
   bubble,
   onDismissBubble,
   onSelectTile,
+  canTaunt = false,
+  isTauntOpen = false,
+  tauntCooldownSecondsLeft = 0,
+  onToggleTauntPopover,
+  onSendBoardTaunt,
 }) => {
   const [recentDelta, setRecentDelta] = useState<number | null>(null);
   const [burstMood, setBurstMood] = useState<AvatarMood | null>(null);
@@ -312,10 +338,13 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
   const mood: AvatarMood = player.bankrupt ? 'bankrupt' : (burstMood ?? derivedMood);
   const badgeMeta = bubble ? getBubbleBadgeMeta(bubble.eventKind) : null;
   const palette = getPlayerBannerPalette(player.color);
+  const isOnTauntCooldown = tauntCooldownSecondsLeft > 0;
 
   return (
     <div
-      className={`fixed ${corner.containerClass} w-[46.5vw] max-w-[266px] sm:w-[266px] bt-hud-corner ${
+      className={`fixed ${corner.containerClass} ${
+        isTauntOpen ? 'z-30' : ''
+      } w-[46.5vw] max-w-[266px] sm:w-[266px] bt-hud-corner ${
         corner.isRight ? 'bt-hud-corner-right' : ''
       }`}
     >
@@ -410,28 +439,69 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
                   )}
               </div>
 
-              {!player.bankrupt && player.onlineConnected === false && !player.isBot ? (
-                <span className="px-1.5 py-[1px] rounded-full bg-rose-900/80 text-[9px] font-extrabold text-amber-200 shrink-0">
-                  ⚠️ Mất mạng
-                </span>
-              ) : !player.bankrupt && player.onlineBotTakeover ? (
-                <span className="px-1.5 py-[1px] rounded-full bg-slate-900/65 text-[9px] font-extrabold text-sky-200 shrink-0">
-                  🤖 Thế chỗ
-                </span>
-              ) : !player.bankrupt && player.inJail ? (
-                <span className="px-1.5 py-[1px] rounded-full bg-black/25 text-[9px] font-extrabold uppercase text-white shrink-0 tabular-nums">
-                  Đảo {player.jailTurns}/3
-                </span>
-              ) : !player.bankrupt && bubble?.status === 'loading' ? (
-                <span
-                  data-testid={`bot-chat-thinking-${player.id}`}
-                  className="px-1.5 py-[1px] rounded-full bg-white/30 text-[9px] font-extrabold text-white shrink-0"
-                >
-                  ...
-                </span>
-              ) : !player.bankrupt && isActive ? (
-                <span className="h-2.5 w-2.5 rounded-full bg-white shadow-[0_0_8px_#ffffff] shrink-0" />
-              ) : null}
+              <div className="flex items-center gap-1 shrink-0">
+                {!player.bankrupt && player.onlineConnected === false && !player.isBot ? (
+                  <span className="px-1.5 py-[1px] rounded-full bg-rose-900/80 text-[9px] font-extrabold text-amber-200 shrink-0">
+                    ⚠️ Mất mạng
+                  </span>
+                ) : !player.bankrupt && player.onlineBotTakeover ? (
+                  <span className="px-1.5 py-[1px] rounded-full bg-slate-900/65 text-[9px] font-extrabold text-sky-200 shrink-0">
+                    🤖 Thế chỗ
+                  </span>
+                ) : !player.bankrupt && player.inJail ? (
+                  <span className="px-1.5 py-[1px] rounded-full bg-black/25 text-[9px] font-extrabold uppercase text-white shrink-0 tabular-nums">
+                    Đảo {player.jailTurns}/3
+                  </span>
+                ) : !player.bankrupt && bubble?.status === 'loading' ? (
+                  <span
+                    data-testid={`bot-chat-thinking-${player.id}`}
+                    className="px-1.5 py-[1px] rounded-full bg-white/30 text-[9px] font-extrabold text-white shrink-0"
+                  >
+                    ...
+                  </span>
+                ) : !player.bankrupt && isActive ? (
+                  <span className="h-2.5 w-2.5 rounded-full bg-white shadow-[0_0_8px_#ffffff] shrink-0" />
+                ) : null}
+
+                {canTaunt && (
+                  <button
+                    type="button"
+                    data-testid={`bt-taunt-trigger-p${player.id}`}
+                    data-bt-taunt-root="true"
+                    disabled={isOnTauntCooldown}
+                    aria-expanded={isTauntOpen && !isOnTauntCooldown}
+                    aria-haspopup="menu"
+                    aria-label={
+                      isOnTauntCooldown
+                        ? `Hồi chiêu ném đồ tới ${player.name} (${tauntCooldownSecondsLeft}s)`
+                        : `Ném đồ trêu chọc ${player.name}`
+                    }
+                    title={
+                      isOnTauntCooldown
+                        ? `Hồi chiêu ném đồ (${tauntCooldownSecondsLeft}s)`
+                        : `Ném đồ trêu chọc ${player.name}`
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (e.detail > 0) e.currentTarget.blur();
+                      if (isOnTauntCooldown) return;
+                      onToggleTauntPopover?.(!isTauntOpen);
+                    }}
+                    className={`icon-hit-target h-5 sm:h-5.5 min-w-5 px-1 rounded-full border border-white/95 text-[10px] font-black flex items-center justify-center gap-0.5 shadow-xs transition-transform shrink-0 ${
+                      isOnTauntCooldown
+                        ? 'bg-slate-200/95 text-slate-700 cursor-not-allowed opacity-85 font-mono-num'
+                        : isTauntOpen
+                          ? 'bg-[#F5B800] text-slate-950 scale-105 cursor-pointer'
+                          : 'bg-white/95 hover:bg-white text-slate-900 hover:scale-105 cursor-pointer'
+                    }`}
+                  >
+                    <span aria-hidden="true">🎯</span>
+                    {isOnTauntCooldown && (
+                      <span className="leading-none">{tauntCooldownSecondsLeft}s</span>
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
 
             <AnimatedCashPill
@@ -563,6 +633,54 @@ const PlayerCornerCardInner: React.FC<PlayerCornerCardProps> = ({
         </div>
       )}
 
+      {/* Quick Taunt Projectile Picker Popover */}
+      {canTaunt && isTauntOpen && !isOnTauntCooldown && (
+        <div
+          data-testid={`bt-taunt-popover-p${player.id}`}
+          data-bt-taunt-root="true"
+          role="menu"
+          aria-label={`Chọn vật phẩm ném tới ${player.name}`}
+          className={`pointer-events-auto absolute z-40 w-56 max-w-[calc(100vw-1rem)] bt-casual-modal rounded-2xl overflow-hidden animate-pop-in ${
+            corner.isRight ? 'right-0' : 'left-0'
+          } ${corner.isBottom ? 'bottom-full mb-2' : 'top-full mt-2'}`}
+        >
+          <div className="bt-header-sky px-3 py-1.5 flex items-center justify-between gap-2">
+            <span className="font-display text-[11px] font-black uppercase tracking-wide truncate">
+              🎯 Ném {player.name}
+            </span>
+            <button
+              type="button"
+              onClick={() => onToggleTauntPopover?.(false)}
+              aria-label="Đóng bảng chọn ném đồ"
+              className="icon-hit-target h-5 w-5 rounded-full bg-white/25 hover:bg-white/40 text-white text-[10px] font-bold flex items-center justify-center cursor-pointer shrink-0"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="p-2 grid grid-cols-2 gap-1.5">
+            {BOARD_TAUNT_OPTIONS.map((opt) => (
+              <button
+                key={opt.kind}
+                type="button"
+                role="menuitem"
+                data-testid={`bt-taunt-option-p${player.id}-${opt.kind}`}
+                disabled={isOnTauntCooldown}
+                onClick={() => {
+                  onToggleTauntPopover?.(false);
+                  onSendBoardTaunt?.(player.id, opt.kind);
+                }}
+                className="px-2 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center gap-1.5 text-left text-[11px] font-extrabold text-slate-800 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                <span className="text-sm leading-none shrink-0" aria-hidden="true">
+                  {opt.emoji}
+                </span>
+                <span className="truncate">{opt.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Directional Bot AI Comic Speech Card */}
       {bubble &&
         badgeMeta &&
@@ -624,14 +742,81 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
   playerChatBubbles,
   onDismissBubble,
   onSelectTile,
+  onSendBoardTaunt,
+  tauntCooldownUntil = 0,
+  openTauntTargetPlayerId: controlledOpenTauntTargetId,
+  onChangeOpenTauntTargetPlayerId,
 }) => {
   const [reducedMotion, setReducedMotion] = useState<boolean>(() =>
     readPrefersReducedMotion()
   );
+  const [localOpenTauntTargetId, setLocalOpenTauntTargetId] = useState<number | null>(null);
+  const [cooldownNowMs, setCooldownNowMs] = useState<number>(() => Date.now());
+
+  const openTauntTargetId =
+    controlledOpenTauntTargetId !== undefined
+      ? controlledOpenTauntTargetId
+      : localOpenTauntTargetId;
+
+  const setOpenTauntTargetId = (nextId: number | null) => {
+    if (onChangeOpenTauntTargetPlayerId) {
+      onChangeOpenTauntTargetPlayerId(nextId);
+    } else {
+      setLocalOpenTauntTargetId(nextId);
+    }
+  };
+
+  const setOpenTauntTargetIdRef = useRef(setOpenTauntTargetId);
+  setOpenTauntTargetIdRef.current = setOpenTauntTargetId;
 
   useEffect(() => {
     return subscribePrefersReducedMotion(setReducedMotion);
   }, []);
+
+  useEffect(() => {
+    const now = Date.now();
+    setCooldownNowMs(now);
+    if (!tauntCooldownUntil || tauntCooldownUntil <= now) return;
+    const interval = window.setInterval(() => {
+      const current = Date.now();
+      setCooldownNowMs(current);
+      if (current >= tauntCooldownUntil) {
+        window.clearInterval(interval);
+      }
+    }, 250);
+    const expiryTimer = window.setTimeout(() => {
+      setCooldownNowMs(Date.now());
+      window.clearInterval(interval);
+    }, Math.max(0, tauntCooldownUntil - now) + 20);
+    return () => {
+      window.clearInterval(interval);
+      window.clearTimeout(expiryTimer);
+    };
+  }, [tauntCooldownUntil]);
+
+  const tauntCooldownSecondsLeft =
+    tauntCooldownUntil > cooldownNowMs
+      ? Math.ceil((tauntCooldownUntil - cooldownNowMs) / 1000)
+      : 0;
+
+  useEffect(() => {
+    if (openTauntTargetId === null) return;
+    if (tauntCooldownSecondsLeft > 0 || !onSendBoardTaunt) {
+      setOpenTauntTargetIdRef.current(null);
+      return;
+    }
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest('[data-bt-taunt-root="true"]')
+      ) {
+        return;
+      }
+      setOpenTauntTargetIdRef.current(null);
+    };
+    document.addEventListener('pointerdown', handleOutsidePointerDown);
+    return () => document.removeEventListener('pointerdown', handleOutsidePointerDown);
+  }, [openTauntTargetId, tauntCooldownSecondsLeft, onSendBoardTaunt]);
 
   return (
     <div className="fixed inset-0 z-20 pointer-events-none">
@@ -643,6 +828,16 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
           .sort((a, b) => a.tileIndex - b.tileIndex);
         const netWorth = calculateNetWorth(player, properties);
         const bubble = player.isBot ? botBubbles[player.id] : undefined;
+        const isLocalHuman =
+          localPlayerId !== null && localPlayerId !== undefined && player.id === localPlayerId;
+        const canTaunt = Boolean(
+          onSendBoardTaunt &&
+            localPlayerId !== null &&
+            localPlayerId !== undefined &&
+            player.id !== localPlayerId &&
+            !player.bankrupt
+        );
+        const isTauntOpen = canTaunt && openTauntTargetId === player.id;
 
         return (
           <PlayerCornerCard
@@ -651,7 +846,7 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
             slotIndex={idx}
             corner={corner}
             isActive={isActive}
-            isLocalHuman={localPlayerId !== null && localPlayerId !== undefined && player.id === localPlayerId}
+            isLocalHuman={isLocalHuman}
             isDebtTarget={debtPlayerId !== null && player.id === debtPlayerId}
             reducedMotion={reducedMotion}
             matchMode={matchMode}
@@ -665,6 +860,11 @@ const PlayerHUDInner: React.FC<PlayerHUDProps> = ({
             bubble={bubble}
             onDismissBubble={onDismissBubble}
             onSelectTile={onSelectTile}
+            canTaunt={canTaunt}
+            isTauntOpen={isTauntOpen}
+            tauntCooldownSecondsLeft={tauntCooldownSecondsLeft}
+            onToggleTauntPopover={(open) => setOpenTauntTargetId(open ? player.id : null)}
+            onSendBoardTaunt={onSendBoardTaunt}
           />
         );
       })}

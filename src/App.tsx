@@ -130,10 +130,12 @@ import {
   TurnPhase,
 } from './game/types';
 import type {
+  BoardTauntKind,
   ChatChannel,
   OnlineVisualEvent,
   RoomChatMessage,
   RtcSignalPayload,
+  TilePingIntent,
 } from './game/onlineTypes';
 import {
   loadSavedCinematicCameraPref,
@@ -155,6 +157,42 @@ const DEFAULT_VOICE_SNAPSHOT: VoiceMeshSnapshot = {
   localSpeaking: false,
   peers: {},
 };
+
+const DISABLE_3D_TAUNTS_STORAGE_KEY = 'bt_disable_3d_taunts_v1';
+
+function loadSavedDisable3dTaunts(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = window.localStorage?.getItem(DISABLE_3D_TAUNTS_STORAGE_KEY);
+    return raw === 'true' || raw === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveDisable3dTaunts(disabled: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage?.setItem(
+      DISABLE_3D_TAUNTS_STORAGE_KEY,
+      disabled ? 'true' : 'false'
+    );
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function formatTilePingLabel(intent: TilePingIntent, senderName: string): string {
+  const trimmed = senderName.trim();
+  const shortName = trimmed.length > 12 ? `${trimmed.slice(0, 11)}…` : trimmed;
+  const prefix =
+    intent === 'DANGER'
+      ? '⚠️ Nguy hiểm!'
+      : intent === 'TROPHY'
+        ? '🏆 Đặt Cúp!'
+        : '🎯 Nhắm!';
+  return shortName ? `${prefix} · ${shortName}` : prefix;
+}
 
 function shuffleCards<T>(arr: T[]): T[] {
   const copy = [...arr];
@@ -354,6 +392,14 @@ export default function App() {
   );
   const [nightMode, setNightMode] = useState<boolean>(false);
   const [soundMuted, setSoundMuted] = useState<boolean>(false);
+  const [disable3dTaunts, setDisable3dTaunts] = useState<boolean>(() =>
+    loadSavedDisable3dTaunts()
+  );
+  const disable3dTauntsRef = useRef<boolean>(disable3dTaunts);
+  disable3dTauntsRef.current = disable3dTaunts;
+  const [openTauntTargetPlayerId, setOpenTauntTargetPlayerId] = useState<number | null>(
+    null
+  );
   const [botBubbles, setBotBubbles] = useState<Record<number, BotChatBubbleState>>({});
   const [offlinePlayerEmotes, setOfflinePlayerEmotes] = useState<Record<number, string>>({});
   const [onlinePlayerEmotes, setOnlinePlayerEmotes] = useState<Record<number, string>>({});
@@ -556,6 +602,34 @@ export default function App() {
           return next;
         });
       }, clearDelayMs);
+      return;
+    }
+
+    if (event.kind === 'BOARD_TAUNT') {
+      if (
+        !disable3dTauntsRef.current &&
+        viewScreenStateRef.current !== 'title' &&
+        viewScreenStateRef.current !== 'gameover'
+      ) {
+        canvasRef.current?.playBoardTaunt(
+          event.tauntKind,
+          event.fromPlayerId,
+          event.targetPlayerId
+        );
+        soundEngine.playBoardTauntSfx(event.tauntKind);
+      }
+      return;
+    }
+
+    if (event.kind === 'TILE_PING') {
+      if (
+        viewScreenStateRef.current !== 'title' &&
+        viewScreenStateRef.current !== 'gameover'
+      ) {
+        const pingLabel = formatTilePingLabel(event.intent, event.senderName);
+        canvasRef.current?.playTilePing(event.tileIndex, event.senderColor, pingLabel);
+        soundEngine.playTilePingSfx(event.intent);
+      }
     }
   }, []);
 
@@ -988,6 +1062,7 @@ export default function App() {
       setShowAssetsModal(false);
       setOnlinePauseOpen(false);
       setOpenActionMenu('none');
+      setOpenTauntTargetPlayerId(null);
       setChatDrawerOpen(false);
       setVoicePopoverOpen(false);
       setUnreadChatCount(0);
@@ -1019,6 +1094,7 @@ export default function App() {
       setShowAssetsModal(false);
       setSelectedTileIndex(null);
       setOpenActionMenu('none');
+      setOpenTauntTargetPlayerId(null);
       setChatDrawerOpen(false);
       setVoicePopoverOpen(false);
       setUnreadChatCount(0);
@@ -1034,6 +1110,8 @@ export default function App() {
 
   const isOnlineMatchRef = useRef(isOnlineMatch);
   isOnlineMatchRef.current = isOnlineMatch;
+  const onlineIsSpectatorRef = useRef(online.isSpectator);
+  onlineIsSpectatorRef.current = online.isSpectator;
   const isActivelyControlledByMeRef = useRef(isActivelyControlledByMe);
   isActivelyControlledByMeRef.current = isActivelyControlledByMe;
   const viewPlayersRef = useRef(viewPlayers);
@@ -1055,6 +1133,12 @@ export default function App() {
   viewTacticalDiceEnabledRef.current = viewTacticalDiceEnabled;
   const onlinePauseOpenRef = useRef(onlinePauseOpen);
   onlinePauseOpenRef.current = onlinePauseOpen;
+
+  useEffect(() => {
+    if (!isOnlineMatch || online.isSpectator || viewScreenState !== 'playing') {
+      setOpenTauntTargetPlayerId(null);
+    }
+  }, [isOnlineMatch, online.isSpectator, viewScreenState]);
 
   // BUG-11: Always reset tactical dice choice ('EVEN'/'ODD' -> 'NORMAL') on turn/decision transitions,
   // jail entry, or exhausted Even/Odd charges so stale choices are never sent on subsequent turns.
@@ -4608,6 +4692,11 @@ export default function App() {
           setOpenActionMenu('none');
           return;
         }
+        if (openTauntTargetPlayerId !== null) {
+          e.preventDefault();
+          setOpenTauntTargetPlayerId(null);
+          return;
+        }
         if (viewScreenState === 'title') {
           return;
         }
@@ -4691,7 +4780,12 @@ export default function App() {
           return next;
         });
       } else if (e.code === 'Space' || e.code === 'Enter') {
-        if (showAssetsModal || openActionMenu !== 'none' || isOnlineDecisionPendingAckRef.current) {
+        if (
+          showAssetsModal ||
+          openActionMenu !== 'none' ||
+          openTauntTargetPlayerId !== null ||
+          isOnlineDecisionPendingAckRef.current
+        ) {
           return;
         }
         if (isActivelyControlledByMeRef.current) {
@@ -4714,6 +4808,7 @@ export default function App() {
   }, [
     viewScreenState,
     openActionMenu,
+    openTauntTargetPlayerId,
     selectedTileIndex,
     showAssetsModal,
     showRulebookModal,
@@ -5061,11 +5156,13 @@ export default function App() {
 
   const handleOpenAssetsModal = useCallback(() => {
     setSelectedTileIndex(null);
+    setOpenTauntTargetPlayerId(null);
     setShowAssetsModal(true);
   }, []);
 
   const handleOpenRulebookModal = useCallback(() => {
     setSelectedTileIndex(null);
+    setOpenTauntTargetPlayerId(null);
     setShowRulebookModal(true);
   }, []);
 
@@ -5081,8 +5178,43 @@ export default function App() {
     });
   }, []);
 
+  const handleToggleDisable3dTaunts = useCallback(() => {
+    setDisable3dTaunts((prev) => {
+      const next = !prev;
+      disable3dTauntsRef.current = next;
+      saveDisable3dTaunts(next);
+      return next;
+    });
+  }, []);
+
+  const handleSendBoardTaunt = useCallback(
+    (targetPlayerId: number, kind: BoardTauntKind) => {
+      if (
+        !isOnlineMatchRef.current ||
+        onlineIsSpectatorRef.current ||
+        viewScreenStateRef.current !== 'playing'
+      ) {
+        return;
+      }
+      setOpenTauntTargetPlayerId(null);
+      online.sendBoardTaunt(targetPlayerId, kind);
+    },
+    [online.sendBoardTaunt]
+  );
+
+  const handlePingTile = useCallback(
+    (tileIndex: number, intent: TilePingIntent) => {
+      if (!isOnlineMatchRef.current || viewScreenStateRef.current !== 'playing') {
+        return;
+      }
+      online.sendTilePing(tileIndex, intent);
+    },
+    [online.sendTilePing]
+  );
+
   const handleOpenPause = useCallback(() => {
     setSelectedTileIndex(null);
+    setOpenTauntTargetPlayerId(null);
     setChatDrawerOpen(false);
     setVoicePopoverOpen(false);
     if (isOnlineMatchRef.current) {
@@ -5095,6 +5227,7 @@ export default function App() {
   const handleChangeOpenActionMenu = useCallback((next: ActionDockMenuKind) => {
     setOpenActionMenu(next);
     if (next !== 'none') {
+      setOpenTauntTargetPlayerId(null);
       setChatDrawerOpen(false);
       setVoicePopoverOpen(false);
     }
@@ -5105,6 +5238,7 @@ export default function App() {
       const next = !prev;
       if (next) {
         setOpenActionMenu('none');
+        setOpenTauntTargetPlayerId(null);
         setVoicePopoverOpen(false);
         setUnreadChatCount(0);
       }
@@ -5117,8 +5251,30 @@ export default function App() {
     if (open) {
       setChatDrawerOpen(false);
       setOpenActionMenu('none');
+      setOpenTauntTargetPlayerId(null);
     }
   }, []);
+
+  const handleChangeOpenTauntTargetPlayerId = useCallback(
+    (targetPlayerId: number | null) => {
+      if (
+        targetPlayerId !== null &&
+        (!isOnlineMatchRef.current ||
+          onlineIsSpectatorRef.current ||
+          viewScreenStateRef.current !== 'playing')
+      ) {
+        setOpenTauntTargetPlayerId(null);
+        return;
+      }
+      setOpenTauntTargetPlayerId(targetPlayerId);
+      if (targetPlayerId !== null) {
+        setOpenActionMenu('none');
+        setChatDrawerOpen(false);
+        setVoicePopoverOpen(false);
+      }
+    },
+    []
+  );
 
   const handleSendChatMessage = useCallback(
     (channel: ChatChannel, text: string) => {
@@ -5326,6 +5482,9 @@ export default function App() {
         cinematicCamera={cinematicCamera}
         nightMode={nightMode}
         onSelectTile={handleCanvasTileClick}
+        onPingTile={
+          isOnlineMatch && viewScreenState === 'playing' ? handlePingTile : undefined
+        }
       />
 
       {/* 1a. Unified Top-Center HUD Stack (Online Pill + 20-Min Match Clock + Landing Cue + Online Error) */}
@@ -5445,6 +5604,17 @@ export default function App() {
             playerChatBubbles={isOnlineMatch ? playerChatBubbles : undefined}
             onDismissBubble={dismissBotBubble}
             onSelectTile={handleCanvasTileClick}
+            onSendBoardTaunt={
+              isOnlineMatch &&
+              !online.isSpectator &&
+              online.yourPlayerId !== null &&
+              viewScreenState === 'playing'
+                ? handleSendBoardTaunt
+                : undefined
+            }
+            tauntCooldownUntil={online.tauntCooldownUntil}
+            openTauntTargetPlayerId={openTauntTargetPlayerId}
+            onChangeOpenTauntTargetPlayerId={handleChangeOpenTauntTargetPlayerId}
           />
 
           <ActionDock
@@ -5483,6 +5653,7 @@ export default function App() {
             cinematicCamera={cinematicCamera}
             nightMode={nightMode}
             soundMuted={soundMuted}
+            disable3dTaunts={disable3dTaunts}
             onRollDice={handleDockRollDice}
             onSelectDiceChoice={handleSelectDiceChoice}
             onRerollDice={() => void handleRerollDice()}
@@ -5499,6 +5670,7 @@ export default function App() {
             onToggleNightMode={handleToggleNightMode}
             onResetCamera={handleResetCamera}
             onToggleSound={handleToggleSound}
+            onToggleDisable3dTaunts={handleToggleDisable3dTaunts}
             onOpenPause={handleOpenPause}
             onTriggerEmote={handleTriggerEmote}
           />
@@ -5579,6 +5751,11 @@ export default function App() {
           properties={viewProperties}
           boardModifiers={viewBoardModifiers}
           matchMode={viewMatchMode}
+          canPingTile={isOnlineMatch && viewScreenState === 'playing'}
+          pingCooldownUntil={online.pingCooldownUntil}
+          onPingTile={
+            isOnlineMatch && viewScreenState === 'playing' ? handlePingTile : undefined
+          }
           onClose={() => setSelectedTileIndex(null)}
         />
       )}

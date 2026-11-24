@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { BOARD_TILES, COLOR_GROUP_META } from '../game/boardData';
+import { TilePingIntent } from '../game/onlineTypes';
 import {
   calculateBuyoutPrice,
   calculateNetWorth,
@@ -130,6 +131,9 @@ interface TileInspectorProps {
   properties: Record<number, PropertyState>;
   boardModifiers: MatchBoardModifiers;
   matchMode?: MatchMode;
+  canPingTile?: boolean;
+  pingCooldownUntil?: number;
+  onPingTile?: (tileIndex: number, intent: TilePingIntent) => void;
   onClose: () => void;
 }
 
@@ -139,8 +143,39 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
   properties,
   boardModifiers,
   matchMode = 'FFA',
+  canPingTile = false,
+  pingCooldownUntil = 0,
+  onPingTile,
   onClose,
 }) => {
+  const [pingNowMs, setPingNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const now = Date.now();
+    setPingNowMs(now);
+    if (!pingCooldownUntil || pingCooldownUntil <= now) return;
+    const interval = window.setInterval(() => {
+      const current = Date.now();
+      setPingNowMs(current);
+      if (current >= pingCooldownUntil) {
+        window.clearInterval(interval);
+      }
+    }, 250);
+    const expiryTimer = window.setTimeout(() => {
+      setPingNowMs(Date.now());
+      window.clearInterval(interval);
+    }, Math.max(0, pingCooldownUntil - now) + 20);
+    return () => {
+      window.clearInterval(interval);
+      window.clearTimeout(expiryTimer);
+    };
+  }, [pingCooldownUntil]);
+
+  const pingCooldownSecondsLeft =
+    pingCooldownUntil > pingNowMs
+      ? Math.ceil((pingCooldownUntil - pingNowMs) / 1000)
+      : 0;
+  const isOnPingCooldown = pingCooldownSecondsLeft > 0;
   const tile = BOARD_TILES[tileIndex];
   const prop = properties[tileIndex];
   const owner =
@@ -387,6 +422,48 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
           </div>
         )}
       </div>
+
+      {canPingTile && onPingTile && (
+        <div className="shrink-0 px-3 py-2.5 bg-sky-50/95 border-t border-sky-200 space-y-1.5">
+          <div className="flex items-center justify-between px-0.5 text-[10px] font-black uppercase tracking-wide text-sky-900">
+            <span>Ping công khai trên bàn cờ</span>
+            {isOnPingCooldown && (
+              <span className="font-mono-num text-amber-700">
+                ⏳ {pingCooldownSecondsLeft}s
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            <button
+              type="button"
+              data-testid="bt-tile-ping-TARGET"
+              disabled={isOnPingCooldown}
+              onClick={() => onPingTile(tileIndex, 'TARGET')}
+              className="bt-btn-cyan py-1.5 px-1.5 rounded-xl text-[11px] font-black leading-tight text-center disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
+            >
+              🎯 Nhắm ô này
+            </button>
+            <button
+              type="button"
+              data-testid="bt-tile-ping-DANGER"
+              disabled={isOnPingCooldown}
+              onClick={() => onPingTile(tileIndex, 'DANGER')}
+              className="id-btn-crimson py-1.5 px-1.5 rounded-xl text-[11px] font-black leading-tight text-center disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
+            >
+              ⚠️ Coi chừng
+            </button>
+            <button
+              type="button"
+              data-testid="bt-tile-ping-TROPHY"
+              disabled={isOnPingCooldown}
+              onClick={() => onPingTile(tileIndex, 'TROPHY')}
+              className="bt-btn-gold text-slate-950 py-1.5 px-1.5 rounded-xl text-[11px] font-black leading-tight text-center disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
+            >
+              🏆 Đặt Cúp đây
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

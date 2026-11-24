@@ -1220,3 +1220,186 @@ test('Phase 2 Task 5: isSpectator tracks roomSnapshot + yourSeatIndex and Phase 
     env.restore();
   }
 });
+
+test('Phase 3 Task 4: sendBoardTaunt, sendTilePing, resetSeriesScore payloads, cooldowns, spectator/self gating, offline toast suppression, and visual event forwarding', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const visualEvents: OnlineVisualEvent[] = [];
+  const origDateNow = Date.now;
+  let fakeNow = 100_000;
+  Date.now = () => fakeNow;
+
+  const hook = mountHook(() =>
+    useOnlineMultiplayer((event) => {
+      visualEvents.push(event);
+    })
+  );
+
+  try {
+    // 1. Offline/unsynced: sendBoardTaunt and sendTilePing return false without error toast or opening socket
+    assert.equal(hook.current.tauntCooldownUntil, 0);
+    assert.equal(hook.current.pingCooldownUntil, 0);
+    assert.equal(hook.current.sendBoardTaunt(1, 'slipper'), false);
+    assert.equal(hook.current.sendTilePing(5, 'TARGET'), false);
+    assert.equal(hook.current.errorMessage, null);
+    assert.equal(hook.current.errorSeq, 0);
+    assert.equal(MockWebSocket.instances.length, 0);
+
+    // resetSeriesScore while offline/unsynced surfaces sync toast (like other explicit room commands)
+    assert.equal(hook.current.resetSeriesScore(), false);
+    assert.equal(hook.current.errorSeq, 1);
+    assert.ok(hook.current.errorMessage);
+    assert.equal(MockWebSocket.instances.length, 1);
+
+    // 2. Join room as Player 0 (seat 0)
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'PH3T',
+      sessionToken: 'token-ph3t-123456',
+      yourParticipantId: 'p_host0001',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: makeRoomSnapshot('PH3T'),
+    });
+    assert.equal(hook.current.errorMessage, null);
+    ws.sent.length = 0;
+
+    // Self-target taunt is blocked locally without sending or starting cooldown
+    assert.equal(hook.current.sendBoardTaunt(0, 'slipper'), false);
+    assert.equal(hook.current.tauntCooldownUntil, 0);
+    assert.equal(ws.sent.length, 0);
+
+    // Valid board taunt sends exact payload and starts 4000ms cooldown
+    assert.equal(hook.current.sendBoardTaunt(1, 'slipper'), true);
+    assert.equal(hook.current.tauntCooldownUntil, 104_000);
+    assert.deepEqual(JSON.parse(ws.sent[0]), {
+      type: 'SEND_BOARD_TAUNT',
+      targetPlayerId: 1,
+      tauntKind: 'slipper',
+    });
+
+    // Second taunt at +3999ms is blocked by 4000ms cooldown
+    fakeNow = 103_999;
+    assert.equal(hook.current.sendBoardTaunt(1, 'tomato'), false);
+    assert.equal(ws.sent.length, 1);
+
+    // At +4000ms cooldown expires and next taunt sends cleanly
+    fakeNow = 104_000;
+    assert.equal(hook.current.sendBoardTaunt(1, 'cash_stack'), true);
+    assert.equal(hook.current.tauntCooldownUntil, 108_000);
+    assert.deepEqual(JSON.parse(ws.sent[1]), {
+      type: 'SEND_BOARD_TAUNT',
+      targetPlayerId: 1,
+      tauntKind: 'cash_stack',
+    });
+
+    // Valid tile ping sends exact payload and starts 2500ms cooldown
+    fakeNow = 110_000;
+    assert.equal(hook.current.sendTilePing(7, 'DANGER'), true);
+    assert.equal(hook.current.pingCooldownUntil, 112_500);
+    assert.deepEqual(JSON.parse(ws.sent[2]), {
+      type: 'SEND_TILE_PING',
+      tileIndex: 7,
+      intent: 'DANGER',
+    });
+
+    // Invalid tile index is rejected cleanly without starting cooldown
+    fakeNow = 110_500;
+    assert.equal(hook.current.sendTilePing(-1, 'TARGET'), false);
+    assert.equal(hook.current.sendTilePing(32, 'TARGET'), false);
+    assert.equal(ws.sent.length, 3);
+
+    // Second tile ping within <2500ms is blocked; at >=2500ms succeeds
+    fakeNow = 112_000;
+    assert.equal(hook.current.sendTilePing(12, 'TROPHY'), false);
+    fakeNow = 112_500;
+    assert.equal(hook.current.sendTilePing(12, 'TROPHY'), true);
+    assert.equal(hook.current.pingCooldownUntil, 115_000);
+    assert.deepEqual(JSON.parse(ws.sent[3]), {
+      type: 'SEND_TILE_PING',
+      tileIndex: 12,
+      intent: 'TROPHY',
+    });
+
+    // Wait past cooldown so invalid index check at >= cooldown also never consumes cooldown
+    fakeNow = 116_000;
+    assert.equal(hook.current.sendTilePing(99, 'DANGER'), false);
+    assert.equal(hook.current.pingCooldownUntil, 115_000);
+
+    // resetSeriesScore sends RESET_SERIES_SCORE
+    assert.equal(hook.current.resetSeriesScore(), true);
+    assert.deepEqual(JSON.parse(ws.sent[4]), { type: 'RESET_SERIES_SCORE' });
+
+    // Incoming GAME_EVENT(BOARD_TAUNT) & GAME_EVENT(TILE_PING) forward to onVisualEvent
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 1,
+        kind: 'BOARD_TAUNT',
+        fromPlayerId: 1,
+        fromPlayerName: 'Guest',
+        targetPlayerId: 0,
+        tauntKind: 'confetti',
+      },
+    });
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 2,
+        kind: 'TILE_PING',
+        participantId: 'p_spec001',
+        playerId: null,
+        senderName: 'Khán giả A',
+        senderColor: '#64748b',
+        tileIndex: 16,
+        intent: 'TROPHY',
+      },
+    });
+    assert.equal(visualEvents.length, 2);
+    assert.equal(visualEvents[0].kind, 'BOARD_TAUNT');
+    assert.equal(visualEvents[1].kind, 'TILE_PING');
+
+    // 3. Spectator mode: cannot sendBoardTaunt, CAN sendTilePing!
+    ws.sent.length = 0;
+    fakeNow = 120_000;
+    ws.simulateMessage({
+      type: 'ROOM_SNAPSHOT',
+      yourParticipantId: 'p_spec001',
+      yourSeatIndex: null,
+      yourPlayerId: null,
+      snapshot: makeRoomSnapshot('PH3T'),
+    });
+    assert.equal(hook.current.isSpectator, true);
+    assert.equal(hook.current.sendBoardTaunt(1, 'tomato'), false);
+    assert.equal(ws.sent.length, 0);
+    assert.equal(hook.current.sendTilePing(3, 'TARGET'), true);
+    assert.deepEqual(JSON.parse(ws.sent[0]), {
+      type: 'SEND_TILE_PING',
+      tileIndex: 3,
+      intent: 'TARGET',
+    });
+
+    // 4. Leaving room clears cooldowns & dropping socket suppresses offline toast for taunt/ping
+    ws.simulateMessage({ type: 'LEFT_ROOM' });
+    assert.equal(hook.current.tauntCooldownUntil, 0);
+    assert.equal(hook.current.pingCooldownUntil, 0);
+
+    const errBefore = hook.current.errorSeq;
+    assert.equal(hook.current.sendBoardTaunt(1, 'slipper'), false);
+    assert.equal(hook.current.sendTilePing(3, 'TARGET'), false);
+    assert.equal(hook.current.errorSeq, errBefore);
+    assert.equal(hook.current.errorMessage, null);
+  } finally {
+    Date.now = origDateNow;
+    hook.unmount();
+    env.restore();
+  }
+});

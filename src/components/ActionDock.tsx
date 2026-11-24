@@ -43,6 +43,7 @@ interface ActionDockProps {
   cinematicCamera: boolean;
   nightMode: boolean;
   soundMuted: boolean;
+  disable3dTaunts?: boolean;
   onRollDice: () => void;
   onSelectDiceChoice?: (choice: TacticalDiceChoice) => void;
   onRerollDice?: () => void;
@@ -59,6 +60,7 @@ interface ActionDockProps {
   onToggleNightMode: () => void;
   onResetCamera: () => void;
   onToggleSound: () => void;
+  onToggleDisable3dTaunts?: () => void;
   onOpenPause: () => void;
   onTriggerEmote: (emoteText: string) => void;
   unreadChatCount?: number;
@@ -103,6 +105,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
   cinematicCamera,
   nightMode,
   soundMuted,
+  disable3dTaunts = false,
   onRollDice,
   onSelectDiceChoice,
   onRerollDice,
@@ -119,6 +122,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
   onToggleNightMode,
   onResetCamera,
   onToggleSound,
+  onToggleDisable3dTaunts,
   onOpenPause,
   onTriggerEmote,
   unreadChatCount = 0,
@@ -474,6 +478,27 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                 {nightMode ? 'Ban đêm' : 'Ban ngày'}
               </span>
             </button>
+
+            {onToggleDisable3dTaunts && (
+              <button
+                type="button"
+                data-testid="bt-disable-3d-taunts-toggle"
+                aria-pressed={disable3dTaunts}
+                onClick={onToggleDisable3dTaunts}
+                className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
+              >
+                <span>Tắt hiệu ứng ném đồ 3D</span>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                    disable3dTaunts
+                      ? 'bg-rose-100 text-rose-700'
+                      : 'bg-emerald-100 text-emerald-700'
+                  }`}
+                >
+                  {disable3dTaunts ? 'Đã tắt' : 'Đang bật'}
+                </span>
+              </button>
+            )}
 
             <div className="grid grid-cols-2 gap-1.5 pt-1">
               <button

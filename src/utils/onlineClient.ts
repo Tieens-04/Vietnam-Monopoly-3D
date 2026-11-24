@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  BoardTauntKind,
   BotDifficulty,
   ChatChannel,
   ClientToServerMessage,
@@ -9,12 +10,17 @@ import {
   RoomChatMessage,
   RtcSignalPayload,
   ServerToClientMessage,
+  TilePingIntent,
   TokenArchetype,
 } from '../game/onlineTypes';
+import { TOTAL_TILES } from '../game/rules';
 import type { MatchMode } from '../game/types';
 
 const SESSION_STORAGE_KEY = 'bt_online_session_v1';
 const PLAYER_NAME_STORAGE_KEY = 'bt_player_name_v1';
+
+export const BOARD_TAUNT_COOLDOWN_MS = 4000;
+export const TILE_PING_COOLDOWN_MS = 2500;
 
 export type OnlineConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -107,11 +113,17 @@ export function useOnlineMultiplayer(
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [errorSeq, setErrorSeq] = useState<number>(0);
   const [snapshotSeq, setSnapshotSeq] = useState<number>(0);
+  const [tauntCooldownUntil, setTauntCooldownUntil] = useState<number>(0);
+  const [pingCooldownUntil, setPingCooldownUntil] = useState<number>(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pendingQueueRef = useRef<ClientToServerMessage[]>([]);
   const roomSnapshotRef = useRef<OnlineRoomSnapshot | null>(null);
   const isSyncedRef = useRef<boolean>(false);
+  const yourSeatIndexRef = useRef<number | null>(null);
+  const yourPlayerIdRef = useRef<number | null>(null);
+  const tauntCooldownUntilRef = useRef<number>(0);
+  const pingCooldownUntilRef = useRef<number>(0);
   const actionSeqRef = useRef<number>(0);
   const sessionRef = useRef<StoredSession | null>(readStoredSession());
   const intentionalCloseRef = useRef<boolean>(false);
@@ -134,6 +146,8 @@ export function useOnlineMultiplayer(
       seenChatIdsRef.current = new Set(history.map((m) => m.id));
       roomSnapshotRef.current = msg.snapshot;
       isSyncedRef.current = true;
+      yourSeatIndexRef.current = msg.yourSeatIndex;
+      yourPlayerIdRef.current = msg.yourPlayerId;
       setIsSynced(true);
       setConnectionStatus('connected');
       setYourParticipantId(msg.yourParticipantId ?? null);
@@ -150,6 +164,10 @@ export function useOnlineMultiplayer(
     sessionRef.current = null;
     roomSnapshotRef.current = null;
     isSyncedRef.current = false;
+    yourSeatIndexRef.current = null;
+    yourPlayerIdRef.current = null;
+    tauntCooldownUntilRef.current = 0;
+    pingCooldownUntilRef.current = 0;
     lastEventSeqRef.current = 0;
     seenChatIdsRef.current = new Set();
     setIsSynced(false);
@@ -162,6 +180,8 @@ export function useOnlineMultiplayer(
     setYourSeatIndex(null);
     setYourPlayerId(null);
     setChatMessages([]);
+    setTauntCooldownUntil(0);
+    setPingCooldownUntil(0);
   }, []);
 
   const rememberPlayerName = useCallback((name: string) => {
@@ -243,6 +263,10 @@ export function useOnlineMultiplayer(
         writeStoredSession(stored);
         syncRoomQueryParam(msg.roomCode);
         lastEventSeqRef.current = 0;
+        tauntCooldownUntilRef.current = 0;
+        pingCooldownUntilRef.current = 0;
+        setTauntCooldownUntil(0);
+        setPingCooldownUntil(0);
         applySyncedRoomSnapshot(msg);
         setErrorMessage(null);
         return;
@@ -358,6 +382,8 @@ export function useOnlineMultiplayer(
 
       const shouldSuppressOfflineToast =
         msg.type === 'SEND_EMOTE' ||
+        msg.type === 'SEND_BOARD_TAUNT' ||
+        msg.type === 'SEND_TILE_PING' ||
         msg.type === 'RTC_SIGNAL' ||
         msg.type === 'UPDATE_VOICE_STATE';
 
@@ -590,6 +616,64 @@ export function useOnlineMultiplayer(
     [sendMessage]
   );
 
+  const sendBoardTaunt = useCallback(
+    (targetPlayerId: number, tauntKind: BoardTauntKind): boolean => {
+      if (roomSnapshotRef.current && yourSeatIndexRef.current === null) {
+        return false;
+      }
+      if (!Number.isInteger(targetPlayerId) || targetPlayerId < 0) {
+        return false;
+      }
+      if (yourPlayerIdRef.current !== null && targetPlayerId === yourPlayerIdRef.current) {
+        return false;
+      }
+      const now = Date.now();
+      if (now < tauntCooldownUntilRef.current) {
+        return false;
+      }
+      const sent = sendMessage({
+        type: 'SEND_BOARD_TAUNT',
+        targetPlayerId,
+        tauntKind,
+      });
+      if (sent) {
+        const until = now + BOARD_TAUNT_COOLDOWN_MS;
+        tauntCooldownUntilRef.current = until;
+        setTauntCooldownUntil(until);
+      }
+      return sent;
+    },
+    [sendMessage]
+  );
+
+  const sendTilePing = useCallback(
+    (tileIndex: number, intent: TilePingIntent): boolean => {
+      if (!Number.isInteger(tileIndex) || tileIndex < 0 || tileIndex >= TOTAL_TILES) {
+        return false;
+      }
+      const now = Date.now();
+      if (now < pingCooldownUntilRef.current) {
+        return false;
+      }
+      const sent = sendMessage({
+        type: 'SEND_TILE_PING',
+        tileIndex,
+        intent,
+      });
+      if (sent) {
+        const until = now + TILE_PING_COOLDOWN_MS;
+        pingCooldownUntilRef.current = until;
+        setPingCooldownUntil(until);
+      }
+      return sent;
+    },
+    [sendMessage]
+  );
+
+  const resetSeriesScore = useCallback((): boolean => {
+    return sendMessage({ type: 'RESET_SERIES_SCORE' });
+  }, [sendMessage]);
+
   const sendChatMessage = useCallback(
     (channel: ChatChannel, text: string): boolean => {
       return sendMessage({ type: 'SEND_CHAT_MESSAGE', channel, text });
@@ -634,6 +718,8 @@ export function useOnlineMultiplayer(
     errorMessage,
     errorSeq,
     snapshotSeq,
+    tauntCooldownUntil,
+    pingCooldownUntil,
     initialInviteCode,
     savedPlayerName,
     ensureConnected,
@@ -657,6 +743,9 @@ export function useOnlineMultiplayer(
     reclaimControl,
     sendGameAction,
     sendEmote,
+    sendBoardTaunt,
+    sendTilePing,
+    resetSeriesScore,
     sendChatMessage,
     sendRtcSignal,
     updateVoiceState,
