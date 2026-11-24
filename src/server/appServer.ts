@@ -313,6 +313,39 @@ async function handleBotQuip(req: Request, res: Response): Promise<void> {
   }
 }
 
+/**
+ * Builds the WebRTC ICE server list with default STUN servers plus optional
+ * TURN configuration from `TURN_URLS`, `TURN_USERNAME`, and `TURN_CREDENTIAL`.
+ */
+export function buildRtcIceServers(): RTCIceServer[] {
+  const iceServers: RTCIceServer[] = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
+
+  const turnUrls = (process.env.TURN_URLS ?? '')
+    .split(',')
+    .map((url) => url.trim())
+    .filter((url) => url.length > 0);
+
+  if (turnUrls.length > 0) {
+    const turnServer: RTCIceServer = {
+      urls: turnUrls.length === 1 ? turnUrls[0] : turnUrls,
+    };
+    const turnUsername = process.env.TURN_USERNAME?.trim();
+    const turnCredential = process.env.TURN_CREDENTIAL?.trim();
+    if (turnUsername) {
+      turnServer.username = turnUsername;
+    }
+    if (turnCredential) {
+      turnServer.credential = turnCredential;
+    }
+    iceServers.push(turnServer);
+  }
+
+  return iceServers;
+}
+
 export interface CreateAppServerOptions {
   enableVite?: boolean;
   botQuipRateLimitMax?: number;
@@ -337,7 +370,7 @@ export async function createAppServer(
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
     next();
   });
 
@@ -372,6 +405,12 @@ export async function createAppServer(
     res.status(200).json({
       ok: true,
       rooms: wsHandle.roomManager.getActiveRoomCount(),
+    });
+  });
+
+  app.get('/api/rtc-config', (_req: Request, res: Response) => {
+    res.status(200).json({
+      iceServers: buildRtcIceServers(),
     });
   });
 
