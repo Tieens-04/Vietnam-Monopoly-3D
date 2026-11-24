@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ChatChannel,
   ClientToServerMessage,
   OnlineGameAction,
   OnlineRoomSnapshot,
   OnlineVisualEvent,
+  RoomChatMessage,
+  RtcSignalPayload,
   ServerToClientMessage,
   TokenArchetype,
 } from '../game/onlineTypes';
@@ -75,6 +78,8 @@ function syncRoomQueryParam(roomCode: string | null): void {
 
 export interface UseOnlineMultiplayerOptions {
   skipInitialAutoReconnect?: boolean;
+  onRtcSignal?: (fromParticipantId: string, signal: RtcSignalPayload) => void;
+  onChatMessage?: (message: RoomChatMessage) => void;
 }
 
 export function useOnlineMultiplayer(
@@ -94,8 +99,10 @@ export function useOnlineMultiplayer(
   const [connectionStatus, setConnectionStatus] = useState<OnlineConnectionStatus>('idle');
   const [isSynced, setIsSynced] = useState<boolean>(false);
   const [roomSnapshot, setRoomSnapshot] = useState<OnlineRoomSnapshot | null>(null);
+  const [yourParticipantId, setYourParticipantId] = useState<string | null>(null);
   const [yourSeatIndex, setYourSeatIndex] = useState<number | null>(null);
   const [yourPlayerId, setYourPlayerId] = useState<number | null>(null);
+  const [chatMessages, setChatMessages] = useState<RoomChatMessage[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [errorSeq, setErrorSeq] = useState<number>(0);
   const [snapshotSeq, setSnapshotSeq] = useState<number>(0);
@@ -110,8 +117,51 @@ export function useOnlineMultiplayer(
   const reconnectTimerRef = useRef<number>(0);
   const reconnectAttemptsRef = useRef<number>(0);
   const lastEventSeqRef = useRef<number>(0);
+  const seenChatIdsRef = useRef<Set<number>>(new Set());
   const onVisualEventRef = useRef(onVisualEvent);
   onVisualEventRef.current = onVisualEvent;
+  const onRtcSignalRef = useRef(options?.onRtcSignal);
+  onRtcSignalRef.current = options?.onRtcSignal;
+  const onChatMessageRef = useRef(options?.onChatMessage);
+  onChatMessageRef.current = options?.onChatMessage;
+
+  const applySyncedRoomSnapshot = useCallback(
+    (msg: Extract<ServerToClientMessage, { type: 'ROOM_JOINED' | 'ROOM_SNAPSHOT' }>) => {
+      const history = Array.isArray(msg.snapshot.chatHistory)
+        ? [...msg.snapshot.chatHistory]
+        : [];
+      seenChatIdsRef.current = new Set(history.map((m) => m.id));
+      roomSnapshotRef.current = msg.snapshot;
+      isSyncedRef.current = true;
+      setIsSynced(true);
+      setConnectionStatus('connected');
+      setYourParticipantId(msg.yourParticipantId ?? null);
+      setYourSeatIndex(msg.yourSeatIndex);
+      setYourPlayerId(msg.yourPlayerId);
+      setChatMessages(history);
+      setRoomSnapshot(msg.snapshot);
+      setSnapshotSeq((prev) => prev + 1);
+    },
+    []
+  );
+
+  const clearActiveRoomState = useCallback((clearStoredSession: boolean) => {
+    sessionRef.current = null;
+    roomSnapshotRef.current = null;
+    isSyncedRef.current = false;
+    lastEventSeqRef.current = 0;
+    seenChatIdsRef.current = new Set();
+    setIsSynced(false);
+    if (clearStoredSession) {
+      writeStoredSession(null);
+    }
+    syncRoomQueryParam(null);
+    setRoomSnapshot(null);
+    setYourParticipantId(null);
+    setYourSeatIndex(null);
+    setYourPlayerId(null);
+    setChatMessages([]);
+  }, []);
 
   const rememberPlayerName = useCallback((name: string) => {
     const trimmed = name.trim().slice(0, 22);
@@ -192,48 +242,41 @@ export function useOnlineMultiplayer(
         writeStoredSession(stored);
         syncRoomQueryParam(msg.roomCode);
         lastEventSeqRef.current = 0;
-        roomSnapshotRef.current = msg.snapshot;
-        isSyncedRef.current = true;
-        setIsSynced(true);
-        setConnectionStatus('connected');
-        setYourSeatIndex(msg.yourSeatIndex);
-        setYourPlayerId(msg.yourPlayerId);
-        setRoomSnapshot(msg.snapshot);
-        setSnapshotSeq((prev) => prev + 1);
+        applySyncedRoomSnapshot(msg);
         setErrorMessage(null);
         return;
       }
 
       if (msg.type === 'ROOM_SNAPSHOT') {
-        roomSnapshotRef.current = msg.snapshot;
-        isSyncedRef.current = true;
-        setIsSynced(true);
-        setConnectionStatus('connected');
-        setYourSeatIndex(msg.yourSeatIndex);
-        setYourPlayerId(msg.yourPlayerId);
-        setRoomSnapshot(msg.snapshot);
-        setSnapshotSeq((prev) => prev + 1);
+        applySyncedRoomSnapshot(msg);
         return;
       }
 
       if (msg.type === 'GAME_EVENT') {
         if (msg.event.eventSeq > lastEventSeqRef.current) {
           lastEventSeqRef.current = msg.event.eventSeq;
+          if (msg.event.kind === 'CHAT_MESSAGE') {
+            const chatMsg = msg.event.message;
+            if (!seenChatIdsRef.current.has(chatMsg.id)) {
+              seenChatIdsRef.current.add(chatMsg.id);
+              setChatMessages((prev) =>
+                prev.some((existing) => existing.id === chatMsg.id) ? prev : [...prev, chatMsg]
+              );
+              onChatMessageRef.current?.(chatMsg);
+            }
+          }
           onVisualEventRef.current?.(msg.event);
         }
         return;
       }
 
+      if (msg.type === 'RTC_SIGNAL') {
+        onRtcSignalRef.current?.(msg.fromParticipantId, msg.signal);
+        return;
+      }
+
       if (msg.type === 'LEFT_ROOM') {
-        sessionRef.current = null;
-        roomSnapshotRef.current = null;
-        isSyncedRef.current = false;
-        setIsSynced(false);
-        writeStoredSession(null);
-        syncRoomQueryParam(null);
-        setRoomSnapshot(null);
-        setYourSeatIndex(null);
-        setYourPlayerId(null);
+        clearActiveRoomState(true);
         setErrorMessage(null);
         return;
       }
@@ -245,17 +288,7 @@ export function useOnlineMultiplayer(
           msg.code === 'NOT_IN_ROOM' ||
           msg.code === 'SESSION_REPLACED'
         ) {
-          sessionRef.current = null;
-          roomSnapshotRef.current = null;
-          isSyncedRef.current = false;
-          setIsSynced(false);
-          if (msg.code !== 'SESSION_REPLACED') {
-            writeStoredSession(null);
-          }
-          syncRoomQueryParam(null);
-          setRoomSnapshot(null);
-          setYourSeatIndex(null);
-          setYourPlayerId(null);
+          clearActiveRoomState(msg.code !== 'SESSION_REPLACED');
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             setConnectionStatus('connected');
           }
@@ -297,7 +330,7 @@ export function useOnlineMultiplayer(
     ws.onerror = () => {
       // Handled by onclose
     };
-  }, []);
+  }, [applySyncedRoomSnapshot, clearActiveRoomState]);
 
   const sendMessage = useCallback(
     (msg: ClientToServerMessage): boolean => {
@@ -321,7 +354,12 @@ export function useOnlineMultiplayer(
         return true;
       }
 
-      if (msg.type !== 'SEND_EMOTE') {
+      const shouldSuppressOfflineToast =
+        msg.type === 'SEND_EMOTE' ||
+        msg.type === 'RTC_SIGNAL' ||
+        msg.type === 'UPDATE_VOICE_STATE';
+
+      if (!shouldSuppressOfflineToast) {
         if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
           openSocket(Boolean(sessionRef.current));
         }
@@ -410,24 +448,15 @@ export function useOnlineMultiplayer(
 
   const leaveRoom = useCallback(() => {
     const hadSession = Boolean(sessionRef.current);
-    sessionRef.current = null;
-    roomSnapshotRef.current = null;
-    isSyncedRef.current = false;
-    setIsSynced(false);
-    pendingQueueRef.current = [];
-    writeStoredSession(null);
-    syncRoomQueryParam(null);
-    window.clearTimeout(reconnectTimerRef.current);
-
     const ws = wsRef.current;
     if (hadSession && ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'LEAVE_ROOM' } satisfies ClientToServerMessage));
     }
-    setRoomSnapshot(null);
-    setYourSeatIndex(null);
-    setYourPlayerId(null);
+    pendingQueueRef.current = [];
+    window.clearTimeout(reconnectTimerRef.current);
+    clearActiveRoomState(true);
     setErrorMessage(null);
-  }, []);
+  }, [clearActiveRoomState]);
 
   const updateLobbySettings = useCallback(
     (patch: {
@@ -489,6 +518,27 @@ export function useOnlineMultiplayer(
     [sendMessage]
   );
 
+  const sendChatMessage = useCallback(
+    (channel: ChatChannel, text: string): boolean => {
+      return sendMessage({ type: 'SEND_CHAT_MESSAGE', channel, text });
+    },
+    [sendMessage]
+  );
+
+  const sendRtcSignal = useCallback(
+    (targetParticipantId: string, signal: RtcSignalPayload): boolean => {
+      return sendMessage({ type: 'RTC_SIGNAL', targetParticipantId, signal });
+    },
+    [sendMessage]
+  );
+
+  const updateVoiceState = useCallback(
+    (micEnabled: boolean): boolean => {
+      return sendMessage({ type: 'UPDATE_VOICE_STATE', micEnabled });
+    },
+    [sendMessage]
+  );
+
   const clearError = useCallback(() => {
     setErrorMessage(null);
   }, []);
@@ -502,8 +552,10 @@ export function useOnlineMultiplayer(
     connectionStatus,
     isSynced,
     roomSnapshot,
+    yourParticipantId,
     yourSeatIndex,
     yourPlayerId,
+    chatMessages,
     errorMessage,
     errorSeq,
     snapshotSeq,
@@ -520,6 +572,9 @@ export function useOnlineMultiplayer(
     reclaimControl,
     sendGameAction,
     sendEmote,
+    sendChatMessage,
+    sendRtcSignal,
+    updateVoiceState,
     clearError,
     getInviteUrl,
   };

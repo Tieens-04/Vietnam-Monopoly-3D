@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React from 'react';
-import type { OnlineRoomSnapshot, ServerToClientMessage } from '../game/onlineTypes';
+import type {
+  OnlineRoomSnapshot,
+  OnlineVisualEvent,
+  RoomChatMessage,
+  RtcSignalPayload,
+  ServerToClientMessage,
+} from '../game/onlineTypes';
 import { useOnlineMultiplayer } from './onlineClient';
 
 const SESSION_STORAGE_KEY = 'bt_online_session_v1';
@@ -243,6 +249,9 @@ function mountHook<T>(useHookFn: () => T) {
   return {
     get current() {
       return latest;
+    },
+    rerender: () => {
+      render();
     },
     unmount: () => {
       mounted = false;
@@ -677,6 +686,374 @@ test('BUG-04 (Review Round 2): delayed onclose from a superseded WebSocket must 
     assert.equal(hook.current.connectionStatus, 'connected');
     assert.equal(hook.current.isSynced, true);
     assert.equal(hook.current.roomSnapshot?.roomCode, 'BBBB');
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+function makeChatMessage(overrides: Partial<RoomChatMessage> = {}): RoomChatMessage {
+  return {
+    id: 1,
+    participantId: 'p_host0001',
+    playerId: 0,
+    senderName: 'Host',
+    senderColor: '#F5B800',
+    role: 'player',
+    channel: 'ALL',
+    text: 'Xin chào!',
+    createdAt: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
+test('Phase 1 Task 5: ROOM_JOINED / ROOM_SNAPSHOT hydrate yourParticipantId & chatMessages, GAME_EVENT(CHAT_MESSAGE) deduplicates by id, and RTC_SIGNAL / onChatMessage update refs across rerenders', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const visualEvents: OnlineVisualEvent[] = [];
+  const receivedChat1: RoomChatMessage[] = [];
+  const receivedChat2: RoomChatMessage[] = [];
+  const receivedSignals1: Array<{ from: string; signal: RtcSignalPayload }> = [];
+  const receivedSignals2: Array<{ from: string; signal: RtcSignalPayload }> = [];
+
+  let activeOnChat = (msg: RoomChatMessage) => {
+    receivedChat1.push(msg);
+  };
+  let activeOnRtc = (fromParticipantId: string, signal: RtcSignalPayload) => {
+    receivedSignals1.push({ from: fromParticipantId, signal });
+  };
+
+  const hook = mountHook(() =>
+    useOnlineMultiplayer(
+      (event) => {
+        visualEvents.push(event);
+      },
+      {
+        onChatMessage: activeOnChat,
+        onRtcSignal: activeOnRtc,
+      }
+    )
+  );
+
+  try {
+    assert.equal(hook.current.yourParticipantId, null);
+    assert.deepEqual(hook.current.chatMessages, []);
+
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    const msg1 = makeChatMessage({ id: 1, text: 'Tin lịch sử 1' });
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'AAAA',
+      sessionToken: 'token-aaaa-999999',
+      yourParticipantId: 'p_host0001',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: {
+        ...makeRoomSnapshot('AAAA'),
+        chatHistory: [msg1],
+      },
+    });
+
+    assert.equal(hook.current.yourParticipantId, 'p_host0001');
+    assert.deepEqual(hook.current.chatMessages, [msg1]);
+    assert.deepEqual(receivedChat1, []);
+
+    // Incoming GAME_EVENT(CHAT_MESSAGE) appends new message and triggers both onChatMessage and onVisualEvent
+    const msg2 = makeChatMessage({ id: 2, participantId: 'p_guest002', playerId: 1, senderName: 'Guest', text: 'Chào Host!' });
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 1,
+        kind: 'CHAT_MESSAGE',
+        message: msg2,
+      },
+    });
+
+    assert.deepEqual(hook.current.chatMessages, [msg1, msg2]);
+    assert.deepEqual(receivedChat1, [msg2]);
+    assert.equal(visualEvents.length, 1);
+    assert.equal(visualEvents[0].kind, 'CHAT_MESSAGE');
+
+    // Duplicate message id even with newer eventSeq must NOT duplicate chatMessages or re-fire onChatMessage
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 2,
+        kind: 'CHAT_MESSAGE',
+        message: msg2,
+      },
+    });
+    // Stale eventSeq visual event must still be deduplicated by lastEventSeqRef
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 2,
+        kind: 'SOUND',
+        effect: 'cashGain',
+      },
+    });
+    assert.deepEqual(hook.current.chatMessages, [msg1, msg2]);
+    assert.deepEqual(receivedChat1, [msg2]);
+    assert.equal(visualEvents.length, 2);
+
+    // Next visual event with higher eventSeq still works
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 3,
+        kind: 'SOUND',
+        effect: 'cashGain',
+      },
+    });
+    assert.equal(visualEvents.length, 3);
+    assert.equal(visualEvents[2].kind, 'SOUND');
+
+    // ROOM_SNAPSHOT hydrates yourParticipantId and chatMessages
+    const msg3 = makeChatMessage({ id: 3, channel: 'TEAM', teamId: 0, text: 'Tin đội mới' });
+    ws.simulateMessage({
+      type: 'ROOM_SNAPSHOT',
+      yourParticipantId: 'p_host_updated',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: {
+        ...makeRoomSnapshot('AAAA'),
+        chatHistory: [msg1, msg2, msg3],
+      },
+    });
+    assert.equal(hook.current.yourParticipantId, 'p_host_updated');
+    assert.deepEqual(hook.current.chatMessages, [msg1, msg2, msg3]);
+
+    // Incoming RTC_SIGNAL forwards to onRtcSignal
+    const offerSignal: RtcSignalPayload = { kind: 'offer', sdp: 'v=0\r\no=- 1 2 IN IP4 127.0.0.1' };
+    ws.simulateMessage({
+      type: 'RTC_SIGNAL',
+      fromParticipantId: 'p_guest002',
+      signal: offerSignal,
+    });
+    assert.deepEqual(receivedSignals1, [{ from: 'p_guest002', signal: offerSignal }]);
+
+    // Update callback handlers on rerender -> socket listener must invoke the latest refs without stale closures
+    activeOnChat = (msg: RoomChatMessage) => {
+      receivedChat2.push(msg);
+    };
+    activeOnRtc = (fromParticipantId: string, signal: RtcSignalPayload) => {
+      receivedSignals2.push({ from: fromParticipantId, signal });
+    };
+    hook.rerender();
+
+    const msg4 = makeChatMessage({ id: 4, text: 'Tin sau rerender' });
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 4,
+        kind: 'CHAT_MESSAGE',
+        message: msg4,
+      },
+    });
+    const iceSignal: RtcSignalPayload = {
+      kind: 'ice',
+      candidate: { candidate: 'candidate:1 1 UDP 1234 127.0.0.1 9999 typ host', sdpMid: '0', sdpMLineIndex: 0 },
+    };
+    ws.simulateMessage({
+      type: 'RTC_SIGNAL',
+      fromParticipantId: 'p_guest002',
+      signal: iceSignal,
+    });
+
+    assert.equal(receivedChat1.length, 1);
+    assert.deepEqual(receivedChat2, [msg4]);
+    assert.equal(receivedSignals1.length, 1);
+    assert.deepEqual(receivedSignals2, [{ from: 'p_guest002', signal: iceSignal }]);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+test('Phase 1 Task 5: sendChatMessage, sendRtcSignal, and updateVoiceState payloads and offline toast suppression', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const hook = mountHook(() => useOnlineMultiplayer());
+
+  try {
+    // When socket is not open/synced:
+    // - sendRtcSignal & updateVoiceState return false and must NOT set errorMessage or increment errorSeq
+    const iceSignal: RtcSignalPayload = {
+      kind: 'ice',
+      candidate: { candidate: 'candidate:0 1 UDP 1 127.0.0.1 5000 typ host', sdpMid: '0', sdpMLineIndex: 0 },
+    };
+    assert.equal(hook.current.sendRtcSignal('p_guest002', iceSignal), false);
+    assert.equal(hook.current.updateVoiceState(true), false);
+    assert.equal(hook.current.errorMessage, null);
+    assert.equal(hook.current.errorSeq, 0);
+    assert.equal(MockWebSocket.instances.length, 0);
+
+    // - sendChatMessage while offline/unsynced returns false and DOES surface sync error toast
+    assert.equal(hook.current.sendChatMessage('ALL', 'Xin chào'), false);
+    assert.equal(hook.current.errorSeq, 1);
+    assert.ok(hook.current.errorMessage);
+    assert.equal(MockWebSocket.instances.length, 1);
+
+    // Join and sync room
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'AAAA',
+      sessionToken: 'token-aaaa-999999',
+      yourParticipantId: 'p_host0001',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: makeRoomSnapshot('AAAA'),
+    });
+    assert.equal(hook.current.errorMessage, null);
+    ws.sent.length = 0;
+
+    // While synced, all three methods return true and emit exact JSON payloads
+    assert.equal(hook.current.sendChatMessage('TEAM', 'Đội mình cố lên!'), true);
+    assert.equal(hook.current.sendRtcSignal('p_guest002', { kind: 'answer', sdp: 'v=0-answer' }), true);
+    assert.equal(hook.current.updateVoiceState(true), true);
+
+    assert.equal(ws.sent.length, 3);
+    assert.deepEqual(JSON.parse(ws.sent[0]), {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Đội mình cố lên!',
+    });
+    assert.deepEqual(JSON.parse(ws.sent[1]), {
+      type: 'RTC_SIGNAL',
+      targetParticipantId: 'p_guest002',
+      signal: { kind: 'answer', sdp: 'v=0-answer' },
+    });
+    assert.deepEqual(JSON.parse(ws.sent[2]), {
+      type: 'UPDATE_VOICE_STATE',
+      micEnabled: true,
+    });
+
+    // After socket drops (unsynced / reconnecting), sendRtcSignal & updateVoiceState suppress error toast
+    ws.simulateClose();
+    const errorSeqBeforeDrop = hook.current.errorSeq;
+    assert.equal(hook.current.sendRtcSignal('p_guest002', iceSignal), false);
+    assert.equal(hook.current.updateVoiceState(false), false);
+    assert.equal(hook.current.errorMessage, null);
+    assert.equal(hook.current.errorSeq, errorSeqBeforeDrop);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+test('Phase 1 Task 5: LEFT_ROOM, leaveRoom(), and terminal room errors reset yourParticipantId and chatMessages (and clear chat dedup across rooms)', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const receivedChats: RoomChatMessage[] = [];
+  const hook = mountHook(() =>
+    useOnlineMultiplayer(undefined, {
+      onChatMessage: (m) => receivedChats.push(m),
+    })
+  );
+
+  try {
+    const joinAndPopulate = (roomCode: string, participantId: string) => {
+      hook.current.createRoom({
+        playerName: 'Host',
+        tokenType: 'car',
+        maxPlayers: 2,
+        startingCash: 2_000_000,
+        fillBots: false,
+      });
+      const ws = MockWebSocket.instances.at(-1)!;
+      if (ws.readyState !== MockWebSocket.OPEN) {
+        ws.simulateOpen();
+      }
+      ws.simulateMessage({
+        type: 'ROOM_JOINED',
+        roomCode,
+        sessionToken: `token-${roomCode}-123456`,
+        yourParticipantId: participantId,
+        yourSeatIndex: 0,
+        yourPlayerId: 0,
+        snapshot: {
+          ...makeRoomSnapshot(roomCode),
+          chatHistory: [makeChatMessage({ id: 1, text: `Welcome ${roomCode}` })],
+        },
+      });
+      assert.equal(hook.current.yourParticipantId, participantId);
+      assert.equal(hook.current.chatMessages.length, 1);
+      return ws;
+    };
+
+    // 1. LEFT_ROOM resets state (also emit chat id=2 first so step 4 proves dedup state resets across rooms)
+    const ws1 = joinAndPopulate('AAAA', 'p_host_a');
+    ws1.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 1,
+        kind: 'CHAT_MESSAGE',
+        message: makeChatMessage({ id: 2, text: 'Room A message 2' }),
+      },
+    });
+    assert.equal(hook.current.chatMessages.length, 2);
+    ws1.simulateMessage({ type: 'LEFT_ROOM' });
+    assert.equal(hook.current.yourParticipantId, null);
+    assert.deepEqual(hook.current.chatMessages, [] as RoomChatMessage[]);
+
+    // 2. leaveRoom() resets state
+    joinAndPopulate('BBBB', 'p_host_b');
+    hook.current.leaveRoom();
+    assert.equal(hook.current.yourParticipantId, null);
+    assert.deepEqual(hook.current.chatMessages, [] as RoomChatMessage[]);
+
+    // 3. Terminal errors reset state
+    const terminalCodes = [
+      'ROOM_NOT_FOUND',
+      'SESSION_EXPIRED',
+      'NOT_IN_ROOM',
+      'SESSION_REPLACED',
+    ] as const;
+
+    for (const code of terminalCodes) {
+      const ws = joinAndPopulate('CCCC', `p_${code}`);
+      ws.simulateMessage({
+        type: 'ERROR',
+        code,
+        message: `Error ${code}`,
+      });
+      assert.equal(hook.current.yourParticipantId, null, `${code} must reset yourParticipantId`);
+      assert.deepEqual(
+        hook.current.chatMessages,
+        [] as RoomChatMessage[],
+        `${code} must reset chatMessages`
+      );
+    }
+
+    // 4. Rejoining a new room accepts chat id=2 after previous room AAAA had chat id=2
+    const wsNew = joinAndPopulate('DDDD', 'p_host_d');
+    const newMsg = makeChatMessage({ id: 2, text: 'Fresh room message 2' });
+    wsNew.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 1,
+        kind: 'CHAT_MESSAGE',
+        message: newMsg,
+      },
+    });
+    assert.equal(hook.current.chatMessages.length, 2);
+    assert.equal(hook.current.chatMessages[1].text, 'Fresh room message 2');
+    assert.equal(receivedChats.length, 2);
   } finally {
     hook.unmount();
     env.restore();
