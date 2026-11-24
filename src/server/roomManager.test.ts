@@ -5000,3 +5000,524 @@ test('botDifficulty: persists in CREATE_ROOM/UPDATE_LOBBY_SETTINGS and drives Bo
     manager.dispose();
   }
 });
+
+test('TRANSFER_HOST: enforces host-only, blocks self/offline/missing targets, sets target.ready=true, and works in lobby & playing', async () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host1',
+      tokenType: 'car',
+      maxPlayers: 3,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const j1 = (allByClient.get('c1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j1?.type, 'ROOM_JOINED');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest2',
+      tokenType: 'yacht',
+    });
+    const j2 = (allByClient.get('c2') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j2?.type, 'ROOM_JOINED');
+    if (!j2 || j2.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c3', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest3',
+      tokenType: 'jet',
+    });
+    const j3 = (allByClient.get('c3') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j3?.type, 'ROOM_JOINED');
+    if (!j3 || j3.type !== 'ROOM_JOINED') return;
+
+    // 1. Non-host rejected with FORBIDDEN
+    const beforeNonHost = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('c2', {
+      type: 'TRANSFER_HOST',
+      targetParticipantId: j1.yourParticipantId,
+    });
+    assert.ok(
+      (allByClient.get('c2') || [])
+        .slice(beforeNonHost)
+        .some((m) => m.type === 'ERROR' && m.code === 'FORBIDDEN')
+    );
+
+    // 2. Self-transfer rejected with BAD_MESSAGE
+    const beforeSelf = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'TRANSFER_HOST',
+      targetParticipantId: j1.yourParticipantId,
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeSelf)
+        .some((m) => m.type === 'ERROR' && m.code === 'BAD_MESSAGE')
+    );
+
+    // 3. Unknown target rejected with TARGET_NOT_FOUND
+    const beforeMissing = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'TRANSFER_HOST',
+      targetParticipantId: 'p_nonexistent',
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeMissing)
+        .some((m) => m.type === 'ERROR' && m.code === 'TARGET_NOT_FOUND')
+    );
+
+    // 4. Disconnected target rejected with INVALID_STATE
+    manager.handleDisconnect('c3');
+    const beforeOffline = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'TRANSFER_HOST',
+      targetParticipantId: j3.yourParticipantId,
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeOffline)
+        .some((m) => m.type === 'ERROR' && m.code === 'INVALID_STATE')
+    );
+
+    // 5. Valid transfer from c1 to unready c2 -> updates hostSeatIndex, c2.ready = true, c2 gains host controls, c1 loses them
+    manager.handleClientMessage('c1', {
+      type: 'TRANSFER_HOST',
+      targetParticipantId: j2.yourParticipantId,
+    });
+    const afterTransfer = latestByClient.get('c2');
+    assert.equal(afterTransfer?.type, 'ROOM_SNAPSHOT');
+    if (!afterTransfer || afterTransfer.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterTransfer.snapshot.hostSeatIndex, 1);
+    assert.equal(afterTransfer.snapshot.seats[1].isHost, true);
+    assert.equal(afterTransfer.snapshot.seats[1].ready, true);
+    assert.equal(afterTransfer.snapshot.seats[0].isHost, false);
+    assert.equal(
+      afterTransfer.snapshot.participants.find((p) => p.participantId === j2.yourParticipantId)?.isHost,
+      true
+    );
+    assert.equal(
+      afterTransfer.snapshot.participants.find((p) => p.participantId === j2.yourParticipantId)?.ready,
+      true
+    );
+    assert.ok(
+      afterTransfer.snapshot.chatHistory.some((m) => m.participantId === 'system'),
+      'TRANSFER_HOST in lobby should append system notice'
+    );
+
+    // Old host c1 calling UPDATE_LOBBY_SETTINGS now fails with FORBIDDEN
+    const beforeOldHostSettings = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'UPDATE_LOBBY_SETTINGS',
+      startingCash: 3_000_000,
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeOldHostSettings)
+        .some((m) => m.type === 'ERROR' && m.code === 'FORBIDDEN')
+    );
+
+    // New host c2 calling UPDATE_LOBBY_SETTINGS succeeds
+    manager.handleClientMessage('c2', {
+      type: 'UPDATE_LOBBY_SETTINGS',
+      startingCash: 3_000_000,
+    });
+    const afterSettings = latestByClient.get('c1');
+    assert.equal(afterSettings?.type, 'ROOM_SNAPSHOT');
+    if (!afterSettings || afterSettings.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterSettings.snapshot.startingCash, 3_000_000);
+
+    // Reconnect c3, mark guests ready (c1 and c3), and start match to verify TRANSFER_HOST during playing
+    manager.handleClientMessage('c3-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: j1.roomCode,
+      sessionToken: j3.sessionToken,
+    });
+    markAllGuestsReady(manager, ['c1', 'c3-re']);
+    manager.handleClientMessage('c2', { type: 'START_MATCH' });
+
+    manager.handleClientMessage('c2', {
+      type: 'TRANSFER_HOST',
+      targetParticipantId: j1.yourParticipantId,
+    });
+    const inMatchTransfer = latestByClient.get('c1');
+    assert.equal(inMatchTransfer?.type, 'ROOM_SNAPSHOT');
+    if (!inMatchTransfer || inMatchTransfer.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(inMatchTransfer.snapshot.status, 'playing');
+    assert.equal(inMatchTransfer.snapshot.hostSeatIndex, 0);
+    assert.ok((inMatchTransfer.snapshot.match?.logs.length ?? 0) >= 2);
+
+    // Explicitly left participant cannot receive host transfer
+    manager.handleClientMessage('c3-re', { type: 'LEAVE_ROOM' });
+    const beforeLeftTarget = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'TRANSFER_HOST',
+      targetParticipantId: j3.yourParticipantId,
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeLeftTarget)
+        .some((m) => m.type === 'ERROR' && m.code === 'TARGET_NOT_FOUND')
+    );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('KICK_PARTICIPANT in lobby: validates auth/self/missing, emits ERROR(KICKED_BY_HOST), invalidates sessionToken, clears pendingSeatSwap, and frees seat/token', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 3,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const j1 = (allByClient.get('c1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j1?.type, 'ROOM_JOINED');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest2',
+      tokenType: 'yacht',
+    });
+    const j2 = (allByClient.get('c2') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j2?.type, 'ROOM_JOINED');
+    if (!j2 || j2.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c3', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest3',
+      tokenType: 'jet',
+    });
+    const j3 = (allByClient.get('c3') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j3?.type, 'ROOM_JOINED');
+    if (!j3 || j3.type !== 'ROOM_JOINED') return;
+
+    // 1. Non-host cannot kick
+    const beforeNonHost = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('c2', {
+      type: 'KICK_PARTICIPANT',
+      targetParticipantId: j3.yourParticipantId,
+    });
+    assert.ok(
+      (allByClient.get('c2') || [])
+        .slice(beforeNonHost)
+        .some((m) => m.type === 'ERROR' && m.code === 'FORBIDDEN')
+    );
+
+    // 2. Host cannot self-kick
+    const beforeSelf = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'KICK_PARTICIPANT',
+      targetParticipantId: j1.yourParticipantId,
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeSelf)
+        .some((m) => m.type === 'ERROR' && m.code === 'BAD_MESSAGE')
+    );
+
+    // 3. Unknown target rejected with TARGET_NOT_FOUND
+    const beforeMissing = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'KICK_PARTICIPANT',
+      targetParticipantId: 'p_unknown',
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(beforeMissing)
+        .some((m) => m.type === 'ERROR' && m.code === 'TARGET_NOT_FOUND')
+    );
+
+    // 4. Create pendingSeatSwap involving c2, then host kicks c2
+    manager.handleClientMessage('c2', { type: 'REQUEST_SEAT_SWAP', targetSeatIndex: 2 });
+    const swapSnap = latestByClient.get('c1');
+    assert.equal(swapSnap?.type, 'ROOM_SNAPSHOT');
+    if (!swapSnap || swapSnap.type !== 'ROOM_SNAPSHOT') return;
+    assert.ok(swapSnap.snapshot.pendingSeatSwap);
+
+    const beforeC2Kick = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'KICK_PARTICIPANT',
+      targetParticipantId: j2.yourParticipantId,
+    });
+
+    // c2 receives ERROR(KICKED_BY_HOST)
+    assert.ok(
+      (allByClient.get('c2') || [])
+        .slice(beforeC2Kick)
+        .some((m) => m.type === 'ERROR' && m.code === 'KICKED_BY_HOST')
+    );
+
+    // c2 old client session is cleaned up (in-room message gets NOT_IN_ROOM)
+    const beforeC2AfterKick = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('c2', { type: 'SET_READY', ready: true });
+    assert.ok(
+      (allByClient.get('c2') || [])
+        .slice(beforeC2AfterKick)
+        .some((m) => m.type === 'ERROR' && m.code === 'NOT_IN_ROOM')
+    );
+
+    // c2 cannot RECONNECT_ROOM using old sessionToken -> SESSION_EXPIRED
+    const beforeC2Reconnect = (allByClient.get('c2-re') || []).length;
+    manager.handleClientMessage('c2-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: j1.roomCode,
+      sessionToken: j2.sessionToken,
+    });
+    assert.ok(
+      (allByClient.get('c2-re') || [])
+        .slice(beforeC2Reconnect)
+        .some((m) => m.type === 'ERROR' && m.code === 'SESSION_EXPIRED')
+    );
+
+    // Snapshot cleared pendingSeatSwap and freed seat 1
+    const afterKickSnap = latestByClient.get('c1');
+    assert.equal(afterKickSnap?.type, 'ROOM_SNAPSHOT');
+    if (!afterKickSnap || afterKickSnap.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(afterKickSnap.snapshot.pendingSeatSwap, null);
+    assert.equal(afterKickSnap.snapshot.seats[1].occupiedByHuman, false);
+    assert.equal(
+      afterKickSnap.snapshot.participants.some((p) => p.participantId === j2.yourParticipantId),
+      false
+    );
+
+    // New player c4 can take freed seat 1 and freed token 'yacht'
+    manager.handleClientMessage('c4', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'NewJoiner',
+      tokenType: 'yacht',
+    });
+    const j4 = (allByClient.get('c4') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j4?.type, 'ROOM_JOINED');
+    if (!j4 || j4.type !== 'ROOM_JOINED') return;
+    assert.equal(j4.yourSeatIndex, 1);
+    assert.equal(j4.snapshot.seats[1].tokenType, 'yacht');
+
+    // Disconnected guest c3 can also be kicked in lobby and old token is invalidated
+    manager.handleDisconnect('c3');
+    manager.handleClientMessage('c1', {
+      type: 'KICK_PARTICIPANT',
+      targetParticipantId: j3.yourParticipantId,
+    });
+    manager.handleClientMessage('c3-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: j1.roomCode,
+      sessionToken: j3.sessionToken,
+    });
+    assert.ok(
+      (allByClient.get('c3-re') || []).some((m) => m.type === 'ERROR' && m.code === 'SESSION_EXPIRED')
+    );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('KICK_PARTICIPANT in playing & gameover: marks explicitlyLeft, invalidates sessionToken, hands over active turn to Bot AI, and excludes from RETURN_TO_LOBBY', async () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+    diceRng: () => [1, 2],
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 3,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const j1 = (allByClient.get('c1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j1?.type, 'ROOM_JOINED');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Player2',
+      tokenType: 'yacht',
+    });
+    const j2 = (allByClient.get('c2') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j2?.type, 'ROOM_JOINED');
+    if (!j2 || j2.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c3', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Player3',
+      tokenType: 'jet',
+    });
+    const j3 = (allByClient.get('c3') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(j3?.type, 'ROOM_JOINED');
+    if (!j3 || j3.type !== 'ROOM_JOINED') return;
+
+    markAllGuestsReady(manager, ['c2', 'c3']);
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+
+    // c1 completes Turn 1 -> active player becomes c2 (playerId 1, index 1)
+    manager.handleClientMessage('c1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    manager.handleClientMessage('c1', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+    await flushMicrotasks(8);
+
+    const beforeKickSnap = latestByClient.get('c1');
+    assert.equal(beforeKickSnap?.type, 'ROOM_SNAPSHOT');
+    if (!beforeKickSnap || beforeKickSnap.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(beforeKickSnap.snapshot.match?.activePlayerIndex, 1);
+
+    // c1 kicks c2 while it is c2's active turn
+    const beforeC2Kick = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'KICK_PARTICIPANT',
+      targetParticipantId: j2.yourParticipantId,
+    });
+
+    assert.ok(
+      (allByClient.get('c2') || [])
+        .slice(beforeC2Kick)
+        .some((m) => m.type === 'ERROR' && m.code === 'KICKED_BY_HOST')
+    );
+
+    // c2 old sessionToken rejected on RECONNECT_ROOM
+    manager.handleClientMessage('c2-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: j1.roomCode,
+      sessionToken: j2.sessionToken,
+    });
+    assert.ok(
+      (allByClient.get('c2-re') || []).some((m) => m.type === 'ERROR' && m.code === 'SESSION_EXPIRED')
+    );
+
+    const immediateAfterKick = latestByClient.get('c1');
+    assert.equal(immediateAfterKick?.type, 'ROOM_SNAPSHOT');
+    if (!immediateAfterKick || immediateAfterKick.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(
+      immediateAfterKick.snapshot.participants.some((p) => p.participantId === j2.yourParticipantId),
+      false
+    );
+    assert.equal(immediateAfterKick.snapshot.match?.players[1].isBot, true);
+    assert.equal(immediateAfterKick.snapshot.match?.players[1].onlineBotTakeover, true);
+    assert.equal(immediateAfterKick.snapshot.match?.players[1].onlineConnected, false);
+
+    // Inspect internal room.humans seat to verify explicitlyLeft === true and rotated sessionToken
+    const roomsMap = (manager as unknown as {
+      rooms: Map<
+        string,
+        {
+          humans: Array<{
+            participantId: string;
+            explicitlyLeft: boolean;
+            connected: boolean;
+            clientId: string | null;
+            micEnabled: boolean;
+            sessionToken: string;
+          }>;
+          match: { matchTimeLeft: number } | null;
+        }
+      >;
+    }).rooms;
+    const internalRoom = roomsMap.get(j1.roomCode)!;
+    const kickedSeat = internalRoom.humans.find((h) => h.participantId === j2.yourParticipantId)!;
+    assert.equal(kickedSeat.explicitlyLeft, true);
+    assert.equal(kickedSeat.connected, false);
+    assert.equal(kickedSeat.clientId, null);
+    assert.equal(kickedSeat.micEnabled, false);
+    assert.notEqual(kickedSeat.sessionToken, j2.sessionToken);
+
+    // Bot AI automatically plays c2's active turn -> advances turn to Player3 (index 2)
+    await flushMicrotasks(24);
+    const afterBotTurn = latestByClient.get('c1');
+    assert.equal(afterBotTurn?.type, 'ROOM_SNAPSHOT');
+    if (!afterBotTurn || afterBotTurn.type !== 'ROOM_SNAPSHOT') return;
+    assert.notEqual(afterBotTurn.snapshot.match?.players[1].position, 0);
+    assert.equal(afterBotTurn.snapshot.match?.activePlayerIndex, 2);
+
+    // Transition match to gameover and test KICK_PARTICIPANT in gameover + RETURN_TO_LOBBY cleanup
+    internalRoom.match!.matchTimeLeft = 1;
+    manager.tickOneSecond();
+
+    const beforeC3Kick = (allByClient.get('c3') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'KICK_PARTICIPANT',
+      targetParticipantId: j3.yourParticipantId,
+    });
+    assert.ok(
+      (allByClient.get('c3') || [])
+        .slice(beforeC3Kick)
+        .some((m) => m.type === 'ERROR' && m.code === 'KICKED_BY_HOST')
+    );
+
+    manager.handleClientMessage('c3-re', {
+      type: 'RECONNECT_ROOM',
+      roomCode: j1.roomCode,
+      sessionToken: j3.sessionToken,
+    });
+    assert.ok(
+      (allByClient.get('c3-re') || []).some((m) => m.type === 'ERROR' && m.code === 'SESSION_EXPIRED')
+    );
+
+    manager.handleClientMessage('c1', { type: 'RETURN_TO_LOBBY' });
+    const backInLobby = latestByClient.get('c1');
+    assert.equal(backInLobby?.type, 'ROOM_SNAPSHOT');
+    if (!backInLobby || backInLobby.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(backInLobby.snapshot.status, 'lobby');
+    assert.equal(backInLobby.snapshot.seats.filter((s) => s.occupiedByHuman).length, 1);
+  } finally {
+    manager.dispose();
+  }
+});

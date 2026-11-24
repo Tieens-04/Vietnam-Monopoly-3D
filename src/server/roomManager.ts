@@ -361,6 +361,17 @@ export class OnlineRoomManager {
     return true;
   }
 
+  private clearPendingSeatSwapForParticipant(room: RoomRecord, participantId: string): boolean {
+    if (
+      !room.pendingSeatSwap ||
+      (room.pendingSeatSwap.fromParticipantId !== participantId &&
+        room.pendingSeatSwap.toParticipantId !== participantId)
+    ) {
+      return false;
+    }
+    return this.clearPendingSeatSwap(room);
+  }
+
   private clearRoomTimers(room: RoomRecord): void {
     this.clearPendingSeatSwap(room);
     this.clearMatchTimers(room);
@@ -409,7 +420,7 @@ export class OnlineRoomManager {
   }
 
   private pickAvailableToken(room: RoomRecord, requested?: TokenArchetype): TokenArchetype {
-    const used = new Set(room.humans.map((h) => h.tokenType));
+    const used = new Set(room.humans.filter((h) => !h.explicitlyLeft).map((h) => h.tokenType));
     if (requested && isTokenArchetype(requested) && !used.has(requested)) {
       return requested;
     }
@@ -528,13 +539,14 @@ export class OnlineRoomManager {
     room: RoomRecord,
     recipientParticipantId?: string
   ): OnlineRoomSnapshot {
-    const usedByHumans = new Set(room.humans.map((h) => h.tokenType));
+    const activeHumans = room.humans.filter((h) => !h.explicitlyLeft);
+    const usedByHumans = new Set(activeHumans.map((h) => h.tokenType));
     const freeTokens = ALL_TOKENS.filter((t) => !usedByHumans.has(t));
     let freeTokenIdx = 0;
 
     const seats: LobbySeatInfo[] = [];
     for (let s = 0; s < room.maxPlayers; s++) {
-      const human = room.humans.find((h) => h.seatIndex === s);
+      const human = activeHumans.find((h) => h.seatIndex === s);
       const teamId = room.matchMode === 'TEAMS_2V2' ? ((s % 2) as TeamId) : undefined;
       if (human) {
         const meta = TOKEN_COLORS[human.tokenType];
@@ -829,7 +841,7 @@ export class OnlineRoomManager {
 
       let freeSeat = -1;
       for (let s = 0; s < room.maxPlayers; s++) {
-        if (!room.humans.some((h) => h.seatIndex === s)) {
+        if (!room.humans.some((h) => !h.explicitlyLeft && h.seatIndex === s)) {
           freeSeat = s;
           break;
         }
@@ -1296,6 +1308,125 @@ export class OnlineRoomManager {
       return;
     }
 
+    if (msg.type === 'TRANSFER_HOST') {
+      if (seat.explicitlyLeft || seat.seatIndex !== room.hostSeatIndex) {
+        this.sendError(clientId, 'FORBIDDEN', 'Chỉ chủ phòng mới có thể chuyển quyền chủ phòng.');
+        return;
+      }
+      if (typeof msg.targetParticipantId !== 'string' || !msg.targetParticipantId.trim()) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Mã thành viên mục tiêu không hợp lệ.');
+        return;
+      }
+      if (msg.targetParticipantId === seat.participantId) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Bạn đã là chủ phòng.');
+        return;
+      }
+      const target = room.humans.find(
+        (h) => h.participantId === msg.targetParticipantId && !h.explicitlyLeft
+      );
+      if (!target) {
+        this.sendError(clientId, 'TARGET_NOT_FOUND', 'Không tìm thấy thành viên mục tiêu trong phòng.');
+        return;
+      }
+      if (!target.connected) {
+        this.sendError(
+          clientId,
+          'INVALID_STATE',
+          'Không thể chuyển quyền chủ phòng cho thành viên đang mất kết nối.'
+        );
+        return;
+      }
+
+      room.hostSeatIndex = target.seatIndex;
+      target.ready = true;
+      if (room.status === 'lobby') {
+        this.appendSystemLobbyChat(room, `👑 ${target.playerName} đã trở thành chủ phòng mới.`);
+      } else if (room.status === 'playing' && room.match) {
+        this.addLog(
+          room,
+          `👑 ${target.playerName} đã trở thành chủ phòng mới.`,
+          TOKEN_COLORS[target.tokenType].color,
+          'highlight'
+        );
+      }
+      this.broadcastSnapshot(room);
+      return;
+    }
+
+    if (msg.type === 'KICK_PARTICIPANT') {
+      if (seat.explicitlyLeft || seat.seatIndex !== room.hostSeatIndex) {
+        this.sendError(clientId, 'FORBIDDEN', 'Chỉ chủ phòng mới có thể mời thành viên khỏi phòng.');
+        return;
+      }
+      if (typeof msg.targetParticipantId !== 'string' || !msg.targetParticipantId.trim()) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Mã thành viên mục tiêu không hợp lệ.');
+        return;
+      }
+      if (msg.targetParticipantId === seat.participantId) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Không thể tự mời chính mình khỏi phòng.');
+        return;
+      }
+      const target = room.humans.find(
+        (h) => h.participantId === msg.targetParticipantId && !h.explicitlyLeft
+      );
+      if (!target) {
+        this.sendError(clientId, 'TARGET_NOT_FOUND', 'Không tìm thấy thành viên cần mời khỏi phòng.');
+        return;
+      }
+
+      const kickedClientId = target.clientId;
+      if (kickedClientId) {
+        this.clientSessions.delete(kickedClientId);
+        this.lastEmoteAtByClient.delete(kickedClientId);
+        this.lastChatAtByClient.delete(kickedClientId);
+        this.sendError(kickedClientId, 'KICKED_BY_HOST', 'Bạn đã bị chủ phòng mời khỏi phòng.');
+      }
+
+      this.clearPendingSeatSwapForParticipant(room, target.participantId);
+      target.sessionToken = crypto.randomBytes(18).toString('hex');
+      target.clientId = null;
+      target.connected = false;
+      target.micEnabled = false;
+      target.explicitlyLeft = true;
+
+      if (room.status === 'lobby') {
+        room.humans = room.humans.filter((h) => h !== target);
+        this.appendSystemLobbyChat(room, `🚫 ${target.playerName} đã bị chủ phòng mời khỏi phòng.`);
+        this.broadcastSnapshot(room);
+        return;
+      }
+
+      let shouldScheduleBot = false;
+      if (room.match && target.playerId !== null) {
+        const player = room.match.players.find((p) => p.id === target.playerId);
+        if (player) {
+          player.onlineConnected = false;
+          if (!player.bankrupt) {
+            player.isBot = true;
+            player.onlineBotTakeover = true;
+            this.addLog(
+              room,
+              `🚫 ${player.name} đã bị chủ phòng mời khỏi phòng — Bot AI tiếp quản.`,
+              player.color,
+              'neutral'
+            );
+            if (
+              room.status === 'playing' &&
+              room.match.players[room.match.activePlayerIndex]?.id === player.id
+            ) {
+              shouldScheduleBot = true;
+            }
+          }
+        }
+      }
+
+      this.broadcastSnapshot(room);
+      if (shouldScheduleBot) {
+        this.scheduleBotTurnIfNeeded(room);
+      }
+      return;
+    }
+
     if (msg.type === 'UPDATE_MY_PROFILE') {
       if (room.status !== 'lobby') {
         this.sendError(clientId, 'INVALID_STATE', 'Chỉ có thể đổi tên/nhân vật ở sảnh chờ.');
@@ -1562,13 +1693,8 @@ export class OnlineRoomManager {
       this.promoteConnectedHostIfNeeded(room);
     }
 
-    if (
-      room.status === 'lobby' &&
-      room.pendingSeatSwap &&
-      (room.pendingSeatSwap.fromParticipantId === seat.participantId ||
-        room.pendingSeatSwap.toParticipantId === seat.participantId)
-    ) {
-      this.clearPendingSeatSwap(room);
+    if (room.status === 'lobby') {
+      this.clearPendingSeatSwapForParticipant(room, seat.participantId);
     }
 
     this.broadcastSnapshot(room);
@@ -1586,13 +1712,7 @@ export class OnlineRoomManager {
     this.sendMessage(clientId, { type: 'LEFT_ROOM' });
 
     if (room.status === 'lobby') {
-      if (
-        room.pendingSeatSwap &&
-        (room.pendingSeatSwap.fromParticipantId === seat.participantId ||
-          room.pendingSeatSwap.toParticipantId === seat.participantId)
-      ) {
-        this.clearPendingSeatSwap(room);
-      }
+      this.clearPendingSeatSwapForParticipant(room, seat.participantId);
       room.humans = room.humans.filter((h) => h !== seat);
       if (room.humans.length === 0) {
         this.clearRoomTimers(room);
