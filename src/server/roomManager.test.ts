@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 import { WebSocket } from 'ws';
-import type { OnlineGameAction, ServerToClientMessage } from '../game/onlineTypes';
+import type {
+  OnlineGameAction,
+  ServerToClientMessage,
+} from '../game/onlineTypes';
+import { rankPlayersForVictory } from '../game/rules';
+import type { PlayerState, PropertyState } from '../game/types';
 import { OnlineRoomManager } from './roomManager';
 import { attachMultiplayerWebSocketServer } from './wsServer';
 
@@ -6211,6 +6216,559 @@ test('MOVE_TO_SPECTATOR & MOVE_TO_SEAT for spectator: host step-down transfers h
       c1SeatedSnap.snapshot.participants.find((p) => p.participantId === j1.yourParticipantId)?.role,
       'player'
     );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('SEND_BOARD_TAUNT: broadcasts GAME_EVENT(BOARD_TAUNT) to all humans & spectators, blocks self/missing target and spectator, and enforces 4000ms cooldown', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+    });
+    const j1 = latestByClient.get('c1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Guest',
+      tokenType: 'yacht',
+    });
+    markAllGuestsReady(manager, ['c2']);
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+
+    manager.handleClientMessage('spec1', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Viewer',
+    });
+
+    // Spectator cannot throw board taunts
+    const specErrStart = (allByClient.get('spec1') || []).length;
+    manager.handleClientMessage('spec1', {
+      type: 'SEND_BOARD_TAUNT',
+      targetPlayerId: 1,
+      tauntKind: 'slipper',
+    });
+    assert.ok(
+      (allByClient.get('spec1') || [])
+        .slice(specErrStart)
+        .some((m) => m.type === 'ERROR' && (m.code === 'FORBIDDEN' || m.code === 'INVALID_STATE'))
+    );
+
+    // Self-target rejected with INVALID_TARGET
+    const selfErrStart = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'SEND_BOARD_TAUNT',
+      targetPlayerId: 0,
+      tauntKind: 'slipper',
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(selfErrStart)
+        .some((m) => m.type === 'ERROR' && m.code === 'INVALID_TARGET')
+    );
+
+    // Non-existent targetPlayerId rejected with INVALID_TARGET
+    const missingErrStart = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'SEND_BOARD_TAUNT',
+      targetPlayerId: 99,
+      tauntKind: 'tomato',
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(missingErrStart)
+        .some((m) => m.type === 'ERROR' && m.code === 'INVALID_TARGET')
+    );
+
+    // Valid taunt from c1 -> c2 (playerId 1) broadcasts BOARD_TAUNT to c1, c2, and spectator spec1
+    const c1Before = (allByClient.get('c1') || []).length;
+    const c2Before = (allByClient.get('c2') || []).length;
+    const specBefore = (allByClient.get('spec1') || []).length;
+
+    manager.handleClientMessage('c1', {
+      type: 'SEND_BOARD_TAUNT',
+      targetPlayerId: 1,
+      tauntKind: 'slipper',
+    });
+
+    for (const [cid, startIdx] of [
+      ['c1', c1Before],
+      ['c2', c2Before],
+      ['spec1', specBefore],
+    ] as const) {
+      const evtMsg = (allByClient.get(cid) || [])
+        .slice(startIdx)
+        .find((m) => m.type === 'GAME_EVENT' && m.event.kind === 'BOARD_TAUNT');
+      assert.equal(evtMsg?.type, 'GAME_EVENT', `Expected BOARD_TAUNT event for ${cid}`);
+      if (evtMsg?.type === 'GAME_EVENT' && evtMsg.event.kind === 'BOARD_TAUNT') {
+        assert.equal(evtMsg.event.fromPlayerId, 0);
+        assert.equal(evtMsg.event.fromPlayerName, 'Host');
+        assert.equal(evtMsg.event.targetPlayerId, 1);
+        assert.equal(evtMsg.event.tauntKind, 'slipper');
+      }
+    }
+
+    // Immediate second taunt by c1 within 4000ms -> RATE_LIMITED
+    const rateStart = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'SEND_BOARD_TAUNT',
+      targetPlayerId: 1,
+      tauntKind: 'tomato',
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(rateStart)
+        .some((m) => m.type === 'ERROR' && m.code === 'RATE_LIMITED')
+    );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('SEND_TILE_PING: broadcasts public GAME_EVENT(TILE_PING) to teammates, opponents, and spectators in 2v2, validates tileIndex, and enforces 2500ms cooldown', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'TeamA1',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      matchMode: 'TEAMS_2V2',
+    });
+    const j1 = latestByClient.get('c1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'TeamB1',
+      tokenType: 'yacht',
+    });
+    manager.handleClientMessage('c3', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'TeamA2',
+      tokenType: 'jet',
+    });
+    markAllGuestsReady(manager, ['c2', 'c3']);
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+
+    manager.handleClientMessage('spec1', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Watcher',
+    });
+    const specJoined = (allByClient.get('spec1') || []).find((m) => m.type === 'ROOM_JOINED');
+    if (!specJoined || specJoined.type !== 'ROOM_JOINED') return;
+
+    // Out-of-bounds tile 99 -> INVALID_TILE
+    const invalidTileStart = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'SEND_TILE_PING',
+      tileIndex: 99,
+      intent: 'TARGET',
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(invalidTileStart)
+        .some((m) => m.type === 'ERROR' && m.code === 'INVALID_TILE')
+    );
+
+    // Valid tile 5 ping from c1 -> public to teammate c3, opponent c2, and spectator spec1
+    const c1Before = (allByClient.get('c1') || []).length;
+    const c2Before = (allByClient.get('c2') || []).length;
+    const c3Before = (allByClient.get('c3') || []).length;
+    const specBefore = (allByClient.get('spec1') || []).length;
+
+    manager.handleClientMessage('c1', {
+      type: 'SEND_TILE_PING',
+      tileIndex: 5,
+      intent: 'TARGET',
+    });
+
+    for (const [cid, startIdx] of [
+      ['c1', c1Before],
+      ['c2', c2Before],
+      ['c3', c3Before],
+      ['spec1', specBefore],
+    ] as const) {
+      const pingEvt = (allByClient.get(cid) || [])
+        .slice(startIdx)
+        .find((m) => m.type === 'GAME_EVENT' && m.event.kind === 'TILE_PING');
+      assert.equal(pingEvt?.type, 'GAME_EVENT', `Expected public TILE_PING for ${cid}`);
+      if (pingEvt?.type === 'GAME_EVENT' && pingEvt.event.kind === 'TILE_PING') {
+        assert.equal(pingEvt.event.participantId, j1.yourParticipantId);
+        assert.equal(pingEvt.event.playerId, 0);
+        assert.equal(pingEvt.event.senderName, 'TeamA1');
+        assert.equal(pingEvt.event.tileIndex, 5);
+        assert.equal(pingEvt.event.intent, 'TARGET');
+      }
+    }
+
+    // Immediate second ping within < 2500ms -> RATE_LIMITED
+    const rateStart = (allByClient.get('c1') || []).length;
+    manager.handleClientMessage('c1', {
+      type: 'SEND_TILE_PING',
+      tileIndex: 10,
+      intent: 'DANGER',
+    });
+    assert.ok(
+      (allByClient.get('c1') || [])
+        .slice(rateStart)
+        .some((m) => m.type === 'ERROR' && m.code === 'RATE_LIMITED')
+    );
+
+    // Spectator can also ping a tile publicly with playerId=null
+    const c2SpecPingStart = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('spec1', {
+      type: 'SEND_TILE_PING',
+      tileIndex: 14,
+      intent: 'TROPHY',
+    });
+    const specPingForC2 = (allByClient.get('c2') || [])
+      .slice(c2SpecPingStart)
+      .find((m) => m.type === 'GAME_EVENT' && m.event.kind === 'TILE_PING');
+    assert.equal(specPingForC2?.type, 'GAME_EVENT');
+    if (specPingForC2?.type === 'GAME_EVENT' && specPingForC2.event.kind === 'TILE_PING') {
+      assert.equal(specPingForC2.event.participantId, specJoined.yourParticipantId);
+      assert.equal(specPingForC2.event.playerId, null);
+      assert.equal(specPingForC2.event.tileIndex, 14);
+      assert.equal(specPingForC2.event.intent, 'TROPHY');
+    }
+  } finally {
+    manager.dispose();
+  }
+});
+
+test('seriesStandings & postMatchAwards: computes awards & FFA/20m Sudden Death/2v2 standings, excludes pure Bots, attributes Hot-Join takeover by participantId, persists across RETURN_TO_LOBBY, and resets only for Host', async () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  let nextDice: [number, number] = [3, 5];
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+    diceRng: () => nextDice,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'An',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+    });
+    const j1 = latestByClient.get('c1');
+    if (!j1 || j1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Bình',
+      tokenType: 'yacht',
+    });
+    const j2 = (allByClient.get('c2') || []).find((m) => m.type === 'ROOM_JOINED');
+    if (!j2 || j2.type !== 'ROOM_JOINED') return;
+
+    markAllGuestsReady(manager, ['c2']);
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+
+    // Join spectator s1 and approve Hot-Join Bot Takeover on seat 3 (playerId 3); seat 2 remains pure Bot!
+    manager.handleClientMessage('s1', {
+      type: 'JOIN_ROOM',
+      roomCode: j1.roomCode,
+      playerName: 'Cường',
+    });
+    const js1 = (allByClient.get('s1') || []).find((m) => m.type === 'ROOM_JOINED');
+    if (!js1 || js1.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('s1', { type: 'REQUEST_BOT_TAKEOVER', targetPlayerId: 3 });
+    const reqSnap = latestByClient.get('c1');
+    if (!reqSnap || reqSnap.type !== 'ROOM_SNAPSHOT' || !reqSnap.snapshot.pendingTakeoverRequest) {
+      assert.fail('Expected pendingTakeoverRequest');
+    }
+    manager.handleClientMessage('c1', {
+      type: 'RESPOND_BOT_TAKEOVER',
+      requestId: reqSnap.snapshot.pendingTakeoverRequest.requestId,
+      accept: true,
+    });
+
+    const roomsMap = (manager as unknown as {
+      rooms: Map<
+        string,
+        {
+          match: {
+            players: PlayerState[];
+            properties: Record<number, PropertyState>;
+            activePlayerIndex: number;
+            turnPhase: string;
+            matchTimeLeft: number;
+          } | null;
+        }
+      >;
+    }).rooms;
+    const room = roomsMap.get(j1.roomCode)!;
+
+    // 1. p0 (c1) rolls [3, 5] -> lands on Lost Island (tile 8) -> jailVisits += 1
+    nextDice = [3, 5];
+    manager.handleClientMessage('c1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    assert.equal(room.match!.players[0].inJail, true);
+    assert.equal(room.match!.activePlayerIndex, 1);
+
+    // 2. p1 (c2) lands on p0's Hà Nội Lv1 (tile 29, rent 240K) -> direct rent + CONFIRM_BUYOUT
+    room.match!.properties[29] = { tileIndex: 29, ownerId: 0, level: 1 };
+    room.match!.players[1].position = 26;
+    nextDice = [1, 2];
+    manager.handleClientMessage('c2', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    assert.equal(room.match!.turnPhase, 'BUYOUT_DECISION');
+    manager.handleClientMessage('c2', { type: 'GAME_ACTION', action: { kind: 'CONFIRM_BUYOUT' } });
+    await flushMicrotasks(20); // lets Bot p2 finish turn and advance to p3 (s1)
+
+    // 3. p3 (s1) sells property to pay 90K rent on p0's TP.HCM (tile 31) via SELL_AND_PAY_DEBT
+    assert.equal(room.match!.activePlayerIndex, 3);
+    room.match!.properties[31] = { tileIndex: 31, ownerId: 0, level: 0 };
+    room.match!.properties[1] = { tileIndex: 1, ownerId: 3, level: 0 };
+    room.match!.players[3].cash = 50_000;
+    room.match!.players[3].position = 28;
+    nextDice = [1, 2];
+    manager.handleClientMessage('s1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    assert.equal(room.match!.turnPhase, 'DEBT_RESOLUTION');
+    manager.handleClientMessage('s1', {
+      type: 'GAME_ACTION',
+      action: { kind: 'SELL_AND_PAY_DEBT', tileIndicesToSell: [1] },
+    });
+    await flushMicrotasks(8);
+
+    // 4. p0 (c1) pays jail fine, uses World Tour flight to Phú Quốc (tile 25), and wins Resort Monopoly (4,14,18,25)
+    assert.equal(room.match!.activePlayerIndex, 0);
+    room.match!.properties[4] = { tileIndex: 4, ownerId: 0, level: 0 };
+    room.match!.properties[14] = { tileIndex: 14, ownerId: 0, level: 0 };
+    room.match!.properties[18] = { tileIndex: 18, ownerId: 0, level: 0 };
+    room.match!.players[0].pendingWorldTour = true;
+    manager.handleClientMessage('c1', { type: 'GAME_ACTION', action: { kind: 'PAY_JAIL_FINE' } });
+    // Roll to World Tour (tile 24) or advance turn to trigger pendingWorldTour
+    room.match!.players[0].position = 21;
+    nextDice = [1, 2];
+    manager.handleClientMessage('c1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    // Skip c2, Bot p2, s1 turns quickly to return to p0 with pendingWorldTour = true -> WORLD_TOUR phase
+    room.match!.activePlayerIndex = 3;
+    room.match!.players[3].position = 0;
+    nextDice = [1, 2]; // tile 3 unowned or owned, skip
+    manager.handleClientMessage('s1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    if (room.match!.turnPhase === 'BUY_DECISION') {
+      manager.handleClientMessage('s1', { type: 'GAME_ACTION', action: { kind: 'SKIP_BUY' } });
+      await flushMicrotasks(8);
+    }
+
+    assert.equal(room.match!.activePlayerIndex, 0);
+    assert.equal(room.match!.turnPhase, 'WORLD_TOUR');
+    manager.handleClientMessage('c1', {
+      type: 'GAME_ACTION',
+      action: { kind: 'SELECT_WORLD_TOUR', targetTile: 25 },
+    });
+    await flushMicrotasks(12);
+    assert.equal(room.match!.turnPhase, 'BUY_DECISION');
+    manager.handleClientMessage('c1', {
+      type: 'GAME_ACTION',
+      action: { kind: 'BUY_PROPERTY', initialLevel: 0 },
+    });
+    await flushMicrotasks(8);
+
+    const endSnap1 = latestByClient.get('c1');
+    assert.equal(endSnap1?.type, 'ROOM_SNAPSHOT');
+    if (!endSnap1 || endSnap1.type !== 'ROOM_SNAPSHOT') return;
+
+    assert.equal(endSnap1.snapshot.status, 'gameover');
+    assert.equal(endSnap1.snapshot.match?.matchWinnerResult?.winner.id, 0);
+    const awards1 = endSnap1.snapshot.match?.postMatchAwards ?? [];
+    assert.ok(awards1.length >= 3, 'Expected postMatchAwards to populate from match stats');
+    assert.equal(awards1.find((a) => a.id === 'CHUA_DAO_HOANG')?.playerId, 0);
+    assert.equal(awards1.find((a) => a.id === 'TRUM_THU_HO')?.playerId, 0);
+    assert.equal(awards1.find((a) => a.id === 'TRUM_THU_HO')?.valueLabel, '240K');
+    assert.equal(awards1.find((a) => a.id === 'THANH_PHA_HOAI')?.playerId, 1);
+    assert.equal(awards1.find((a) => a.id === 'NHA_TAI_TRO_VANG')?.playerId, 1);
+
+    // Series standings: ONLY 3 seated humans (c1, c2, hot-join s1), NO pure Bot (p2)
+    assert.equal(endSnap1.snapshot.seriesStandings.length, 3);
+    const expectedRanked1 = rankPlayersForVictory(
+      endSnap1.snapshot.match!.players,
+      endSnap1.snapshot.match!.properties,
+      0,
+      'FFA'
+    );
+    const ffaPoints = [4, 3, 2, 1];
+    const rankOf = (pid: number) => expectedRanked1.findIndex((p) => p.id === pid);
+
+    const s1Entry1 = endSnap1.snapshot.seriesStandings.find(
+      (e) => e.participantId === js1.yourParticipantId
+    );
+    const c1Entry1 = endSnap1.snapshot.seriesStandings.find(
+      (e) => e.participantId === j1.yourParticipantId
+    );
+    const c2Entry1 = endSnap1.snapshot.seriesStandings.find(
+      (e) => e.participantId === j2.yourParticipantId
+    );
+    assert.ok(s1Entry1 && c1Entry1 && c2Entry1);
+    assert.equal(c1Entry1.wins, 1);
+    assert.equal(c1Entry1.matchesPlayed, 1);
+    assert.equal(c1Entry1.seriesPoints, 4);
+    assert.equal(c2Entry1.wins, 0);
+    assert.equal(c2Entry1.seriesPoints, ffaPoints[rankOf(1)]);
+    assert.equal(s1Entry1.wins, 0);
+    assert.equal(s1Entry1.seriesPoints, ffaPoints[rankOf(3)]);
+
+    // RETURN_TO_LOBBY preserves seriesStandings
+    manager.handleClientMessage('c1', { type: 'RETURN_TO_LOBBY' });
+    const lobbySnap = latestByClient.get('c1');
+    assert.equal(lobbySnap?.type, 'ROOM_SNAPSHOT');
+    if (!lobbySnap || lobbySnap.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(lobbySnap.snapshot.status, 'lobby');
+    assert.equal(lobbySnap.snapshot.seriesStandings.length, 3);
+
+    // Match 2: 20-minute Sudden Death TIME_LIMIT in FFA (with bankruptcy payout rent stat) -> c2 wins
+    markAllGuestsReady(manager, ['c2', 's1']);
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+
+    // Make s1 (p3) auto-bankrupt on p0's tile 29 Lv1 paying partial cash (120K) -> tests bankruptcy rent stat
+    room.match!.properties[29] = { tileIndex: 29, ownerId: 0, level: 1 };
+    room.match!.players[3].cash = 120_000;
+    room.match!.players[3].position = 26;
+    room.match!.activePlayerIndex = 3;
+    nextDice = [1, 2];
+    manager.handleClientMessage('s1', { type: 'GAME_ACTION', action: { kind: 'ROLL_DICE' } });
+    await flushMicrotasks(12);
+    assert.equal(room.match!.players[3].bankrupt, true);
+
+    // Ensure c2 (p1) wins Sudden Death TIME_LIMIT
+    room.match!.players[1].cash = 5_000_000;
+    room.match!.matchTimeLeft = 1;
+    manager.tickOneSecond();
+
+    const endSnap2 = latestByClient.get('c1');
+    assert.equal(endSnap2?.type, 'ROOM_SNAPSHOT');
+    if (!endSnap2 || endSnap2.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(endSnap2.snapshot.status, 'gameover');
+    assert.equal(endSnap2.snapshot.match?.matchWinnerResult?.condition, 'TIME_LIMIT');
+    assert.equal(endSnap2.snapshot.match?.matchWinnerResult?.winner.id, 1);
+    assert.equal(endSnap2.snapshot.match?.postMatchAwards?.find((a) => a.id === 'TRUM_THU_HO')?.valueLabel, '120K');
+    assert.equal(endSnap2.snapshot.match?.postMatchAwards?.find((a) => a.id === 'NHA_TAI_TRO_VANG')?.playerId, 3);
+    assert.equal(endSnap2.snapshot.seriesStandings.length, 3);
+
+    const c2After2 = endSnap2.snapshot.seriesStandings.find(
+      (e) => e.participantId === j2.yourParticipantId
+    )!;
+    assert.equal(c2After2.wins, 1);
+    assert.equal(c2After2.matchesPlayed, 2);
+    assert.equal(c2After2.seriesPoints, c2Entry1.seriesPoints + 4);
+
+    // Match 3: TEAMS_2V2 Sudden Death -> winning team gets +3/+1 win, losing team gets +1/+0 win
+    manager.handleClientMessage('c1', { type: 'RETURN_TO_LOBBY' });
+    manager.handleClientMessage('c1', {
+      type: 'UPDATE_LOBBY_SETTINGS',
+      matchMode: 'TEAMS_2V2',
+    });
+    markAllGuestsReady(manager, ['c2', 's1']);
+    manager.handleClientMessage('c1', { type: 'START_MATCH' });
+    // c1 is seat 0 (Team 0), c2 is seat 1 (Team 1), Bot is seat 2 (Team 0), s1 is seat 3 (Team 1)
+    room.match!.players[0].cash = 6_000_000;
+    room.match!.matchTimeLeft = 1;
+    manager.tickOneSecond();
+
+    const endSnap3 = latestByClient.get('c1');
+    assert.equal(endSnap3?.type, 'ROOM_SNAPSHOT');
+    if (!endSnap3 || endSnap3.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(endSnap3.snapshot.status, 'gameover');
+    assert.equal(endSnap3.snapshot.match?.matchWinnerResult?.winningTeamId, 0);
+    assert.equal(endSnap3.snapshot.seriesStandings.length, 3);
+    const c1After3 = endSnap3.snapshot.seriesStandings.find(
+      (e) => e.participantId === j1.yourParticipantId
+    )!;
+    const c2After3 = endSnap3.snapshot.seriesStandings.find(
+      (e) => e.participantId === j2.yourParticipantId
+    )!;
+    const c1After2 = endSnap2.snapshot.seriesStandings.find(
+      (e) => e.participantId === j1.yourParticipantId
+    )!;
+    assert.equal(c1After3.wins, c1After2.wins + 1);
+    assert.equal(c1After3.seriesPoints, c1After2.seriesPoints + 3);
+    assert.equal(c2After3.wins, c2After2.wins);
+    assert.equal(c2After3.seriesPoints, c2After2.seriesPoints + 1);
+
+    // Non-host cannot reset series score
+    const resetErrStart = (allByClient.get('c2') || []).length;
+    manager.handleClientMessage('c2', { type: 'RESET_SERIES_SCORE' });
+    assert.ok(
+      (allByClient.get('c2') || [])
+        .slice(resetErrStart)
+        .some((m) => m.type === 'ERROR' && m.code === 'FORBIDDEN')
+    );
+
+    // Host resets series score -> cleared to [] in broadcast snapshot
+    manager.handleClientMessage('c1', { type: 'RESET_SERIES_SCORE' });
+    const resetSnapC1 = latestByClient.get('c1');
+    const resetSnapC2 = latestByClient.get('c2');
+    assert.equal(resetSnapC1?.type, 'ROOM_SNAPSHOT');
+    assert.equal(resetSnapC2?.type, 'ROOM_SNAPSHOT');
+    if (resetSnapC1?.type === 'ROOM_SNAPSHOT' && resetSnapC2?.type === 'ROOM_SNAPSHOT') {
+      assert.deepEqual(resetSnapC1.snapshot.seriesStandings, []);
+      assert.deepEqual(resetSnapC2.snapshot.seriesStandings, []);
+    }
   } finally {
     manager.dispose();
   }

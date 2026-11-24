@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { CHARACTER_PERSONAS } from '../game/avatarLogic';
 import { BOARD_TILES, CHANCE_CARDS } from '../game/boardData';
 import {
+  BoardTauntKind,
   BotDifficulty,
   ChatChannel,
   ClientToServerMessage,
@@ -14,12 +15,20 @@ import {
   OnlineVisualEvent,
   PendingBotTakeoverRequest,
   PendingSeatSwapRequest,
+  PlayerMatchStats,
+  PostMatchAward,
   RoomChatMessage,
   RoomParticipantSummary,
   RtcSignalPayload,
+  SeriesStandingEntry,
   ServerToClientMessage,
+  TilePingIntent,
   TokenArchetype,
 } from '../game/onlineTypes';
+import {
+  computePostMatchAwards,
+  createEmptyPlayerMatchStats,
+} from '../game/postMatchAwards';
 import {
   applyChampionshipHost,
   applyEarthquakeToTile,
@@ -72,6 +81,7 @@ import {
   MATCH_DURATION_SECONDS,
   MAX_JAIL_TURNS,
   MIN_BIG_RENT_FOR_QUIP,
+  rankPlayersForVictory,
   resolveIslandRollOutcome,
   resolveWorldTourMovement,
   rollTacticalDicePair,
@@ -111,6 +121,8 @@ export const MAX_SPECTATORS_PER_ROOM = 4;
 const MAX_ROOMS = 100;
 const EMOTE_COOLDOWN_MS = 1500;
 const CHAT_COOLDOWN_MS = 800;
+const TAUNT_COOLDOWN_MS = 4000;
+const PING_COOLDOWN_MS = 2500;
 const MAX_CHAT_LENGTH = 160;
 const MAX_ALL_CHAT_HISTORY = 60;
 const MAX_TEAM_CHAT_HISTORY = 30;
@@ -161,6 +173,14 @@ function normalizeBotDifficulty(val: unknown): BotDifficulty {
 
 function isValidTacticalDiceChoice(val: unknown): val is TacticalDiceChoice {
   return val === 'NORMAL' || val === 'EVEN' || val === 'ODD';
+}
+
+function isValidBoardTauntKind(val: unknown): val is BoardTauntKind {
+  return val === 'slipper' || val === 'tomato' || val === 'confetti' || val === 'cash_stack';
+}
+
+function isValidTilePingIntent(val: unknown): val is TilePingIntent {
+  return val === 'TARGET' || val === 'DANGER' || val === 'TROPHY';
 }
 
 function isValidRtcSignalPayload(signal: unknown): signal is RtcSignalPayload {
@@ -247,6 +267,9 @@ interface MatchRecord {
   pendingDebtQueue: PendingDebt[];
   debtReturnToPlayerIndex: number | null;
   matchWinnerResult: MatchWinnerResult | null;
+  statsByPlayerId: Record<number, PlayerMatchStats>;
+  postMatchAwards: PostMatchAward[];
+  seriesRecorded: boolean;
   logs: GameLogEntry[];
   landingCueText: string | null;
   chanceDeck: LuckCard[];
@@ -286,6 +309,7 @@ interface RoomRecord {
   allChatHistory: RoomChatMessage[];
   teamChatHistory: Record<TeamId, RoomChatMessage[]>;
   nextChatId: number;
+  seriesStandings: Map<string, SeriesStandingEntry>;
   match: MatchRecord | null;
   matchEpoch: number;
   eventSeq: number;
@@ -311,6 +335,8 @@ export class OnlineRoomManager {
   private readonly clientSessions = new Map<string, { roomCode: string; sessionToken: string }>();
   private readonly lastEmoteAtByClient = new Map<string, number>();
   private readonly lastChatAtByClient = new Map<string, number>();
+  private readonly lastTauntAtByClient = new Map<string, number>();
+  private readonly lastPingAtByClient = new Map<string, number>();
   private readonly sendMessage: (clientId: string, msg: ServerToClientMessage) => void;
   private readonly timingScale: number;
   private readonly generateBotQuip?: (payload: BotQuipPayload) => Promise<string | null>;
@@ -353,6 +379,8 @@ export class OnlineRoomManager {
     this.clientSessions.clear();
     this.lastEmoteAtByClient.clear();
     this.lastChatAtByClient.clear();
+    this.lastTauntAtByClient.clear();
+    this.lastPingAtByClient.clear();
   }
 
   private clearBotActionTimer(room: RoomRecord): void {
@@ -428,6 +456,8 @@ export class OnlineRoomManager {
     this.clientSessions.delete(clientId);
     this.lastEmoteAtByClient.delete(clientId);
     this.lastChatAtByClient.delete(clientId);
+    this.lastTauntAtByClient.delete(clientId);
+    this.lastPingAtByClient.delete(clientId);
   }
 
   private clearRoomTimers(room: RoomRecord): void {
@@ -760,6 +790,7 @@ export class OnlineRoomManager {
           pendingDebtQueue: room.match.pendingDebtQueue,
           debtReturnToPlayerIndex: room.match.debtReturnToPlayerIndex,
           matchWinnerResult: room.match.matchWinnerResult,
+          postMatchAwards: room.match.postMatchAwards.map((award) => ({ ...award })),
           logs: room.match.logs,
           landingCueText: room.match.landingCueText,
         }
@@ -811,7 +842,9 @@ export class OnlineRoomManager {
           }
         : null,
       chatHistory,
-      seriesStandings: [],
+      seriesStandings: Array.from(room.seriesStandings.values(), (entry) => ({ ...entry })).sort(
+        (a, b) => b.seriesPoints - a.seriesPoints || b.wins - a.wins
+      ),
       hostSeatIndex: room.hostSeatIndex,
       match: matchSnap,
     };
@@ -850,7 +883,9 @@ export class OnlineRoomManager {
       | Omit<Extract<OnlineVisualEvent, { kind: 'SOUND' }>, 'eventSeq'>
       | Omit<Extract<OnlineVisualEvent, { kind: 'PLAYER_EMOTE' }>, 'eventSeq'>
       | Omit<Extract<OnlineVisualEvent, { kind: 'BOT_QUIP' }>, 'eventSeq'>
-      | Omit<Extract<OnlineVisualEvent, { kind: 'CHAT_MESSAGE' }>, 'eventSeq'>,
+      | Omit<Extract<OnlineVisualEvent, { kind: 'CHAT_MESSAGE' }>, 'eventSeq'>
+      | Omit<Extract<OnlineVisualEvent, { kind: 'BOARD_TAUNT' }>, 'eventSeq'>
+      | Omit<Extract<OnlineVisualEvent, { kind: 'TILE_PING' }>, 'eventSeq'>,
     options?: { teamId?: TeamId }
   ): void {
     room.eventSeq += 1;
@@ -953,6 +988,7 @@ export class OnlineRoomManager {
         allChatHistory: [],
         teamChatHistory: { 0: [], 1: [] },
         nextChatId: 1,
+        seriesStandings: new Map(),
         match: null,
         matchEpoch: 1,
         eventSeq: 0,
@@ -2271,6 +2307,109 @@ export class OnlineRoomManager {
       return;
     }
 
+    if (msg.type === 'SEND_BOARD_TAUNT') {
+      if (room.status !== 'playing' || !room.match) {
+        this.sendError(clientId, 'INVALID_STATE', 'Chỉ có thể ném đồ trêu chọc khi ván đấu đang diễn ra.');
+        return;
+      }
+      if (participant.kind !== 'human') {
+        this.sendError(clientId, 'FORBIDDEN', 'Chỉ người chơi đang ngồi ghế mới có thể ném đồ trêu chọc.');
+        return;
+      }
+      const seat = participant.seat;
+      if (seat.explicitlyLeft || seat.playerId === null) {
+        this.sendError(clientId, 'INVALID_STATE', 'Bạn không ngồi ở ghế người chơi hợp lệ.');
+        return;
+      }
+      if (!isValidBoardTauntKind(msg.tauntKind)) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Loại vật phẩm trêu chọc không hợp lệ.');
+        return;
+      }
+      if (typeof msg.targetPlayerId !== 'number' || !Number.isInteger(msg.targetPlayerId)) {
+        this.sendError(clientId, 'INVALID_TARGET', 'Mục tiêu ném đồ không hợp lệ.');
+        return;
+      }
+      const targetPlayer = room.match.players.find((p) => p.id === msg.targetPlayerId);
+      if (!targetPlayer || targetPlayer.id === seat.playerId) {
+        this.sendError(
+          clientId,
+          'INVALID_TARGET',
+          'Không thể tự ném chính mình hoặc mục tiêu không tồn tại.'
+        );
+        return;
+      }
+
+      const now = Date.now();
+      const lastTauntAt = this.lastTauntAtByClient.get(clientId);
+      if (lastTauntAt !== undefined && now - lastTauntAt < TAUNT_COOLDOWN_MS) {
+        this.sendError(clientId, 'RATE_LIMITED', 'Bạn ném đồ quá nhanh. Vui lòng chờ giây lát.');
+        return;
+      }
+      this.lastTauntAtByClient.set(clientId, now);
+
+      this.emitVisualEvent(room, {
+        kind: 'BOARD_TAUNT',
+        fromPlayerId: seat.playerId,
+        fromPlayerName: seat.playerName,
+        targetPlayerId: targetPlayer.id,
+        tauntKind: msg.tauntKind,
+      });
+      return;
+    }
+
+    if (msg.type === 'SEND_TILE_PING') {
+      if (room.status !== 'playing' || !room.match) {
+        this.sendError(clientId, 'INVALID_STATE', 'Chỉ có thể ping ô đất khi ván đấu đang diễn ra.');
+        return;
+      }
+      if (participant.kind === 'human' && participant.seat.explicitlyLeft) {
+        this.sendError(clientId, 'INVALID_STATE', 'Bạn không còn tham gia ván đấu.');
+        return;
+      }
+      if (!isValidTileIndex(msg.tileIndex)) {
+        this.sendError(clientId, 'INVALID_TILE', 'Ô bàn cờ mục tiêu không hợp lệ.');
+        return;
+      }
+      if (!isValidTilePingIntent(msg.intent)) {
+        this.sendError(clientId, 'BAD_MESSAGE', 'Loại tín hiệu ping ô đất không hợp lệ.');
+        return;
+      }
+
+      const now = Date.now();
+      const lastPingAt = this.lastPingAtByClient.get(clientId);
+      if (lastPingAt !== undefined && now - lastPingAt < PING_COOLDOWN_MS) {
+        this.sendError(clientId, 'RATE_LIMITED', 'Bạn ping ô đất quá nhanh.');
+        return;
+      }
+      this.lastPingAtByClient.set(clientId, now);
+
+      const isHuman = participant.kind === 'human';
+      this.emitVisualEvent(room, {
+        kind: 'TILE_PING',
+        participantId: isHuman ? participant.seat.participantId : participant.spectator.participantId,
+        playerId: isHuman ? participant.seat.playerId : null,
+        senderName: isHuman ? participant.seat.playerName : participant.spectator.playerName,
+        senderColor: isHuman ? TOKEN_COLORS[participant.seat.tokenType].color : '#64748b',
+        tileIndex: msg.tileIndex,
+        intent: msg.intent,
+      });
+      return;
+    }
+
+    if (msg.type === 'RESET_SERIES_SCORE') {
+      if (
+        participant.kind !== 'human' ||
+        participant.seat.explicitlyLeft ||
+        participant.seat.seatIndex !== room.hostSeatIndex
+      ) {
+        this.sendError(clientId, 'FORBIDDEN', 'Chỉ chủ phòng mới có thể đặt lại bảng điểm chuỗi trận.');
+        return;
+      }
+      room.seriesStandings.clear();
+      this.broadcastSnapshot(room);
+      return;
+    }
+
     if (msg.type === 'GAME_ACTION') {
       if (participant.kind !== 'human') {
         this.sendError(clientId, 'INVALID_STATE', 'Khán giả không thể điều khiển hành động trong ván đấu.');
@@ -2297,6 +2436,8 @@ export class OnlineRoomManager {
   public handleDisconnect(clientId: string): void {
     this.lastEmoteAtByClient.delete(clientId);
     this.lastChatAtByClient.delete(clientId);
+    this.lastTauntAtByClient.delete(clientId);
+    this.lastPingAtByClient.delete(clientId);
     this.detachClientIfAny(clientId, true);
   }
 
@@ -2596,6 +2737,11 @@ export class OnlineRoomManager {
       });
     }
 
+    const statsByPlayerId: Record<number, PlayerMatchStats> = {};
+    for (const p of players) {
+      statsByPlayerId[p.id] = createEmptyPlayerMatchStats();
+    }
+
     room.status = 'playing';
     room.match = {
       players,
@@ -2622,6 +2768,9 @@ export class OnlineRoomManager {
       pendingDebtQueue: [],
       debtReturnToPlayerIndex: null,
       matchWinnerResult: null,
+      statsByPlayerId,
+      postMatchAwards: [],
+      seriesRecorded: false,
       logs: initLogs,
       landingCueText: null,
       chanceDeck: shuffleCards(CHANCE_CARDS),
@@ -2633,6 +2782,31 @@ export class OnlineRoomManager {
 
     this.broadcastSnapshot(room);
     this.scheduleBotTurnIfNeeded(room);
+  }
+
+  private getOrInitPlayerStats(match: MatchRecord, playerId: number): PlayerMatchStats {
+    let stats = match.statsByPlayerId[playerId];
+    if (!stats) {
+      stats = createEmptyPlayerMatchStats();
+      match.statsByPlayerId[playerId] = stats;
+    }
+    return stats;
+  }
+
+  private recordRentPaymentStats(
+    match: MatchRecord,
+    payerId: number,
+    creditorId: number | null,
+    amountPaid: number
+  ): void {
+    if (creditorId === null || creditorId === payerId || amountPaid <= 0) return;
+    const payerStats = this.getOrInitPlayerStats(match, payerId);
+    const creditorStats = this.getOrInitPlayerStats(match, creditorId);
+    payerStats.totalRentPaid += amountPaid;
+    creditorStats.totalRentCollected += amountPaid;
+    if (amountPaid > creditorStats.maxSingleRentCollected) {
+      creditorStats.maxSingleRentCollected = amountPaid;
+    }
   }
 
   private setTurnPhase(match: MatchRecord, nextPhase: TurnPhase): void {
@@ -3182,6 +3356,7 @@ export class OnlineRoomManager {
       player.jailTurns = 0;
       player.doublesStreak = 0;
       player.pendingWorldTour = false;
+      this.getOrInitPlayerStats(match, player.id).jailVisits += 1;
       this.completeTurnAfterAction(room, player);
       return;
     }
@@ -3267,6 +3442,7 @@ export class OnlineRoomManager {
       player.jailTurns = 0;
       player.doublesStreak = 0;
       player.pendingWorldTour = false;
+      this.getOrInitPlayerStats(match, player.id).jailVisits += 1;
       this.addLog(
         room,
         `🏝️ ${player.name} dạt vào Đảo Hoang — mắc kẹt tại đảo (đổ đôi, dùng Thẻ Thoát Đảo hoặc nộp ${formatBusinessTourCompact(JAIL_FINE)} để rời đảo)!`,
@@ -3520,6 +3696,9 @@ export class OnlineRoomManager {
       if (creditor) {
         creditor.cash += amount;
         match.lastRentPaid = amount;
+        if (originTileIndex !== undefined) {
+          this.recordRentPaymentStats(match, payer.id, creditor.id, amount);
+        }
         this.addLog(
           room,
           `${payer.name} trả ${compactAmt} tiền thuê (${reason}) cho ${creditor.name}.`,
@@ -3747,6 +3926,7 @@ export class OnlineRoomManager {
     buyer.cash -= check.cost;
     if (prevOwner) prevOwner.cash += check.cost;
     match.properties[tileIndex] = { ...prop, ownerId: buyer.id };
+    this.getOrInitPlayerStats(match, buyer.id).sabotageCount += 1;
 
     this.emitSound(room, 'auctionGavel');
     const tile = BOARD_TILES[tileIndex];
@@ -3881,6 +4061,7 @@ export class OnlineRoomManager {
     player.cash -= WORLD_TOUR_FEE;
     player.pendingWorldTour = false;
     player.doublesStreak = 0;
+    this.getOrInitPlayerStats(match, player.id).worldTourFlights += 1;
     this.addLog(
       room,
       `✈️ ${player.name} mua vé ${formatBusinessTourCompact(WORLD_TOUR_FEE)} bay thẳng tới ${destTile.name}!`,
@@ -4039,6 +4220,7 @@ export class OnlineRoomManager {
       player.jailTurns = 0;
       player.doublesStreak = 0;
       player.pendingWorldTour = false;
+      this.getOrInitPlayerStats(match, player.id).jailVisits += 1;
       this.completeTurnAfterAction(room, player);
     } else if (eff.type === 'MOVE_TO') {
       const { path, passedStart } = computePathToTile(player.position, eff.targetTile, eff.collectStart);
@@ -4199,6 +4381,7 @@ export class OnlineRoomManager {
     if (kind === 'POWER_OUTAGE') {
       const res = applyPowerOutageToTile(targetTile, match.properties, match.boardModifiers);
       match.boardModifiers = res.nextModifiers;
+      this.getOrInitPlayerStats(match, player.id).sabotageCount += 1;
       if (res.blockedByShield) {
         this.emitSound(room, 'cardDraw');
         this.addLog(
@@ -4224,6 +4407,7 @@ export class OnlineRoomManager {
     const eq = applyEarthquakeToTile(targetTile, match.properties, match.boardModifiers);
     match.properties = eq.nextProperties;
     match.boardModifiers = eq.nextModifiers;
+    this.getOrInitPlayerStats(match, player.id).sabotageCount += 1;
     if (eq.blockedByShield) {
       this.emitSound(room, 'cardDraw');
       this.addLog(
@@ -4275,7 +4459,12 @@ export class OnlineRoomManager {
 
       if (debtor.cash >= nextDebt.amount) {
         debtor.cash -= nextDebt.amount;
-        if (creditor) creditor.cash += nextDebt.amount;
+        if (creditor) {
+          creditor.cash += nextDebt.amount;
+          if (nextDebt.originTileIndex !== undefined) {
+            this.recordRentPaymentStats(match, debtor.id, creditor.id, nextDebt.amount);
+          }
+        }
         this.emitSound(room, 'cashPay');
         this.addLog(
           room,
@@ -4301,7 +4490,12 @@ export class OnlineRoomManager {
         debtor.jailTurns = 0;
         debtor.doublesStreak = 0;
         debtor.pendingWorldTour = false;
-        if (creditor) creditor.cash += payout;
+        if (creditor) {
+          creditor.cash += payout;
+          if (nextDebt.originTileIndex !== undefined && payout > 0) {
+            this.recordRentPaymentStats(match, debtor.id, creditor.id, payout);
+          }
+        }
         this.addLog(
           room,
           `💸 ${debtor.name} không đủ ${formatBusinessTourCompact(nextDebt.amount)} (${nextDebt.reason}) và không còn BĐS — tự động phá sản!`,
@@ -4386,7 +4580,12 @@ export class OnlineRoomManager {
 
     const creditor =
       creditorId !== null ? match.players.find((p) => p.id === creditorId) || null : null;
-    if (creditor) creditor.cash += amount;
+    if (creditor) {
+      creditor.cash += amount;
+      if (originTileIndex !== undefined) {
+        this.recordRentPaymentStats(match, player.id, creditor.id, amount);
+      }
+    }
 
     this.emitSound(room, 'cashPay');
     if (soldCount > 0) {
@@ -4450,6 +4649,7 @@ export class OnlineRoomManager {
     if (!match) return;
     const player = match.players[match.activePlayerIndex];
     const creditorId = match.pendingDebt?.creditorId ?? null;
+    const originTileIndex = match.pendingDebt?.originTileIndex;
     const creditorPayout = calculateBankruptcyCreditorPayout(
       player,
       creditorId,
@@ -4467,6 +4667,9 @@ export class OnlineRoomManager {
       creditorId !== null ? match.players.find((p) => p.id === creditorId) || null : null;
     if (creditor) {
       creditor.cash += creditorPayout;
+      if (originTileIndex !== undefined && creditorPayout > 0) {
+        this.recordRentPaymentStats(match, player.id, creditor.id, creditorPayout);
+      }
     }
 
     for (const key of Object.keys(match.properties)) {
@@ -4564,20 +4767,97 @@ export class OnlineRoomManager {
     this.advanceToNextPlayerTurn(room);
   }
 
+  private recordSeriesStandingEntry(
+    room: RoomRecord,
+    seat: HumanSeatRecord,
+    pointsDelta: number,
+    winsDelta: number
+  ): void {
+    const existing = room.seriesStandings.get(seat.participantId);
+    if (existing) {
+      existing.playerName = seat.playerName;
+      existing.tokenType = seat.tokenType;
+      existing.wins += winsDelta;
+      existing.matchesPlayed += 1;
+      existing.seriesPoints += pointsDelta;
+    } else {
+      room.seriesStandings.set(seat.participantId, {
+        participantId: seat.participantId,
+        playerName: seat.playerName,
+        tokenType: seat.tokenType,
+        wins: winsDelta,
+        matchesPlayed: 1,
+        seriesPoints: pointsDelta,
+      });
+    }
+  }
+
+  private finalizeMatchGameOver(
+    room: RoomRecord,
+    result: MatchWinnerResult,
+    victoryLogText?: string
+  ): void {
+    const match = room.match;
+    if (!match || match.seriesRecorded) return;
+    match.seriesRecorded = true;
+
+    match.matchWinnerResult = result;
+    this.setTurnPhase(match, 'GAME_OVER');
+    room.status = 'gameover';
+    match.postMatchAwards = computePostMatchAwards(match.players, match.statsByPlayerId);
+
+    if (match.matchMode === 'TEAMS_2V2') {
+      const winningTeamId = result.winningTeamId ?? result.winner.teamId;
+      for (const p of match.players) {
+        const activeSeat = room.humans.find((h) => !h.explicitlyLeft && h.playerId === p.id);
+        if (!activeSeat) continue;
+        const isWin = winningTeamId !== undefined && p.teamId === winningTeamId;
+        this.recordSeriesStandingEntry(room, activeSeat, isWin ? 3 : 1, isWin ? 1 : 0);
+      }
+    } else {
+      const ranked = rankPlayersForVictory(
+        match.players,
+        match.properties,
+        result.winner.id,
+        match.matchMode,
+        result.winningTeamId,
+        result.effectiveNetWorthByPlayerId,
+        result.effectiveCashByPlayerId
+      );
+      const ffaPoints = [4, 3, 2, 1];
+      for (let rankIdx = 0; rankIdx < ranked.length; rankIdx++) {
+        const p = ranked[rankIdx];
+        const activeSeat = room.humans.find((h) => !h.explicitlyLeft && h.playerId === p.id);
+        if (!activeSeat) continue;
+        this.recordSeriesStandingEntry(
+          room,
+          activeSeat,
+          ffaPoints[rankIdx] ?? 1,
+          rankIdx === 0 ? 1 : 0
+        );
+      }
+    }
+
+    this.clearMatchTimers(room);
+    this.promoteConnectedHostIfNeeded(room);
+    this.scheduleGraceCleanupIfEmpty(room);
+    this.emitSound(room, 'victory');
+    this.addLog(
+      room,
+      victoryLogText ?? `🏆 ${result.winner.name} VÔ ĐỊCH — ${result.label}`,
+      result.winner.color,
+      'highlight'
+    );
+    this.broadcastSnapshot(room);
+  }
+
   private checkVictory(room: RoomRecord): boolean {
     const match = room.match;
     if (!match) return false;
     const result = evaluateMatchWinner(match.players, match.properties, match.matchMode);
     if (!result) return false;
 
-    match.matchWinnerResult = result;
-    this.setTurnPhase(match, 'GAME_OVER');
-    room.status = 'gameover';
-    this.clearMatchTimers(room);
-    this.promoteConnectedHostIfNeeded(room);
-    this.emitSound(room, 'victory');
-    this.addLog(room, `🏆 ${result.winner.name} VÔ ĐỊCH — ${result.label}`, result.winner.color, 'highlight');
-    this.broadcastSnapshot(room);
+    this.finalizeMatchGameOver(room, result);
     return true;
   }
 
@@ -5028,20 +5308,11 @@ export class OnlineRoomManager {
           match.drawnCard = null;
           match.pendingTacticalCard = null;
           match.landingCueText = null;
-          match.matchWinnerResult = timeResult;
-          this.setTurnPhase(match, 'GAME_OVER');
-          room.status = 'gameover';
-          this.clearMatchTimers(room);
-          this.promoteConnectedHostIfNeeded(room);
-          this.scheduleGraceCleanupIfEmpty(room);
-          this.emitSound(room, 'victory');
-          this.addLog(
+          this.finalizeMatchGameOver(
             room,
-            `⏱️ Hết giờ (20:00)! ${timeResult.winner.name} VÔ ĐỊCH — ${timeResult.label}`,
-            timeResult.winner.color,
-            'highlight'
+            timeResult,
+            `⏱️ Hết giờ (20:00)! ${timeResult.winner.name} VÔ ĐỊCH — ${timeResult.label}`
           );
-          this.broadcastSnapshot(room);
           continue;
         }
       }
