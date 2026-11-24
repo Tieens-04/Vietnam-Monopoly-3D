@@ -479,12 +479,14 @@ export class OnlineRoomManager {
         seats.push({
           seatIndex: s,
           occupiedByHuman: true,
+          participantId: human.participantId,
           playerName: human.playerName,
           tokenType: human.tokenType,
           color: meta.color,
           colorName: meta.colorName,
           connected: human.connected,
           isHost: s === room.hostSeatIndex,
+          ready: s === room.hostSeatIndex ? true : human.ready,
           teamId,
         });
       } else {
@@ -494,12 +496,14 @@ export class OnlineRoomManager {
         seats.push({
           seatIndex: s,
           occupiedByHuman: false,
+          participantId: null,
           playerName: room.fillBots ? persona.botDefaultName : 'Đang chờ người chơi...',
           tokenType: tok,
           color: meta.color,
           colorName: meta.colorName,
           connected: false,
           isHost: false,
+          ready: false,
           teamId,
         });
       }
@@ -551,11 +555,15 @@ export class OnlineRoomManager {
       maxPlayers: room.maxPlayers,
       startingCash: room.startingCash,
       fillBots: room.fillBots,
+      botDifficulty: 'normal',
       matchMode: room.matchMode,
       tacticalDiceEnabled: room.tacticalDiceEnabled,
       festivalEnabled: room.festivalEnabled,
       seats,
       participants: this.buildParticipantsList(room),
+      spectators: [],
+      pendingSeatSwap: null,
+      pendingTakeoverRequest: null,
       chatHistory,
       hostSeatIndex: room.hostSeatIndex,
       match: matchSnap,

@@ -19,6 +19,26 @@ export type TokenArchetype = PlayerSetupConfig['tokenType'];
 export type OnlineRoomStatus = 'lobby' | 'playing' | 'gameover';
 export type ParticipantRole = 'player' | 'spectator';
 export type ChatChannel = 'ALL' | 'TEAM';
+export type BotDifficulty = 'easy' | 'normal' | 'hard';
+
+export interface PendingSeatSwapRequest {
+  requestId: string;
+  fromParticipantId: string;
+  fromSeatIndex: number;
+  fromPlayerName: string;
+  toParticipantId: string;
+  toSeatIndex: number;
+  expiresAt: number;
+}
+
+export interface PendingBotTakeoverRequest {
+  requestId: string;
+  requesterParticipantId: string;
+  requesterName: string;
+  targetPlayerId: number;
+  targetBotName: string;
+  expiresAt: number;
+}
 
 export interface RoomParticipantSummary {
   participantId: string;
@@ -53,12 +73,14 @@ export type RtcSignalPayload =
 export interface LobbySeatInfo {
   seatIndex: number;
   occupiedByHuman: boolean;
+  participantId?: string | null;
   playerName: string;
   tokenType: TokenArchetype;
   color: string;
   colorName: string;
   connected: boolean;
   isHost: boolean;
+  ready?: boolean;
   teamId?: TeamId;
 }
 
@@ -97,11 +119,15 @@ export interface OnlineRoomSnapshot {
   maxPlayers: 2 | 3 | 4;
   startingCash: number;
   fillBots: boolean;
+  botDifficulty: BotDifficulty;
   matchMode?: MatchMode;
   tacticalDiceEnabled?: boolean;
   festivalEnabled?: boolean;
   seats: LobbySeatInfo[];
   participants: RoomParticipantSummary[];
+  spectators: RoomParticipantSummary[];
+  pendingSeatSwap: PendingSeatSwapRequest | null;
+  pendingTakeoverRequest: PendingBotTakeoverRequest | null;
   chatHistory: RoomChatMessage[];
   hostSeatIndex: number;
   match: OnlineMatchSnapshot | null;
@@ -137,6 +163,7 @@ export type ClientToServerMessage =
       maxPlayers: 2 | 3 | 4;
       startingCash: number;
       fillBots: boolean;
+      botDifficulty?: BotDifficulty;
       matchMode?: MatchMode;
       tacticalDiceEnabled?: boolean;
       festivalEnabled?: boolean;
@@ -158,6 +185,7 @@ export type ClientToServerMessage =
       maxPlayers?: 2 | 3 | 4;
       startingCash?: number;
       fillBots?: boolean;
+      botDifficulty?: BotDifficulty;
       matchMode?: MatchMode;
       tacticalDiceEnabled?: boolean;
       festivalEnabled?: boolean;
@@ -167,6 +195,16 @@ export type ClientToServerMessage =
       playerName?: string;
       tokenType?: TokenArchetype;
     }
+  | { type: 'MOVE_TO_SEAT'; targetSeatIndex: number }
+  | { type: 'REQUEST_SEAT_SWAP'; targetSeatIndex: number }
+  | { type: 'RESPOND_SEAT_SWAP'; requestId: string; accept: boolean }
+  | { type: 'HOST_SWAP_SEATS'; seatA: number; seatB: number }
+  | { type: 'MOVE_TO_SPECTATOR' }
+  | { type: 'SET_READY'; ready: boolean }
+  | { type: 'TRANSFER_HOST'; targetParticipantId: string }
+  | { type: 'KICK_PARTICIPANT'; targetParticipantId: string }
+  | { type: 'REQUEST_BOT_TAKEOVER'; targetPlayerId: number }
+  | { type: 'RESPOND_BOT_TAKEOVER'; requestId: string; accept: boolean }
   | { type: 'START_MATCH' }
   | { type: 'RETURN_TO_LOBBY' }
   | { type: 'RECLAIM_CONTROL' }
