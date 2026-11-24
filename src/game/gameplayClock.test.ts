@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createMonotonicCountdownClock } from './gameplayClock';
+import {
+  createMonotonicBeatTracker,
+  createMonotonicCountdownClock,
+  waitMonotonicBeat,
+} from './gameplayClock';
 
 test('BUG-03: monotonic match clock loses 0 seconds across frequent phase transitions (every 450ms for 10s)', () => {
   let nowMs = 10_000;
@@ -131,4 +135,84 @@ test('BUG-03 (Review Round 2): ensureFloor(min, now, wasActive=true) preserves a
   ensureFloor(18, nowMs, false);
   assert.equal(clock.getRemainingSeconds(), 30);
   assert.equal(clock.getCarryMs(), 580);
+});
+
+test('AT-UNIT-03: monotonic beat tracker freezes on Pause and completes in 1 throttled 1Hz tick instead of stretching to 10.5s', async () => {
+  // 1. Direct tracker contract
+  let nowMs = 1_000;
+  const tracker = createMonotonicBeatTracker(740, nowMs);
+
+  nowMs += 200;
+  let step = tracker.advance(nowMs, true);
+  assert.equal(step.done, false);
+  assert.equal(step.elapsedMs, 200);
+  assert.equal(step.remainingMs, 540);
+
+  // Paused for 3,000ms -> 0 elapsed
+  nowMs += 3_000;
+  step = tracker.advance(nowMs, false);
+  assert.equal(step.done, false);
+  assert.equal(step.elapsedMs, 200);
+  assert.equal(step.remainingMs, 540);
+
+  // Resumed and throttled background timer fires 1,000ms later -> done immediately!
+  nowMs += 1_000;
+  step = tracker.advance(nowMs, true);
+  assert.equal(step.done, true);
+  assert.equal(step.elapsedMs, 1_200);
+  assert.equal(step.remainingMs, 0);
+
+  // 2. Async waitMonotonicBeat under simulated Chrome 1Hz background throttling
+  let simNowMs = 5_000;
+  let timerCount = 0;
+  const queued: Array<() => void> = [];
+
+  const throttledBeatPromise = waitMonotonicBeat({
+    targetMs: 740,
+    pollMs: 60,
+    isCancelled: () => false,
+    isActive: () => true,
+    now: () => simNowMs,
+    setTimer: (cb) => {
+      timerCount += 1;
+      queued.push(cb);
+      return timerCount;
+    },
+  });
+
+  assert.equal(queued.length, 1);
+  // Chrome throttles timer to ~1000ms in background tab: ONE tick must resolve the 740ms beat!
+  simNowMs += 1_000;
+  queued.shift()?.();
+  const completedInOneThrottledTick = await throttledBeatPromise;
+  assert.equal(completedInOneThrottledTick, true);
+  assert.equal(timerCount, 1, 'Background-throttled beat must resolve in 1 tick (~1s), not 13 ticks (~10.5s)');
+
+  // 3. Pause + Cancellation behavior
+  let paused = true;
+  let cancelled = false;
+  let cancelNowMs = 10_000;
+  const cancelQueue: Array<() => void> = [];
+  const cancelPromise = waitMonotonicBeat({
+    targetMs: 400,
+    pollMs: 60,
+    isCancelled: () => cancelled,
+    isActive: () => !paused,
+    now: () => cancelNowMs,
+    setTimer: (cb, ms) => {
+      cancelQueue.push(cb);
+      return ms;
+    },
+  });
+
+  cancelNowMs += 2_000;
+  cancelQueue.shift()?.();
+  assert.equal(cancelQueue.length, 1, 'While paused, 2000ms must not finish the beat');
+
+  paused = false;
+  cancelled = true;
+  cancelNowMs += 60;
+  cancelQueue.shift()?.();
+  assert.equal(await cancelPromise, false, 'Cancelled beat must resolve false immediately');
+  assert.equal(cancelQueue.length, 0);
 });
