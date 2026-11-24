@@ -843,6 +843,7 @@ export class OnlineRoomManager {
 
       seat.clientId = clientId;
       seat.connected = true;
+      seat.micEnabled = false;
       seat.disconnectedAt = null;
       this.clientSessions.set(clientId, { roomCode: room.roomCode, sessionToken: seat.sessionToken });
       this.promoteConnectedHostIfNeeded(room);

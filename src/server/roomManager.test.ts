@@ -4248,3 +4248,127 @@ test('RTC_SIGNAL routing & cross-room protection: relays to target in same room 
     manager.dispose();
   }
 });
+
+test('RECONNECT_ROOM resets micEnabled to false on active-session replacement and disconnect/reconnect', () => {
+  const allByClient = new Map<string, ServerToClientMessage[]>();
+  const latestByClient = new Map<string, ServerToClientMessage>();
+  const record = (clientId: string, msg: ServerToClientMessage) => {
+    if (msg.type === 'ROOM_JOINED' || msg.type === 'ROOM_SNAPSHOT') {
+      latestByClient.set(clientId, msg);
+    }
+    const list = allByClient.get(clientId) || [];
+    list.push(msg);
+    allByClient.set(clientId, list);
+  };
+
+  const manager = new OnlineRoomManager(record, {
+    timingScale: 0,
+    enableTickInterval: false,
+  });
+
+  try {
+    manager.handleClientMessage('c1', {
+      type: 'CREATE_ROOM',
+      playerName: 'An',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const c1Join = (allByClient.get('c1') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(c1Join?.type, 'ROOM_JOINED');
+    if (!c1Join || c1Join.type !== 'ROOM_JOINED') return;
+
+    manager.handleClientMessage('c2', {
+      type: 'JOIN_ROOM',
+      roomCode: c1Join.roomCode,
+      playerName: 'Bình',
+      tokenType: 'yacht',
+    });
+
+    // Enable mic on Tab 1 ('c1')
+    manager.handleClientMessage('c1', {
+      type: 'UPDATE_VOICE_STATE',
+      micEnabled: true,
+    });
+    const c2SnapWithMicOn = latestByClient.get('c2');
+    assert.equal(c2SnapWithMicOn?.type, 'ROOM_SNAPSHOT');
+    if (!c2SnapWithMicOn || c2SnapWithMicOn.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(
+      c2SnapWithMicOn.snapshot.participants.find(
+        (p) => p.participantId === c1Join.yourParticipantId
+      )?.micEnabled,
+      true
+    );
+
+    // Tab 2 ('c1-tab2') takes over active session via RECONNECT_ROOM before Tab 1 closes
+    manager.handleClientMessage('c1-tab2', {
+      type: 'RECONNECT_ROOM',
+      roomCode: c1Join.roomCode,
+      sessionToken: c1Join.sessionToken,
+    });
+
+    assert.ok(
+      (allByClient.get('c1') || []).some(
+        (m) => m.type === 'ERROR' && m.code === 'SESSION_REPLACED'
+      ),
+      'Old active tab must receive SESSION_REPLACED'
+    );
+
+    const tab2Joined = (allByClient.get('c1-tab2') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(tab2Joined?.type, 'ROOM_JOINED');
+    if (!tab2Joined || tab2Joined.type !== 'ROOM_JOINED') return;
+    assert.equal(
+      tab2Joined.snapshot.participants.find(
+        (p) => p.participantId === c1Join.yourParticipantId
+      )?.micEnabled,
+      false,
+      'ROOM_JOINED on replacing tab must start with micEnabled=false'
+    );
+
+    const c2SnapAfterReplace = latestByClient.get('c2');
+    assert.equal(c2SnapAfterReplace?.type, 'ROOM_SNAPSHOT');
+    if (!c2SnapAfterReplace || c2SnapAfterReplace.type !== 'ROOM_SNAPSHOT') return;
+    assert.equal(
+      c2SnapAfterReplace.snapshot.participants.find(
+        (p) => p.participantId === c1Join.yourParticipantId
+      )?.micEnabled,
+      false,
+      'Broadcast ROOM_SNAPSHOT after replacement must show micEnabled=false'
+    );
+
+    // Late close from Tab 1 must not disconnect Tab 2, and micEnabled stays false
+    manager.handleDisconnect('c1');
+    const c2AfterLateClose = latestByClient.get('c2');
+    assert.equal(c2AfterLateClose?.type, 'ROOM_SNAPSHOT');
+    if (!c2AfterLateClose || c2AfterLateClose.type !== 'ROOM_SNAPSHOT') return;
+    const c1SummaryAfterLateClose = c2AfterLateClose.snapshot.participants.find(
+      (p) => p.participantId === c1Join.yourParticipantId
+    );
+    assert.equal(c1SummaryAfterLateClose?.connected, true);
+    assert.equal(c1SummaryAfterLateClose?.micEnabled, false);
+
+    // Standard disconnect + reconnect after enabling mic on Tab 2 also resets micEnabled=false
+    manager.handleClientMessage('c1-tab2', {
+      type: 'UPDATE_VOICE_STATE',
+      micEnabled: true,
+    });
+    manager.handleDisconnect('c1-tab2');
+    manager.handleClientMessage('c1-tab3', {
+      type: 'RECONNECT_ROOM',
+      roomCode: c1Join.roomCode,
+      sessionToken: c1Join.sessionToken,
+    });
+    const tab3Joined = (allByClient.get('c1-tab3') || []).find((m) => m.type === 'ROOM_JOINED');
+    assert.equal(tab3Joined?.type, 'ROOM_JOINED');
+    if (!tab3Joined || tab3Joined.type !== 'ROOM_JOINED') return;
+    assert.equal(
+      tab3Joined.snapshot.participants.find(
+        (p) => p.participantId === c1Join.yourParticipantId
+      )?.micEnabled,
+      false
+    );
+  } finally {
+    manager.dispose();
+  }
+});
