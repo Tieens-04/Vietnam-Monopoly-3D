@@ -16,7 +16,7 @@ const MAX_CHAT_LENGTH = 160;
 
 const QUICK_CHAT_PHRASES: readonly string[] = [
   'Đổ lớn đi bạn ơi!',
-  'Đừng vào đất mình nha 😅',
+  'Đừng vào đất mình nha',
   'Thương lượng đi!',
   'Chúc mừng đại gia!',
   'Cứu bồ đồng đội ơi!',
@@ -51,7 +51,6 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
   const isDrawer = variant === 'drawer';
   const isOpen = !isDrawer || open !== false;
 
-  // Reset active tab back to ALL immediately if team channel access is lost (e.g., mode changed to FFA)
   useEffect(() => {
     if (!canUseTeamChannel && activeChannel !== 'ALL') {
       setActiveChannel('ALL');
@@ -70,7 +69,6 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
     return safeMessages;
   }, [messages, effectiveChannel, canUseTeamChannel]);
 
-  // Close drawer on Escape (document capture runs before App.tsx window bubble Pause shortcut)
   useEffect(() => {
     if (!isDrawer || !isOpen || !onClose) return;
 
@@ -95,7 +93,6 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
     };
   }, [isDrawer, isOpen, onClose]);
 
-  // Reset scroll stickiness when opening or switching channels
   useLayoutEffect(() => {
     if (!isOpen) return;
     stickToBottomRef.current = true;
@@ -107,7 +104,6 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
     prevLastMessageIdRef.current = visibleMessages[visibleMessages.length - 1]?.id ?? null;
   }, [isOpen, effectiveChannel]);
 
-  // Auto-scroll to newest message when messages arrive (including when capped at 60/30 history limit)
   useLayoutEffect(() => {
     if (!isOpen) return;
     const list = listRef.current;
@@ -157,16 +153,16 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
 
   const containerClass = isDrawer
     ? 'fixed right-16 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-[min(360px,calc(100vw-5.25rem))] h-[min(460px,calc(100dvh-1.5rem))] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto'
-    : 'w-full h-full min-h-[240px] max-h-[320px] flex flex-col rounded-2xl bg-sky-50/90 border-2 border-sky-200 overflow-hidden shadow-xs';
+    : 'w-full h-full min-h-[240px] max-h-[360px] flex flex-col rounded-2xl bg-[#faf8f3] border border-[#dad3c4] overflow-hidden';
 
   const headerClass = isDrawer
     ? 'shrink-0 bt-header-sky px-3.5 py-2 flex items-center justify-between gap-2'
-    : 'shrink-0 bg-sky-100/95 border-b border-sky-200 px-3 py-1.5 flex items-center justify-between gap-2 text-sky-900';
+    : 'shrink-0 bg-[#eae4d6] border-b border-[#dad3c4] px-3 py-2 flex items-center justify-between gap-2 text-[#141c2b]';
 
   const emptyMessageText =
     effectiveChannel === 'TEAM'
       ? 'Chưa có tin nhắn riêng của đội. Nhắn cho đồng đội ngay!'
-      : 'Chưa có tin nhắn nào. Hãy gửi lời chào hoặc câu thoại nhanh!';
+      : 'Chưa có tin nhắn nào. Hãy gửi lời chào hoặc chọn câu thoại nhanh bên dưới.';
 
   return (
     <div
@@ -187,14 +183,13 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-          {/* Channel Tabs */}
           <div
             role="tablist"
             aria-label="Kênh trò chuyện"
-            className={`inline-flex items-center gap-1 p-0.5 rounded-full border ${
+            className={`inline-flex items-center gap-0.5 p-0.5 rounded-lg border ${
               isDrawer
-                ? 'bg-sky-900/30 border-white/30'
-                : 'bg-white border-sky-200'
+                ? 'bg-white/10 border-white/20'
+                : 'bg-[#dfd8c8] border-[#cfc7b5]'
             }`}
           >
             <button
@@ -203,14 +198,14 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
               data-testid="bt-chat-tab-all"
               aria-selected={effectiveChannel === 'ALL'}
               onClick={() => setActiveChannel('ALL')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-black transition-colors cursor-pointer whitespace-nowrap ${
+              className={`px-2 py-0.5 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
                 effectiveChannel === 'ALL'
                   ? isDrawer
-                    ? 'bg-white text-sky-900 shadow-xs'
-                    : 'bt-btn-cyan'
+                    ? 'bg-white text-[#141c2b] shadow-2xs'
+                    : 'bg-white text-[#141c2b] shadow-2xs'
                   : isDrawer
-                    ? 'text-white/90 hover:bg-white/15'
-                    : 'text-sky-900 hover:bg-sky-50'
+                    ? 'text-slate-200 hover:bg-white/15'
+                    : 'text-[#4b566a] hover:bg-white/60'
               }`}
             >
               Cả phòng
@@ -223,12 +218,12 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
                 data-testid="bt-chat-tab-team"
                 aria-selected={effectiveChannel === 'TEAM'}
                 onClick={() => setActiveChannel('TEAM')}
-                className={`px-2.5 py-0.5 rounded-full text-[11px] font-black flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap ${
+                className={`px-2 py-0.5 rounded-md text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap ${
                   effectiveChannel === 'TEAM'
-                    ? 'bg-[#0284C7] text-white shadow-xs border border-white/80'
+                    ? 'bg-emerald-600 text-white shadow-2xs'
                     : isDrawer
-                      ? 'text-white/90 hover:bg-white/15'
-                      : 'text-sky-900 hover:bg-sky-50'
+                      ? 'text-slate-200 hover:bg-white/15'
+                      : 'text-[#4b566a] hover:bg-white/60'
                 }`}
               >
                 <Users className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -243,7 +238,7 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
               data-testid="bt-chat-close-btn"
               onClick={onClose}
               aria-label="Đóng khung trò chuyện"
-              className="icon-hit-target h-6 w-6 rounded-full bg-white/25 hover:bg-white/40 text-white text-xs font-bold flex items-center justify-center cursor-pointer shrink-0"
+              className="icon-hit-target h-6 w-6 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center cursor-pointer shrink-0"
             >
               <X className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
@@ -256,11 +251,11 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
         ref={listRef}
         onScroll={handleListScroll}
         data-testid="bt-chat-messages-list"
-        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden slim-scroll p-2.5 space-y-1.5 bg-sky-50/50"
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden slim-scroll p-2.5 space-y-1.5 bg-[#f7f4ec]"
       >
         {visibleMessages.length === 0 ? (
           <div className="h-full min-h-[76px] flex items-center justify-center text-center px-3">
-            <p className="text-[11px] font-semibold text-slate-500 leading-relaxed">
+            <p className="text-[11px] font-medium text-[#64748b] leading-relaxed">
               {emptyMessageText}
             </p>
           </div>
@@ -275,44 +270,44 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
                 key={msg.id}
                 data-testid={`bt-chat-msg-${msg.id}`}
                 data-channel={msg.channel}
-                className={`rounded-xl px-2.5 py-1.5 border text-xs leading-snug shadow-2xs ${
+                className={`rounded-xl px-2.5 py-1.5 border text-xs leading-snug ${
                   isTeam
-                    ? 'bg-sky-50 border-sky-300'
+                    ? 'bg-emerald-50/75 border-emerald-200 border-l-[3px] border-l-emerald-600'
                     : isMine
-                      ? 'bg-amber-50/80 border-amber-200'
-                      : 'bg-white border-sky-100'
+                      ? 'bg-amber-50/65 border-amber-200 border-l-[3px] border-l-amber-500'
+                      : 'bg-white border-[#ded8ca]'
                 }`}
               >
                 <div className="flex items-center justify-between gap-1.5 mb-0.5">
                   <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                     <span
                       aria-hidden="true"
-                      className="h-2.5 w-2.5 rounded-full shrink-0 border border-white shadow-2xs"
-                      style={{ backgroundColor: msg.senderColor || '#0284C7' }}
+                      className="h-2 w-2 rounded-full shrink-0"
+                      style={{ backgroundColor: msg.senderColor || '#182232' }}
                     />
-                    <span className="font-extrabold text-slate-900 truncate max-w-[140px]">
+                    <span className="font-extrabold text-[#141c2b] truncate max-w-[140px]">
                       {msg.senderName}
                     </span>
                     {isMine && (
-                      <span className="text-[10px] font-extrabold text-amber-700">(Bạn)</span>
+                      <span className="text-[10px] font-bold text-amber-700">(Bạn)</span>
                     )}
                     {isTeam && (
-                      <span className="px-1.5 py-[1px] rounded-md bg-sky-600 text-white text-[10px] font-black leading-tight shrink-0">
+                      <span className="px-1.5 py-[0.5px] rounded-md bg-emerald-700 text-white text-[9.5px] font-black leading-tight shrink-0">
                         [Đội]
                       </span>
                     )}
                     {isSpectator && (
-                      <span className="px-1.5 py-[1px] rounded-md bg-slate-200 text-slate-700 text-[9px] font-black uppercase leading-tight shrink-0">
+                      <span className="px-1.5 py-[0.5px] rounded-md bg-[#eae4d6] text-[#475569] text-[9px] font-bold uppercase leading-tight shrink-0">
                         Khán giả
                       </span>
                     )}
                   </div>
-                  <span className="font-mono-num text-[10px] font-semibold text-slate-400 shrink-0">
+                  <span className="font-mono-num text-[10px] font-medium text-[#788497] shrink-0">
                     {formatChatTime(msg.createdAt)}
                   </span>
                 </div>
 
-                <p className="text-slate-800 font-medium break-words [overflow-wrap:anywhere] whitespace-pre-wrap pl-4">
+                <p className="text-[#1e293b] font-medium break-words [overflow-wrap:anywhere] whitespace-pre-wrap pl-3.5">
                   {msg.text}
                 </p>
               </div>
@@ -321,15 +316,15 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
         )}
       </div>
 
-      {/* Quick Vietnamese Phrase Chips */}
-      <div className="shrink-0 px-2.5 py-1.5 bg-sky-50/90 border-t border-sky-200/80 flex flex-wrap gap-1">
+      {/* Single-Row Horizontal Scrollable Quick Phrases */}
+      <div className="shrink-0 px-2.5 py-1.5 bg-[#f3efe6] border-t border-[#e2dcd0] flex items-center gap-1.5 overflow-x-auto no-scrollbar">
         {QUICK_CHAT_PHRASES.map((phrase, index) => (
           <button
             key={phrase}
             type="button"
             data-testid={`bt-chat-quick-chip-${index}`}
             onClick={() => handleQuickPhrase(phrase)}
-            className="px-2 py-0.5 rounded-full bg-white hover:bg-sky-100 border border-sky-200 text-[11px] font-bold text-sky-900 transition-colors cursor-pointer active:scale-97"
+            className="shrink-0 px-2.5 py-1 rounded-full bg-white hover:bg-[#eae4d6] border border-[#d5cec0] text-[11px] font-bold text-[#182232] transition-colors cursor-pointer whitespace-nowrap"
           >
             {phrase}
           </button>
@@ -339,7 +334,7 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
       {/* Composer */}
       <form
         onSubmit={handleSubmit}
-        className="shrink-0 px-2.5 py-2 bg-white border-t border-sky-200 space-y-1"
+        className="shrink-0 px-2.5 py-2 bg-white border-t border-[#dad3c4] space-y-1"
       >
         <div className="flex items-center gap-1.5">
           <label htmlFor={`bt-chat-input-${variant}`} className="sr-only">
@@ -357,14 +352,14 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
                 ? 'Nhắn riêng cho đồng đội...'
                 : 'Nhắn tin tới cả phòng...'
             }
-            className="flex-1 min-w-0 px-2.5 py-1.5 text-xs font-bold text-slate-900 bg-sky-50/70 border border-sky-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#29B6F6] focus:bg-white"
+            className="flex-1 min-w-0 px-2.5 py-1.5 text-xs font-semibold text-[#141c2b] bg-[#faf8f3] border border-[#d5cec0] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#182232]/25 focus:bg-white"
           />
           <button
             type="submit"
             data-testid="bt-chat-send-btn"
             disabled={draft.trim().length === 0}
             aria-label="Gửi tin nhắn"
-            className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1 shrink-0 transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1 shrink-0 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
               effectiveChannel === 'TEAM' ? 'bt-btn-green' : 'bt-btn-cyan'
             }`}
           >
@@ -373,16 +368,16 @@ export const OnlineChatDrawer: React.FC<OnlineChatDrawerProps> = ({
           </button>
         </div>
 
-        <div className="flex items-center justify-between px-0.5 text-[10px] font-bold">
-          <span className={effectiveChannel === 'TEAM' ? 'text-sky-700 font-extrabold' : 'text-slate-500'}>
+        <div className="flex items-center justify-between px-0.5 text-[10px] font-semibold">
+          <span className={effectiveChannel === 'TEAM' ? 'text-emerald-700 font-bold' : 'text-[#64748b]'}>
             {effectiveChannel === 'TEAM'
-              ? 'Kênh Đội: chỉ đồng đội cùng phe nhìn thấy'
-              : 'Kênh Cả phòng: mọi người đều thấy'}
+              ? 'Kênh Đội: chỉ đồng đội thấy'
+              : 'Kênh Cả phòng: mọi người thấy'}
           </span>
           <span
             data-testid="bt-chat-char-count"
             className={`font-mono-num ${
-              draft.length >= 140 ? 'text-amber-600 font-black' : 'text-slate-400'
+              draft.length >= 140 ? 'text-amber-600 font-extrabold' : 'text-[#788497]'
             }`}
           >
             {draft.length}/{MAX_CHAT_LENGTH}

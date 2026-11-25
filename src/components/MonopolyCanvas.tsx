@@ -3546,20 +3546,20 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           aria-label="Bàn cờ Tỷ Phú Việt Nam 3D"
         />
 
-        {/* Floating 2D Comic Speech Bubble anchored above Active 3D Character Pawn */}
+        {/* Floating 2D Speech Bubble anchored above Active 3D Character Pawn */}
         <div
           ref={speechBubbleRef}
-          className="pointer-events-none absolute left-0 top-0 z-10 rounded-2xl border-[3px] bg-white px-3.5 py-1.5 shadow-[0_8px_20px_rgba(15,23,42,0.24)] transition-opacity duration-150"
+          className="pointer-events-none absolute left-0 top-0 z-10 rounded-xl border-2 bg-[#faf8f3] px-3 py-1.5 shadow-[0_8px_20px_rgba(20,28,43,0.22)] transition-opacity duration-150"
           style={{ opacity: 0, willChange: 'transform, opacity' }}
         >
           <span
             ref={speechTextSpanRef}
-            className="block whitespace-nowrap text-xs font-extrabold tracking-normal text-slate-800 sm:text-[13px]"
+            className="block whitespace-nowrap text-xs font-extrabold tracking-normal text-[#141c2b] sm:text-[13px]"
           />
           <span
             ref={speechTailRef}
             style={{ transform: 'translateX(-50%) rotate(45deg)' }}
-            className="absolute -bottom-[7px] left-1/2 h-3 w-3 border-b-[3px] border-r-[3px] border-inherit bg-white"
+            className="absolute -bottom-[6px] left-1/2 h-2.5 w-2.5 border-b-2 border-r-2 border-inherit bg-[#faf8f3]"
           />
         </div>
 
@@ -3575,14 +3575,14 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
               }
             }}
             data-testid={`bt-tile-ping-label-${ping.tileIndex}`}
-            className="pointer-events-none absolute left-0 top-0 z-[15] rounded-full border-2 bg-white/95 px-2.5 py-1 shadow-[0_6px_16px_rgba(15,23,42,0.24)] transition-opacity duration-150"
+            className="pointer-events-none absolute left-0 top-0 z-[15] rounded-full border-2 bg-[#faf8f3] px-2.5 py-1 shadow-[0_6px_16px_rgba(20,28,43,0.22)] transition-opacity duration-150"
             style={{
               borderColor: ping.colorHex,
               opacity: 0,
               willChange: 'transform, opacity',
             }}
           >
-            <span className="block whitespace-nowrap text-[11px] font-black text-slate-900 leading-tight">
+            <span className="block whitespace-nowrap text-[11px] font-black text-[#141c2b] leading-tight">
               {ping.label}
             </span>
           </div>

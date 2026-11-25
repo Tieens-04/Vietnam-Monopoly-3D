@@ -1,5 +1,21 @@
 import React, { useEffect, useState } from 'react';
-import { MessageCircle } from 'lucide-react';
+import {
+  BookOpen,
+  Check,
+  Compass,
+  Dices,
+  Eye,
+  Gamepad2,
+  Hand,
+  Hourglass,
+  MessageCircle,
+  Pause,
+  RotateCcw,
+  ScrollText,
+  SlidersHorizontal,
+  Smile,
+  X,
+} from 'lucide-react';
 import { GRAPHICS_TIER_LABELS } from '../game/graphicsQuality';
 import { formatBusinessTourCompact, JAIL_FINE } from '../game/rules';
 import {
@@ -12,6 +28,12 @@ import {
   TurnPhase,
 } from '../game/types';
 import { CurrencyStylePicker } from './CurrencyStyleBadge';
+import {
+  EMOTE_3D_CATALOG,
+  Emote3DIcon,
+  encodeEmote3D,
+} from './EmoteAndTaunt3D';
+import { ToggleSwitch } from './GameUiPrimitives';
 import { GraphicsQualityPicker } from './GraphicsQualityPicker';
 
 export type ActionDockMenuKind = 'none' | 'emotes' | 'settings' | 'logs';
@@ -68,15 +90,6 @@ interface ActionDockProps {
   onToggleChat?: () => void;
   voiceBarNode?: React.ReactNode;
 }
-
-const QUICK_EMOTES: Array<{ emoji: string; label: string }> = [
-  { emoji: '🎲', label: 'Đổ lớn nào!' },
-  { emoji: '😎', label: 'Đất của tôi!' },
-  { emoji: '💸', label: 'Xin tiền thuê nhé!' },
-  { emoji: '😱', label: 'Thôi xong rồi!' },
-  { emoji: '🔥', label: 'Quyết chiến!' },
-  { emoji: '🏆', label: 'Đăng cai Cúp thôi!' },
-];
 
 const ActionDockInner: React.FC<ActionDockProps> = ({
   currentPlayer,
@@ -183,107 +196,81 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
   return (
     <>
       {/* =================================================================
-          1. MIDDLE-RIGHT 3 CIRCULAR GLOSSY CYAN/BLUE FLOATING UTILITY BUTTONS
-             (Emotes, Audio/Settings, Pause — Business Tour Signature Layout)
+          1. UNIFIED RIGHT-EDGE TABLETOP UTILITY DOCK
           ================================================================= */}
       <div
         data-testid="bt-right-utility-rail"
-        className="bt-utility-rail fixed right-[max(0.55rem,env(safe-area-inset-right,0px))] sm:right-4 top-1/2 -translate-y-1/2 z-25 flex flex-col items-center gap-2.5 sm:gap-3 pointer-events-none"
+        className="bt-utility-rail fixed right-[max(0.5rem,env(safe-area-inset-right,0px))] sm:right-3.5 top-1/2 -translate-y-1/2 z-25 flex flex-col items-center gap-2 pointer-events-none"
       >
-        {/* Button 1: Emotes / Quick Chat */}
-        {!isOnlineSpectator && (
+        <div className="bt-dock-shell pointer-events-auto rounded-2xl p-1.5 flex flex-col items-center gap-1.5">
+          {/* Emotes */}
+          {!isOnlineSpectator && (
+            <button
+              type="button"
+              data-testid="bt-btn-emotes"
+              onClick={(e) => {
+                if (e.detail > 0) e.currentTarget.blur();
+                toggleMenu('emotes');
+              }}
+              aria-expanded={openMenu === 'emotes'}
+              aria-label="Biểu cảm và Trò chuyện nhanh"
+              title="Biểu cảm nhân vật"
+              className={`bt-utility-rail-btn h-11 w-11 rounded-xl flex items-center justify-center cursor-pointer ${
+                openMenu === 'emotes' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
+              }`}
+            >
+              <Smile className="h-5 w-5 stroke-[2.2]" aria-hidden="true" />
+            </button>
+          )}
+
+          {/* Audio & Settings (Sliders icon reflects actual content) */}
           <button
             type="button"
-            data-testid="bt-btn-emotes"
+            data-testid="bt-btn-settings"
             onClick={(e) => {
               if (e.detail > 0) e.currentTarget.blur();
-              toggleMenu('emotes');
+              toggleMenu('settings');
             }}
-            aria-expanded={openMenu === 'emotes'}
-            aria-label="Biểu cảm và Trò chuyện nhanh"
-            title="Biểu cảm nhân vật"
-            className={`bt-utility-rail-btn pointer-events-auto h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
-              openMenu === 'emotes' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
+            aria-expanded={openMenu === 'settings'}
+            aria-label="Âm thanh và Cài đặt bàn cờ"
+            title="Cài đặt & Tùy chỉnh"
+            className={`bt-utility-rail-btn relative h-11 w-11 rounded-xl flex items-center justify-center cursor-pointer ${
+              openMenu === 'settings' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
             }`}
           >
-            <svg
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-              className="h-6 w-6 fill-none stroke-current stroke-[2.3]"
-            >
-              <circle cx="12" cy="12" r="9" />
-              <path d="M8.5 14.5s1.4 2 3.5 2 3.5-2 3.5-2" strokeLinecap="round" />
-              <circle cx="9" cy="10" r="1.1" fill="currentColor" stroke="none" />
-              <circle cx="15" cy="10" r="1.1" fill="currentColor" stroke="none" />
-            </svg>
+            <SlidersHorizontal className="h-5 w-5 stroke-[2.2]" aria-hidden="true" />
+            {soundMuted && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute top-1 right-1 h-2 w-2 rounded-full bg-rose-500 border border-white"
+              />
+            )}
+            {!isOnlineMatch && speedMultiplier === 2 && (
+              <span className="pointer-events-none absolute -top-1 -left-1 px-1.5 py-[1px] rounded-md bg-[#F5B800] border border-[#141c2b]/20 text-[9px] font-mono-num font-black text-[#141c2b] shadow-2xs">
+                2×
+              </span>
+            )}
           </button>
-        )}
 
-        {/* Button 2: Audio & Quick Settings */}
-        <button
-          type="button"
-          data-testid="bt-btn-settings"
-          onClick={(e) => {
-            if (e.detail > 0) e.currentTarget.blur();
-            toggleMenu('settings');
-          }}
-          aria-expanded={openMenu === 'settings'}
-          aria-label="Âm thanh và Cài đặt bàn cờ"
-          title="Âm thanh & Cài đặt"
-          className={`bt-utility-rail-btn pointer-events-auto relative h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
-            openMenu === 'settings' ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
-          }`}
-        >
-          {soundMuted ? (
-            <svg
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-              className="h-6 w-6 fill-none stroke-current stroke-[2.3]"
-            >
-              <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinejoin="round" />
-              <path d="M22 9l-6 6M16 9l6 6" strokeLinecap="round" />
-            </svg>
-          ) : (
-            <svg
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-              className="h-6 w-6 fill-none stroke-current stroke-[2.3]"
-            >
-              <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinejoin="round" />
-              <path d="M15.54 8.46a5 5 0 0 1 0 7.07" strokeLinecap="round" />
-              <path d="M19.07 5.5a9.5 9.5 0 0 1 0 13" strokeLinecap="round" />
-            </svg>
-          )}
-          {!isOnlineMatch && speedMultiplier === 2 && (
-            <span className="pointer-events-none absolute -top-1 -left-1 px-1.5 py-[1px] rounded-full bg-[#F5B800] border border-white text-[9px] font-mono-num font-black text-slate-950 shadow-xs">
-              2×
-            </span>
-          )}
-        </button>
+          {/* Pause */}
+          <button
+            type="button"
+            data-testid="bt-btn-pause"
+            onClick={(e) => {
+              if (e.detail > 0) e.currentTarget.blur();
+              setTakeoverPickerOpen(false);
+              setOpenMenu('none');
+              onOpenPause();
+            }}
+            aria-label="Tạm dừng trò chơi"
+            title="Tạm dừng [Esc]"
+            className="bt-utility-rail-btn h-11 w-11 rounded-xl bt-float-circle-cyan flex items-center justify-center cursor-pointer"
+          >
+            <Pause className="h-5 w-5 stroke-[2.2]" aria-hidden="true" />
+          </button>
 
-        {/* Button 3: Pause Match */}
-        <button
-          type="button"
-          data-testid="bt-btn-pause"
-          onClick={(e) => {
-            if (e.detail > 0) e.currentTarget.blur();
-            setTakeoverPickerOpen(false);
-            setOpenMenu('none');
-            onOpenPause();
-          }}
-          aria-label="Tạm dừng trò chơi"
-          title="Tạm dừng [Esc]"
-          className="bt-utility-rail-btn pointer-events-auto h-11 w-11 sm:h-13 sm:w-13 rounded-full bt-float-circle-cyan flex items-center justify-center cursor-pointer"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5.5 w-5.5 fill-current">
-            <rect x="6" y="4.5" width="4.2" height="15" rx="1.6" />
-            <rect x="13.8" y="4.5" width="4.2" height="15" rx="1.6" />
-          </svg>
-        </button>
-
-        {/* Online Button 4 & 5: Room Chat Drawer Toggle + Compact Voice Bar (outside overflow-hidden/scroll) */}
-        {isOnlineMatch && (
-          <>
+          {/* Online Chat Toggle */}
+          {isOnlineMatch && (
             <button
               type="button"
               data-testid="bt-action-chat-btn"
@@ -300,11 +287,11 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                   : 'Trò chuyện phòng'
               }
               title="Trò chuyện phòng"
-              className={`bt-utility-rail-btn pointer-events-auto relative h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer ${
+              className={`bt-utility-rail-btn relative h-11 w-11 rounded-xl flex items-center justify-center cursor-pointer ${
                 chatOpen ? 'bt-float-circle-active' : 'bt-float-circle-cyan'
               }`}
             >
-              <MessageCircle className="h-5.5 w-5.5 sm:h-6 sm:w-6 stroke-[2.3]" aria-hidden="true" />
+              <MessageCircle className="h-5 w-5 stroke-[2.2]" aria-hidden="true" />
               {unreadChatCount > 0 && (
                 <span
                   data-testid="bt-chat-unread-badge"
@@ -314,45 +301,52 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                 </span>
               )}
             </button>
-            {voiceBarNode}
-          </>
-        )}
+          )}
+        </div>
+
+        {/* Unified Voice Control Capsule (Online Match) */}
+        {isOnlineMatch && voiceBarNode}
       </div>
 
       {/* =================================================================
-          2. FLOATING EMOTE PICKER POPOVER (Left of Middle-Right Rail)
+          2. 3×3 PURE 3D EMOJI PICKER POPOVER (NO TEXT LABELS)
+             (Close button MUST remain index 0, emotes indices 1..9)
           ================================================================= */}
       {!isOnlineSpectator && openMenu === 'emotes' && (
         <div
           data-testid="bt-emote-popover"
-          className="fixed right-16 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-60 max-w-[calc(100vw-5.5rem)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
+          className="fixed right-16 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-56 max-w-[calc(100vw-5.5rem)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
         >
           <div className="shrink-0 bt-header-sky px-3.5 py-2 flex items-center justify-between">
             <span className="font-display text-xs font-black uppercase tracking-wide">
-              Biểu Cảm Nhân Vật
+              Biểu Cảm 3D
             </span>
             <button
               type="button"
               onClick={() => setOpenMenu('none')}
               aria-label="Đóng biểu cảm"
-              className="icon-hit-target h-6 w-6 rounded-full bg-white/25 hover:bg-white/40 text-white text-xs font-bold flex items-center justify-center cursor-pointer shrink-0"
+              className="icon-hit-target h-6 w-6 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center cursor-pointer shrink-0"
             >
-              ✕
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
-          <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-2.5 grid grid-cols-1 gap-1.5">
-            {QUICK_EMOTES.map((em) => (
+          <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-2.5 grid grid-cols-3 gap-2">
+            {EMOTE_3D_CATALOG.map((em) => (
               <button
-                key={em.label}
+                key={em.key}
                 type="button"
+                aria-label={em.label}
+                title={em.label}
                 onClick={() => {
-                  onTriggerEmote(`${em.emoji} ${em.label}`);
+                  onTriggerEmote(encodeEmote3D(em.key));
                   setOpenMenu('none');
                 }}
-                className="w-full px-3 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center gap-2 text-left text-xs font-bold text-slate-800 transition-colors cursor-pointer"
+                className="group h-14 w-full rounded-2xl bg-white hover:bg-[#f7f4ec] border border-[#ded8ca] shadow-[0_3px_0_#d5cec0] hover:shadow-[0_4px_0_#c4bcae] hover:-translate-y-0.5 active:translate-y-0.5 active:shadow-none flex items-center justify-center transition-all cursor-pointer"
               >
-                <span className="text-base leading-none">{em.emoji}</span>
-                <span>{em.label}</span>
+                <Emote3DIcon
+                  emoteKey={em.key}
+                  className="h-10 w-10 transition-transform duration-150 group-hover:scale-115"
+                />
               </button>
             ))}
           </div>
@@ -360,34 +354,35 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
       )}
 
       {/* =================================================================
-          3. FLOATING AUDIO & SETTINGS POPOVER (Left of Middle-Right Rail)
+          3. CLEAN TABLETOP SETTINGS POPOVER (Zero Box-in-Box, Real Switches)
           ================================================================= */}
       {openMenu === 'settings' && (
         <div
           data-testid="bt-settings-popover"
-          className="fixed right-14 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-72 max-w-[calc(100vw-4.25rem)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
+          className="fixed right-16 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-76 max-w-[calc(100vw-4.75rem)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
         >
           <div className="shrink-0 bt-header-sky px-4 py-2.5 flex items-center justify-between">
             <span className="font-display text-xs font-black uppercase tracking-wide">
-              Âm Thanh & Tuỳ Chỉnh
+              Âm Thanh &amp; Tuỳ Chỉnh
             </span>
             <button
               type="button"
               onClick={() => setOpenMenu('none')}
               aria-label="Đóng cài đặt"
-              className="icon-hit-target h-6 w-6 rounded-full bg-white/25 hover:bg-white/40 text-white text-xs font-bold flex items-center justify-center cursor-pointer shrink-0"
+              className="icon-hit-target h-6 w-6 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center cursor-pointer shrink-0"
             >
-              ✕
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3 space-y-2 text-xs">
-            <div className="rounded-xl bg-sky-50/90 border border-sky-200 p-2 space-y-1.5">
-              <div className="flex items-center justify-between px-0.5 gap-1">
-                <span className="font-extrabold text-slate-800">
-                  Đồ họa 3D & Hiệu năng
+          <div className="flex-1 min-h-0 overflow-y-auto slim-scroll divide-y divide-[#e6e0d3] text-xs">
+            {/* Section 1: 3D Graphics */}
+            <div className="p-3 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-extrabold text-[#141c2b]">
+                  Đồ họa 3D &amp; Hiệu năng
                 </span>
-                <span className="text-[10px] font-black uppercase text-[#16A34A] truncate">
+                <span className="text-[10px] font-bold uppercase text-emerald-700 truncate">
                   {graphicsQualityPref === 'auto'
                     ? `Tự động · ${GRAPHICS_TIER_LABELS[effectiveQualityTier]}`
                     : `Mức ${GRAPHICS_TIER_LABELS[effectiveQualityTier]}`}
@@ -402,12 +397,13 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
               />
             </div>
 
-            <div className="rounded-xl bg-sky-50/90 border border-sky-200 p-2 space-y-1.5">
-              <div className="flex items-center justify-between px-0.5">
-                <span className="font-extrabold text-slate-800">
+            {/* Section 2: 3D Currency Style */}
+            <div className="p-3 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-extrabold text-[#141c2b]">
                   Kho bạc Tiền tệ 3D
                 </span>
-                <span className="text-[10px] font-black uppercase text-sky-700">
+                <span className="text-[10px] font-semibold text-[#525e73]">
                   Đổi tức thì
                 </span>
               </div>
@@ -418,124 +414,122 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
               />
             </div>
 
-            <button
-              type="button"
-              onClick={onToggleSound}
-              className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
-            >
-              <span>Âm thanh hiệu ứng</span>
-              <span
-                className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                  soundMuted ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
-                }`}
-              >
-                {soundMuted ? 'Đang tắt' : 'Đang bật'}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              disabled={isOnlineMatch}
-              onClick={() => {
-                if (!isOnlineMatch) {
-                  onChangeSpeed(speedMultiplier === 1 ? 2 : 1);
-                }
-              }}
-              className={`w-full px-3 py-2 rounded-xl bg-sky-50 border border-sky-200 flex items-center justify-between font-bold text-slate-800 ${
-                isOnlineMatch
-                  ? 'opacity-65 cursor-not-allowed'
-                  : 'hover:bg-sky-100 cursor-pointer'
-              }`}
-            >
-              <span>Tốc độ lượt chơi</span>
-              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-mono-num font-black">
-                {isOnlineMatch ? '1× (Khóa Online)' : `${speedMultiplier}×`}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onToggleCinematic}
-              className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
-            >
-              <span>Camera bám theo quân cờ</span>
-              <span
-                className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                  cinematicCamera ? 'bg-sky-200 text-sky-900' : 'bg-slate-200 text-slate-600'
-                }`}
-              >
-                {cinematicCamera ? 'Bật' : 'Tắt'}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onToggleNightMode}
-              className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
-            >
-              <span>Chế độ ánh sáng</span>
-              <span className="px-2 py-0.5 rounded-full bg-pink-100 text-pink-800 text-[10px] font-black uppercase">
-                {nightMode ? 'Ban đêm' : 'Ban ngày'}
-              </span>
-            </button>
-
-            {onToggleDisable3dTaunts && (
+            {/* Section 3: Flat Toggle Rows (No Nested Cards) */}
+            <div className="divide-y divide-[#efeae0] bg-white/60">
               <button
                 type="button"
-                data-testid="bt-disable-3d-taunts-toggle"
-                aria-pressed={disable3dTaunts}
-                onClick={onToggleDisable3dTaunts}
-                className="w-full px-3 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 flex items-center justify-between font-bold text-slate-800 cursor-pointer"
+                onClick={onToggleSound}
+                aria-pressed={!soundMuted}
+                className="w-full px-3.5 py-2.5 flex items-center justify-between gap-2 font-bold text-[#141c2b] hover:bg-[#efece4]/60 cursor-pointer transition-colors"
               >
-                <span>Tắt hiệu ứng ném đồ 3D</span>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                    disable3dTaunts
-                      ? 'bg-rose-100 text-rose-700'
-                      : 'bg-emerald-100 text-emerald-700'
-                  }`}
-                >
-                  {disable3dTaunts ? 'Đã tắt' : 'Đang bật'}
+                <span>Âm thanh hiệu ứng</span>
+                <ToggleSwitch checked={!soundMuted} size="sm" />
+              </button>
+
+              <button
+                type="button"
+                disabled={isOnlineMatch}
+                onClick={() => {
+                  if (!isOnlineMatch) {
+                    onChangeSpeed(speedMultiplier === 1 ? 2 : 1);
+                  }
+                }}
+                className={`w-full px-3.5 py-2.5 flex items-center justify-between gap-2 font-bold text-[#141c2b] ${
+                  isOnlineMatch
+                    ? 'opacity-65 cursor-not-allowed'
+                    : 'hover:bg-[#efece4]/60 cursor-pointer transition-colors'
+                }`}
+              >
+                <span>Tốc độ lượt chơi</span>
+                <span className="px-2 py-0.5 rounded-md bg-[#ebe6da] border border-[#d5cec0] text-[#141c2b] font-mono-num text-[11px] font-black">
+                  {isOnlineMatch ? '1× (Khóa Online)' : `${speedMultiplier}×`}
                 </span>
               </button>
-            )}
 
-            <div className="grid grid-cols-2 gap-1.5 pt-1">
               <button
                 type="button"
-                onClick={() => {
-                  onResetCamera();
-                  setOpenMenu('none');
-                }}
-                className="bt-btn-white py-1.5 px-2 rounded-xl text-[11px] font-extrabold cursor-pointer"
+                onClick={onToggleCinematic}
+                aria-pressed={cinematicCamera}
+                className="w-full px-3.5 py-2.5 flex items-center justify-between gap-2 font-bold text-[#141c2b] hover:bg-[#efece4]/60 cursor-pointer transition-colors"
               >
-                Góc Chuẩn 3D
+                <span>Camera bám theo quân cờ</span>
+                <ToggleSwitch checked={cinematicCamera} size="sm" />
               </button>
+
               <button
                 type="button"
-                onClick={() => {
-                  setOpenMenu('none');
-                  onOpenRulebook();
-                }}
-                className="bt-btn-white py-1.5 px-2 rounded-xl text-[11px] font-extrabold cursor-pointer"
+                onClick={onToggleNightMode}
+                aria-pressed={nightMode}
+                className="w-full px-3.5 py-2.5 flex items-center justify-between gap-2 font-bold text-[#141c2b] hover:bg-[#efece4]/60 cursor-pointer transition-colors"
               >
-                Luật Chơi
+                <span>Chế độ ánh sáng</span>
+                <span
+                  className={`px-2 py-0.5 rounded-md border text-[10px] font-extrabold uppercase ${
+                    nightMode
+                      ? 'bg-[#182232] border-[#0f172a] text-amber-300'
+                      : 'bg-amber-50 border-amber-200 text-amber-900'
+                  }`}
+                >
+                  {nightMode ? 'Ban đêm' : 'Ban ngày'}
+                </span>
               </button>
+
+              {onToggleDisable3dTaunts && (
+                <button
+                  type="button"
+                  data-testid="bt-disable-3d-taunts-toggle"
+                  aria-pressed={disable3dTaunts}
+                  onClick={onToggleDisable3dTaunts}
+                  className="w-full px-3.5 py-2.5 flex items-center justify-between gap-2 font-bold text-[#141c2b] hover:bg-[#efece4]/60 cursor-pointer transition-colors"
+                >
+                  <span>Tắt hiệu ứng ném đồ 3D</span>
+                  <ToggleSwitch checked={disable3dTaunts} size="sm" />
+                </button>
+              )}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setOpenMenu('logs')}
-              className="w-full bt-btn-cyan py-1.5 px-3 rounded-xl text-xs font-extrabold cursor-pointer"
-            >
-              Nhật Ký Ván Đấu ({logs.length})
-            </button>
+            {/* Section 4: Quick Actions */}
+            <div className="p-3 space-y-1.5 bg-[#f3efe6]/70">
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResetCamera();
+                    setOpenMenu('none');
+                  }}
+                  className="bt-btn-white py-1.5 px-2 rounded-xl text-[11px] font-extrabold flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Compass className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Góc Chuẩn 3D</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenMenu('none');
+                    onOpenRulebook();
+                  }}
+                  className="bt-btn-white py-1.5 px-2 rounded-xl text-[11px] font-extrabold flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <BookOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Luật Chơi</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setOpenMenu('logs')}
+                className="w-full bt-btn-white py-1.5 px-3 rounded-xl text-[11px] font-extrabold flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <ScrollText className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>Nhật Ký Ván Đấu ({logs.length})</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       {/* =================================================================
-          4. MATCH LOG POPOVER (Opened from Settings)
+          4. MATCH LOG POPOVER
           ================================================================= */}
       {openMenu === 'logs' && (
         <div className="fixed right-16 sm:right-20 top-1/2 -translate-y-1/2 z-30 w-[min(360px,82vw)] max-w-[calc(100vw-5.5rem)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto">
@@ -547,18 +541,18 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
               type="button"
               onClick={() => setOpenMenu('none')}
               aria-label="Đóng nhật ký trận đấu"
-              className="icon-hit-target h-6 w-6 rounded-full bg-white/25 hover:bg-white/40 text-white text-xs font-bold flex items-center justify-center cursor-pointer shrink-0"
+              className="icon-hit-target h-6 w-6 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center cursor-pointer shrink-0"
             >
-              ✕
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
-          <div className="flex-1 min-h-0 p-3 overflow-y-auto slim-scroll divide-y divide-sky-100">
+          <div className="flex-1 min-h-0 p-3 overflow-y-auto slim-scroll divide-y divide-[#e6e0d3]">
             {logs.map((entry) => (
               <div
                 key={entry.id}
                 className="py-1.5 text-xs leading-snug flex items-start gap-2"
               >
-                <span className="font-mono-num text-[10px] font-bold text-sky-600 shrink-0 mt-0.5">
+                <span className="font-mono-num text-[10px] font-bold text-[#64748b] shrink-0 mt-0.5">
                   L{entry.turn}
                 </span>
                 {entry.playerColor && (
@@ -575,7 +569,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                         ? 'text-rose-700 font-bold'
                         : entry.tone === 'highlight'
                           ? 'text-amber-700 font-bold'
-                          : 'text-slate-700 font-medium'
+                          : 'text-[#334155] font-medium'
                   }
                 >
                   {entry.text}
@@ -587,7 +581,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
       )}
 
       {/* =================================================================
-          5. BORDERLESS FLOATING HUMAN TURN PILL CLUSTER (Zero Dark Toolbar!)
+          5. FLOATING HUMAN TURN CONTROLS (BOTTOM-CENTER)
           ================================================================= */}
       {isHumanTurn &&
         !isModalDecisionPhase &&
@@ -607,9 +601,10 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                       e.currentTarget.blur();
                       onRollDice();
                     }}
-                    className="bt-btn-pink px-4 sm:px-5 py-2.5 rounded-full disabled:opacity-45 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
+                    className="bt-btn-pink px-4 sm:px-5 py-2.5 rounded-full disabled:opacity-45 font-black text-xs sm:text-sm uppercase tracking-wide flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
                   >
-                    🎲 Đổ Săn Đôi
+                    <Dices className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span>Đổ Săn Đôi</span>
                   </button>
                   <button
                     type="button"
@@ -632,7 +627,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                         e.currentTarget.blur();
                         onUseJailCard();
                       }}
-                      className="bt-btn-cyan px-3.5 sm:px-4 py-2.5 rounded-full disabled:opacity-45 font-extrabold text-xs sm:text-sm uppercase cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
+                      className="bt-btn-white px-3.5 sm:px-4 py-2.5 rounded-full disabled:opacity-45 font-extrabold text-xs sm:text-sm uppercase cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
                     >
                       Dùng Thẻ Thoát Đảo
                     </button>
@@ -641,7 +636,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
               ) : (
                 <>
                   {tacticalDiceEnabled && (
-                    <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1.5 px-2 py-1 rounded-full bt-casual-modal">
+                    <div className="pointer-events-auto bt-casual-modal flex flex-wrap items-center justify-center gap-1 p-1 rounded-full">
                       <button
                         type="button"
                         disabled={isActionPending}
@@ -649,8 +644,8 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                         onClick={() => onSelectDiceChoice?.('NORMAL')}
                         className={`px-2.5 py-1.5 rounded-full text-[11px] font-black uppercase transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap ${
                           selectedDiceChoice === 'NORMAL'
-                            ? 'bt-btn-cyan'
-                            : 'text-sky-900 hover:bg-sky-100'
+                            ? 'bg-[#182232] text-white'
+                            : 'text-[#3f4a5e] hover:bg-[#efece4]'
                         }`}
                       >
                         Thường
@@ -667,8 +662,8 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                         }
                         className={`px-2.5 py-1.5 rounded-full text-[11px] font-black uppercase transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
                           evenOddCharges > 0 && selectedDiceChoice === 'EVEN'
-                            ? 'bt-btn-gold text-slate-950'
-                            : 'text-sky-900 hover:bg-sky-100'
+                            ? 'bt-btn-gold'
+                            : 'text-[#3f4a5e] hover:bg-[#efece4]'
                         }`}
                       >
                         Chẵn ({evenOddCharges})
@@ -685,8 +680,8 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                         }
                         className={`px-2.5 py-1.5 rounded-full text-[11px] font-black uppercase transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
                           evenOddCharges > 0 && selectedDiceChoice === 'ODD'
-                            ? 'bt-btn-gold text-slate-950'
-                            : 'text-sky-900 hover:bg-sky-100'
+                            ? 'bt-btn-gold'
+                            : 'text-[#3f4a5e] hover:bg-[#efece4]'
                         }`}
                       >
                         Lẻ ({evenOddCharges})
@@ -702,20 +697,13 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                       e.currentTarget.blur();
                       onRollDice();
                     }}
-                    className="pointer-events-auto bt-btn-pink px-6 sm:px-8 py-2.5 sm:py-3 rounded-full disabled:opacity-45 font-black text-sm sm:text-base uppercase tracking-wide flex items-center gap-2 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
+                    className="pointer-events-auto bt-btn-pink px-6 sm:px-7 py-2.5 sm:py-3 rounded-full disabled:opacity-45 font-black text-sm sm:text-base uppercase tracking-wide flex items-center gap-2 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
                   >
-                    <svg
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                      className="h-5 w-5 shrink-0 fill-none stroke-current stroke-[2.4]"
-                    >
-                      <rect x="3" y="3" width="12" height="12" rx="2.5" />
-                      <circle cx="6.5" cy="6.5" r="1.2" fill="currentColor" stroke="none" />
-                      <circle cx="11.5" cy="11.5" r="1.2" fill="currentColor" stroke="none" />
-                      <path d="M15 9h3.5A2.5 2.5 0 0 1 21 11.5v7A2.5 2.5 0 0 1 18.5 21h-7A2.5 2.5 0 0 1 9 18.5V15" />
-                      <circle cx="16.5" cy="16.5" r="1.2" fill="currentColor" stroke="none" />
-                    </svg>
+                    <Dices className="h-5 w-5 shrink-0 stroke-[2.3]" aria-hidden="true" />
                     <span>Đổ Xúc Xắc</span>
+                    <kbd className="hidden lg:inline-flex items-center px-1.5 py-0.5 rounded-md bg-black/20 border border-white/25 text-[9px] font-mono-num font-bold tracking-normal text-white/95">
+                      Space
+                    </kbd>
                   </button>
                 </>
               )
@@ -725,8 +713,11 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                 className="pointer-events-auto flex flex-wrap items-center justify-center gap-2"
               >
                 {lastDice && (
-                  <div className="px-3.5 py-2 rounded-full bt-casual-modal text-xs sm:text-sm font-black text-sky-950 font-mono-num whitespace-nowrap">
-                    🎲 {lastDice[0]} + {lastDice[1]} = {resolvedDiceSum}
+                  <div className="px-3.5 py-2 rounded-full bt-casual-modal text-xs sm:text-sm font-black text-[#141c2b] font-mono-num flex items-center gap-1.5 whitespace-nowrap">
+                    <Dices className="h-4 w-4 text-rose-600 shrink-0" aria-hidden="true" />
+                    <span>
+                      {lastDice[0]} + {lastDice[1]} = {resolvedDiceSum}
+                    </span>
                   </div>
                 )}
                 <button
@@ -738,9 +729,10 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                     e.currentTarget.blur();
                     onRerollDice?.();
                   }}
-                  className="bt-btn-gold text-slate-950 px-4 sm:px-5 py-2.5 rounded-full font-black text-xs sm:text-sm uppercase tracking-wide disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
+                  className="bt-btn-gold px-4 sm:px-5 py-2.5 rounded-full font-black text-xs sm:text-sm uppercase tracking-wide flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
                 >
-                  🔄 Đổ Lại ({rerollCharges})
+                  <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Đổ Lại ({rerollCharges})</span>
                 </button>
                 <button
                   type="button"
@@ -751,9 +743,10 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                     e.currentTarget.blur();
                     onConfirmRollMove?.();
                   }}
-                  className="bt-btn-green px-4 sm:px-5 py-2.5 rounded-full disabled:opacity-45 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
+                  className="bt-btn-green px-4 sm:px-5 py-2.5 rounded-full disabled:opacity-45 font-black text-xs sm:text-sm uppercase tracking-wide flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
                 >
-                  ✓ Giữ &amp; Đi ({resolvedDiceSum} bước)
+                  <Check className="h-4 w-4 shrink-0 stroke-[2.5]" aria-hidden="true" />
+                  <span>Giữ &amp; Đi ({resolvedDiceSum} bước)</span>
                 </button>
               </div>
             )}
@@ -766,7 +759,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                   onOpenAssetsModal();
                 }}
                 aria-label="Quản lý Tài sản"
-                className="pointer-events-auto bt-btn-cyan px-3.5 py-2.5 rounded-full text-xs font-black uppercase tracking-wide cursor-pointer whitespace-nowrap"
+                className="pointer-events-auto bt-btn-white px-3.5 py-2.5 rounded-full text-xs font-extrabold uppercase tracking-wide cursor-pointer whitespace-nowrap"
               >
                 Tài Sản ({ownedCount})
               </button>
@@ -774,20 +767,21 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
           </div>
         )}
 
-      {/* Online Waiting Indicator when it's another player's or bot's turn */}
+      {/* Online Waiting Indicator */}
       {isOnlineMatch &&
         !isOnlineSpectator &&
         !isHumanTurn &&
         !isModalDecisionPhase &&
         (turnPhase === 'AWAIT_ROLL' || turnPhase === 'REROLL_DECISION') && (
           <div className="fixed bottom-[124px] sm:bottom-[136px] lg:bottom-[max(0.9rem,env(safe-area-inset-bottom,0px))] left-1/2 -translate-x-1/2 z-25 w-max max-w-[calc(100vw-1rem)] sm:max-w-[calc(100vw-9rem)] lg:max-w-[min(780px,calc(100vw-580px))] flex flex-wrap items-center justify-center gap-2 pointer-events-none">
-            <div className="px-5 py-2.5 rounded-full bt-casual-modal text-xs sm:text-sm font-black text-sky-900 whitespace-normal text-center">
-              ⏳ Đang chờ {currentPlayer.name}...
+            <div className="px-4 py-2 rounded-full bt-casual-modal text-xs sm:text-sm font-bold text-[#334155] flex items-center gap-1.5 whitespace-normal text-center">
+              <Hourglass className="h-3.5 w-3.5 text-amber-600 shrink-0" aria-hidden="true" />
+              <span>Đang chờ {currentPlayer.name}...</span>
             </div>
           </div>
         )}
 
-      {/* Online AFK Bot Takeover Reclaim CTA (BUG-12) */}
+      {/* Online AFK Bot Takeover Reclaim CTA */}
       {isOnlineMatch && !isOnlineSpectator && isOnlineBotTakeover && onReclaimControl && (
         <div className="fixed bottom-[174px] sm:bottom-[188px] lg:bottom-[4.5rem] left-1/2 -translate-x-1/2 z-26 w-max max-w-[calc(100vw-1rem)] pointer-events-auto animate-pop-in">
           <button
@@ -795,9 +789,10 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
             data-testid="bt-reclaim-control-btn"
             disabled={isActionPending}
             onClick={onReclaimControl}
-            className="bt-btn-gold text-slate-950 px-5 py-2.5 rounded-full disabled:opacity-45 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer disabled:cursor-not-allowed shadow-xl whitespace-normal text-center"
+            className="bt-btn-gold px-5 py-2.5 rounded-full disabled:opacity-45 font-black text-xs sm:text-sm uppercase tracking-wide flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed shadow-lg whitespace-normal text-center"
           >
-            🙋 Lấy Lại Quyền Điều Khiển
+            <Hand className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>Lấy Lại Quyền Điều Khiển</span>
           </button>
         </div>
       )}
@@ -811,16 +806,16 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
               className="pointer-events-auto bt-casual-modal rounded-2xl p-2.5 shadow-xl animate-pop-in flex flex-col gap-2 max-w-full"
             >
               <div className="flex items-center justify-between gap-3 px-1">
-                <span className="text-[11px] font-black uppercase tracking-wide text-sky-900">
+                <span className="text-[11px] font-black uppercase tracking-wide text-[#141c2b]">
                   Chọn Bot muốn thế chỗ
                 </span>
                 <button
                   type="button"
                   onClick={() => setTakeoverPickerOpen(false)}
                   aria-label="Đóng danh sách chọn Bot"
-                  className="icon-hit-target h-5 w-5 rounded-full bg-sky-100 hover:bg-sky-200 text-sky-900 text-[10px] font-black flex items-center justify-center cursor-pointer"
+                  className="icon-hit-target h-5 w-5 rounded-full bg-[#efece4] hover:bg-[#e2dcd0] text-[#525e73] flex items-center justify-center cursor-pointer"
                 >
-                  ✕
+                  <X className="h-3 w-3" aria-hidden="true" />
                 </button>
               </div>
               <div className="flex flex-wrap items-center justify-center gap-1.5">
@@ -833,7 +828,7 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                       setTakeoverPickerOpen(false);
                       onRequestBotTakeover?.(bot.playerId);
                     }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-300 text-xs font-extrabold text-slate-900 transition-colors cursor-pointer whitespace-nowrap"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-[#efece4] border border-[#d5cec0] text-xs font-bold text-[#141c2b] transition-colors cursor-pointer whitespace-nowrap"
                   >
                     <span
                       className="h-2.5 w-2.5 rounded-full shrink-0 border border-white shadow-2xs"
@@ -850,8 +845,10 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
             data-testid="bt-spectator-status-bar"
             className="pointer-events-auto bt-casual-modal rounded-2xl sm:rounded-full px-3.5 sm:px-4 py-1.5 sm:py-2 flex flex-wrap items-center justify-center gap-2 sm:gap-3 shadow-lg"
           >
-            <span className="text-xs sm:text-sm font-black text-sky-950 whitespace-nowrap">
-              👁️ Chế độ Khán giả — Đang xem trực tiếp
+            <span className="text-xs sm:text-sm font-extrabold text-[#141c2b] inline-flex items-center gap-1.5 whitespace-nowrap">
+              <Eye className="h-4 w-4 text-[#525e73] shrink-0" aria-hidden="true" />
+              <span className="sr-only">👁️ </span>
+              <span>Chế độ Khán giả — Đang xem trực tiếp</span>
             </span>
             <button
               type="button"
@@ -868,9 +865,19 @@ const ActionDockInner: React.FC<ActionDockProps> = ({
                 setOpenMenu('none');
                 setTakeoverPickerOpen((prev) => !prev);
               }}
-              className="bt-btn-green px-3.5 py-1.5 rounded-full text-xs font-black uppercase tracking-wide disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
+              className="bt-btn-green px-3.5 py-1.5 rounded-full text-xs font-black uppercase tracking-wide inline-flex items-center gap-1.5 disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
             >
-              {takeoverRequestPending ? '⏳ Đang chờ duyệt...' : '🎮 Xin thế chỗ Bot'}
+              {takeoverRequestPending ? (
+                <>
+                  <Hourglass className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Đang chờ duyệt...</span>
+                </>
+              ) : (
+                <>
+                  <Gamepad2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Xin thế chỗ Bot</span>
+                </>
+              )}
             </button>
           </div>
         </div>

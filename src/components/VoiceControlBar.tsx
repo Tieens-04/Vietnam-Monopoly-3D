@@ -127,7 +127,6 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
     }
   }, []);
 
-  // Auto-open popover if a mic permission/environment issue just occurred after user interaction
   useEffect(() => {
     const prev = prevPermissionStatusRef.current;
     const next = voiceState.permissionStatus;
@@ -140,7 +139,6 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
     }
   }, [voiceState.permissionStatus, setPopoverOpen]);
 
-  // Keyboard Push-to-Talk (KeyV) + safe release on mode change, blur, visibility loss, or unmount
   useEffect(() => {
     if (voiceState.inputMode !== 'push_to_talk') {
       releaseAllPtt();
@@ -209,7 +207,6 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
     };
   }, [voiceState.inputMode, releaseAllPtt]);
 
-  // Outside pointerdown & Escape close handler for the popover
   useEffect(() => {
     if (!popoverOpen) return;
 
@@ -246,7 +243,6 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
     };
   }, [popoverOpen, setPopoverOpen]);
 
-  // Viewport-clamped positioning relative to containerRef so the popover stays inside viewport even inside transformed parents
   useLayoutEffect(() => {
     if (!popoverOpen) return;
 
@@ -399,18 +395,19 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
   })();
 
   const speakingRingClass = voiceState.localSpeaking
-    ? 'ring-4 ring-emerald-300/90 shadow-[0_0_16px_rgba(52,211,153,0.85)]'
+    ? 'ring-3 ring-emerald-400 shadow-[0_0_14px_rgba(16,185,129,0.75)]'
     : '';
 
   return (
     <div
       ref={containerRef}
       className={`relative pointer-events-auto ${
-        compact ? 'inline-flex flex-col items-center gap-1' : 'inline-flex items-center'
+        compact ? 'inline-flex flex-col items-center' : 'inline-flex items-center'
       }`}
     >
       {compact ? (
-        <>
+        /* Unified Split Capsule Matching .bt-dock-shell */
+        <div className="bt-dock-shell rounded-2xl p-1.5 flex flex-col items-center gap-1">
           <button
             type="button"
             data-testid="bt-voice-mic-btn"
@@ -424,24 +421,24 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
             onPointerUp={handleMicPointerRelease}
             onPointerCancel={handleMicPointerRelease}
             onPointerLeave={handleMicPointerRelease}
-            className={`bt-utility-rail-btn relative z-10 h-11 w-11 sm:h-13 sm:w-13 rounded-full flex items-center justify-center cursor-pointer select-none touch-none transition-all ${
-              isMicActive ? 'bt-btn-green' : 'bt-btn-white text-slate-700'
+            className={`bt-utility-rail-btn relative z-10 h-11 w-11 rounded-xl flex items-center justify-center cursor-pointer select-none touch-none transition-all ${
+              isMicActive ? 'bt-btn-green' : 'bt-float-circle-cyan'
             } ${speakingRingClass}`}
           >
             {isMicActive ? (
-              <Mic className="h-5 w-5 sm:h-6 sm:w-6 stroke-[2.3]" aria-hidden="true" />
+              <Mic className="h-5 w-5 stroke-[2.2]" aria-hidden="true" />
             ) : (
-              <MicOff className="h-5 w-5 sm:h-6 sm:w-6 stroke-[2.3]" aria-hidden="true" />
+              <MicOff className="h-5 w-5 stroke-[2.2] text-[#525e73]" aria-hidden="true" />
             )}
             {isPttMode && (
-              <span className="pointer-events-none absolute -bottom-1 -right-1 px-1 py-[0.5px] rounded-full bg-sky-600 border border-white text-[8px] font-black text-white leading-tight">
+              <span className="pointer-events-none absolute -bottom-1 -right-1 px-1 py-[0.5px] rounded-md bg-[#182232] border border-white text-[8px] font-black text-white leading-tight">
                 V
               </span>
             )}
             {hasPermissionWarning && (
               <span
                 aria-hidden="true"
-                className="pointer-events-none absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-amber-400 border-2 border-white"
+                className="pointer-events-none absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-amber-400 border border-white"
               />
             )}
           </button>
@@ -458,8 +455,8 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
               if (e.detail > 0) e.currentTarget.blur();
               setPopoverOpen((prev) => !prev);
             }}
-            className={`min-h-[28px] min-w-[44px] px-2 py-0.5 rounded-full text-[10px] font-black flex items-center justify-center gap-0.5 cursor-pointer transition-colors ${
-              popoverOpen ? 'bt-btn-cyan' : 'bt-btn-white text-sky-900'
+            className={`h-7 w-11 px-1.5 rounded-lg text-[10px] font-extrabold flex items-center justify-center gap-0.5 cursor-pointer transition-colors ${
+              popoverOpen ? 'bt-float-circle-active' : 'bg-[#efece4] hover:bg-[#e5e0d4] border border-[#d5cec0] text-[#141c2b]'
             }`}
           >
             <ChevronDown
@@ -468,9 +465,9 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
             />
             <span className="font-mono-num">{remoteParticipants.length}</span>
           </button>
-        </>
+        </div>
       ) : (
-        <div className="inline-flex items-center gap-1 p-1 rounded-full bg-white/95 border-2 border-sky-200 shadow-xs">
+        <div className="bt-segment-well inline-flex items-center gap-1 p-1 rounded-xl">
           <button
             type="button"
             data-testid="bt-voice-mic-btn"
@@ -484,14 +481,14 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
             onPointerUp={handleMicPointerRelease}
             onPointerCancel={handleMicPointerRelease}
             onPointerLeave={handleMicPointerRelease}
-            className={`relative px-3 py-1.5 rounded-full text-xs font-black flex items-center gap-1.5 cursor-pointer select-none touch-none whitespace-nowrap transition-all ${
-              isMicActive ? 'bt-btn-green' : 'bt-btn-white text-slate-700'
+            className={`relative px-2.5 py-1.5 rounded-lg text-xs font-extrabold flex items-center gap-1.5 cursor-pointer select-none touch-none whitespace-nowrap transition-all ${
+              isMicActive ? 'bt-btn-green' : 'bg-white border border-[#d5cec0] text-[#141c2b] hover:bg-[#faf8f3]'
             } ${speakingRingClass}`}
           >
             {isMicActive ? (
-              <Mic className="h-3.5 w-3.5 shrink-0 stroke-[2.4]" aria-hidden="true" />
+              <Mic className="h-3.5 w-3.5 shrink-0 stroke-[2.3]" aria-hidden="true" />
             ) : (
-              <MicOff className="h-3.5 w-3.5 shrink-0 stroke-[2.4]" aria-hidden="true" />
+              <MicOff className="h-3.5 w-3.5 shrink-0 stroke-[2.3] text-[#525e73]" aria-hidden="true" />
             )}
             <span>
               {isPttMode
@@ -522,8 +519,10 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
               if (e.detail > 0) e.currentTarget.blur();
               setPopoverOpen((prev) => !prev);
             }}
-            className={`h-8 px-2.5 rounded-full text-xs font-black flex items-center gap-1 cursor-pointer transition-colors ${
-              popoverOpen ? 'bt-btn-cyan' : 'bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-900'
+            className={`h-8 px-2.5 rounded-lg text-xs font-extrabold flex items-center gap-1 cursor-pointer transition-colors ${
+              popoverOpen
+                ? 'bg-[#182232] text-white'
+                : 'bg-white hover:bg-[#faf8f3] border border-[#d5cec0] text-[#141c2b]'
             }`}
           >
             <Radio className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -547,7 +546,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
         >
           <div className="shrink-0 bt-header-sky px-3.5 py-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 min-w-0">
-              <Mic className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <Mic className="h-4 w-4 text-amber-300 shrink-0" aria-hidden="true" />
               <span className="font-display text-xs font-black uppercase tracking-wide truncate">
                 Thoại Nhóm (Voice)
               </span>
@@ -559,7 +558,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
                 popoverBtnRef.current?.focus();
               }}
               aria-label="Đóng bảng thoại nhóm"
-              className="icon-hit-target h-6 w-6 rounded-full bg-white/25 hover:bg-white/40 text-white text-xs font-bold flex items-center justify-center cursor-pointer shrink-0"
+              className="icon-hit-target h-6 w-6 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center cursor-pointer shrink-0"
             >
               <X className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
@@ -570,15 +569,15 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
               <div
                 role="alert"
                 data-testid="bt-voice-permission-warning"
-                className={`p-2.5 rounded-xl border-2 flex items-start gap-2 ${permissionWarningBanner.toneClass}`}
+                className={`p-2.5 rounded-xl border flex items-start gap-2 ${permissionWarningBanner.toneClass}`}
               >
                 <AlertTriangle
                   className={`h-4 w-4 shrink-0 mt-0.5 ${permissionWarningBanner.iconClass}`}
                   aria-hidden="true"
                 />
                 <div className="min-w-0 space-y-0.5">
-                  <div className="font-black leading-snug">{permissionWarningBanner.title}</div>
-                  <div className="text-[11px] font-semibold leading-snug opacity-90">
+                  <div className="font-extrabold leading-snug">{permissionWarningBanner.title}</div>
+                  <div className="text-[11px] font-medium leading-snug opacity-90">
                     {permissionWarningBanner.detail}
                   </div>
                 </div>
@@ -586,29 +585,29 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
             )}
 
             {/* Input Mode Switcher */}
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between px-0.5">
-                <span className="font-extrabold text-slate-700">Chế độ Micro</span>
+                <span className="font-extrabold text-[#141c2b]">Chế độ Micro</span>
                 <span
-                  className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                  className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md ${
                     isMicActive
-                      ? 'bg-emerald-100 text-emerald-700'
-                      : 'bg-slate-200 text-slate-600'
+                      ? 'bg-emerald-50 border border-emerald-200 text-emerald-700'
+                      : 'bg-[#eae4d6] text-[#525e73]'
                   }`}
                 >
                   {isMicActive ? 'Đang phát' : 'Đang tắt'}
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+              <div className="bt-segment-well grid grid-cols-2 gap-1 p-1 rounded-xl">
                 <button
                   type="button"
                   data-testid="bt-voice-mode-open"
                   aria-pressed={voiceState.inputMode === 'open_mic'}
                   onClick={() => onSetInputMode('open_mic')}
-                  className={`py-1.5 px-2 rounded-xl text-[11px] font-black uppercase transition-all cursor-pointer text-center leading-tight ${
+                  className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold uppercase transition-all cursor-pointer text-center leading-tight ${
                     voiceState.inputMode === 'open_mic'
-                      ? 'bt-btn-cyan'
-                      : 'text-sky-900 hover:bg-white/60'
+                      ? 'bt-segment-active-light'
+                      : 'text-[#4b566a] hover:bg-white/60'
                   }`}
                 >
                   Mở Mic (Open)
@@ -618,34 +617,34 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
                   data-testid="bt-voice-mode-ptt"
                   aria-pressed={voiceState.inputMode === 'push_to_talk'}
                   onClick={() => onSetInputMode('push_to_talk')}
-                  className={`py-1.5 px-2 rounded-xl text-[11px] font-black uppercase transition-all cursor-pointer text-center leading-tight ${
+                  className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold uppercase transition-all cursor-pointer text-center leading-tight ${
                     voiceState.inputMode === 'push_to_talk'
-                      ? 'bt-btn-green'
-                      : 'text-sky-900 hover:bg-white/60'
+                      ? 'bt-segment-active-light ring-1 ring-emerald-500/60 text-emerald-800'
+                      : 'text-[#4b566a] hover:bg-white/60'
                   }`}
                 >
                   Giữ Phím V
                 </button>
               </div>
-              <p className="text-[11px] font-semibold text-slate-500 px-0.5 leading-snug">
+              <p className="text-[10.5px] font-medium text-[#64748b] px-0.5 leading-snug">
                 {voiceState.inputMode === 'push_to_talk'
-                  ? 'Nhấn giữ nút Mic hoặc giữ phím V khi không gõ chữ để nói.'
-                  : 'Nhấn 1 lần nút Mic để bật hoặc tắt Micro. Mặc định tắt khi vào phòng.'}
+                  ? 'Nhấn giữ nút Mic hoặc giữ phím V để nói.'
+                  : 'Nhấn nút Mic để bật hoặc tắt nhanh.'}
               </p>
             </div>
 
             {/* Remote Participants Audio Controls */}
-            <div className="pt-1 border-t border-sky-200 space-y-1.5">
+            <div className="pt-2 border-t border-[#e2dcd0] space-y-1.5">
               <div className="flex items-center justify-between px-0.5">
-                <span className="font-extrabold text-slate-700">
-                  Thành viên khác ({remoteParticipants.length})
+                <span className="font-extrabold text-[#141c2b]">
+                  Thành viên ({remoteParticipants.length})
                 </span>
-                <span className="text-[10px] font-bold text-sky-700">Âm lượng cục bộ</span>
+                <span className="text-[10px] font-semibold text-[#64748b]">Âm lượng</span>
               </div>
 
               {remoteParticipants.length === 0 ? (
-                <div className="p-2.5 rounded-xl bg-sky-50 border border-sky-200 text-[11px] font-semibold text-slate-600 text-center">
-                  Chưa có bạn bè khác trong phòng để điều chỉnh âm thanh.
+                <div className="p-2.5 rounded-xl bg-white border border-[#ded8ca] text-[11px] font-medium text-[#64748b] text-center">
+                  Chưa có bạn bè khác trong phòng.
                 </div>
               ) : (
                 <div className="space-y-1.5">
@@ -662,28 +661,28 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
                         className={`p-2 rounded-xl border transition-colors space-y-1.5 ${
                           isSpeaking
                             ? 'bg-emerald-50/90 border-emerald-300'
-                            : 'bg-sky-50/90 border-sky-200'
+                            : 'bg-white border-[#ded8ca]'
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-1.5 min-w-0">
                             <span
                               aria-hidden="true"
-                              className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                              className={`h-2 w-2 rounded-full shrink-0 ${
                                 isSpeaking
-                                  ? 'bg-emerald-500 ring-2 ring-emerald-300'
+                                  ? 'bg-emerald-500 ring-2 ring-emerald-200'
                                   : !participant.connected
                                     ? 'bg-rose-400'
                                     : participant.micEnabled
-                                      ? 'bg-sky-500'
+                                      ? 'bg-emerald-500'
                                       : 'bg-slate-300'
                               }`}
                             />
-                            <span className="font-extrabold text-slate-900 truncate">
+                            <span className="font-extrabold text-[#141c2b] truncate">
                               {participant.playerName}
                             </span>
                             {participant.role === 'spectator' && (
-                              <span className="px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 text-[9px] font-black uppercase shrink-0">
+                              <span className="px-1.5 py-0.5 rounded-md bg-[#eae4d6] text-[#475569] text-[9px] font-bold uppercase shrink-0">
                                 Khán giả
                               </span>
                             )}
@@ -691,12 +690,12 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
 
                           <div className="flex items-center gap-1.5 shrink-0">
                             <span
-                              className={`text-[10px] font-extrabold ${
+                              className={`text-[10px] font-bold ${
                                 !participant.connected
                                   ? 'text-rose-600'
                                   : participant.micEnabled
                                     ? 'text-emerald-700'
-                                    : 'text-slate-500'
+                                    : 'text-[#788497]'
                               }`}
                             >
                               {!participant.connected
@@ -706,7 +705,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
                                   : 'Mic tắt'}
                             </span>
                             {peer && (
-                              <span className="text-[9px] font-bold text-slate-400 hidden sm:inline">
+                              <span className="text-[9px] font-medium text-[#788497] hidden sm:inline">
                                 · {formatRtcStateLabel(peer.connectionState)}
                               </span>
                             )}
@@ -726,10 +725,10 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
                             onClick={() =>
                               onSetPeerMuted(participant.participantId, !mutedLocally)
                             }
-                            className={`h-7 px-2 rounded-lg border text-[10px] font-black flex items-center gap-1 shrink-0 cursor-pointer transition-colors ${
+                            className={`h-7 px-2 rounded-lg border text-[10px] font-extrabold flex items-center gap-1 shrink-0 cursor-pointer transition-colors ${
                               mutedLocally
-                                ? 'bg-rose-100 border-rose-300 text-rose-700'
-                                : 'bg-white border-sky-200 text-sky-900 hover:bg-sky-100'
+                                ? 'bg-rose-50 border-rose-200 text-rose-700'
+                                : 'bg-[#faf8f3] border-[#d5cec0] text-[#141c2b] hover:bg-[#efece4]'
                             }`}
                           >
                             {mutedLocally ? (
@@ -755,11 +754,11 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
                               )
                             }
                             className={`flex-1 min-w-0 h-1.5 rounded-full cursor-pointer ${
-                              mutedLocally ? 'accent-slate-400 opacity-60' : 'accent-[#0284C7]'
+                              mutedLocally ? 'accent-slate-400 opacity-60' : 'accent-[#182232]'
                             }`}
                           />
 
-                          <span className="font-mono-num text-[10px] font-black text-slate-700 w-8 text-right shrink-0">
+                          <span className="font-mono-num text-[10px] font-bold text-[#334155] w-8 text-right shrink-0">
                             {volumePercent}%
                           </span>
                         </div>
