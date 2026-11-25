@@ -1,4 +1,23 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  BookOpen,
+  Check,
+  Compass,
+  Copy,
+  Crosshair,
+  Download,
+  Hourglass,
+  Link2,
+  LogOut,
+  Play,
+  RotateCcw,
+  Shield,
+  Sparkles,
+  Trophy,
+  X,
+  Zap,
+} from 'lucide-react';
 import { BOARD_TILES, COLOR_GROUP_META } from '../game/boardData';
 import { PostMatchAward, SeriesStandingEntry, TilePingIntent } from '../game/onlineTypes';
 import {
@@ -28,8 +47,6 @@ import {
   TileKind,
   VictoryConditionKind,
 } from '../game/types';
-import { CityLandmarkBadge } from './CityLandmarkBadge';
-import { PlayerAvatar3D } from './PlayerAvatar3D';
 import { resolveDeedGroupPalette } from '../three/textures';
 import { waitForGameFonts } from '../utils/fontLoader';
 import {
@@ -38,6 +55,9 @@ import {
   renderVictoryCardCanvas,
   type VictoryCardExportData,
 } from '../utils/victoryCardExport';
+import { CityLandmarkBadge } from './CityLandmarkBadge';
+import { BuildingLevelVisual, GroupProgressDots } from './GameUiPrimitives';
+import { PlayerAvatar3D } from './PlayerAvatar3D';
 
 function getFocusableElements(container: HTMLElement): HTMLElement[] {
   const selector = [
@@ -221,22 +241,22 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
 
   const statusNotes: string[] = [];
   if (tile.kind === TileKind.RESORT) {
-    statusNotes.push('Khu nghỉ dưỡng · Miễn nhiễm Mua lại');
+    statusNotes.push('Khu nghỉ dưỡng · Miễn mua lại');
   } else if (prop && prop.level >= 4) {
     statusNotes.push('Khách sạn ★ (Miễn mua lại & Động đất)');
   }
-  if (isShielded) statusNotes.push('🛡️ Khiên Bảo Hộ (Miễn mua lại & chặn 1 đòn phá hoại)');
-  if (isOutage) statusNotes.push('⚡ Đang mất điện (Thuê 0K lượt ghé tới)');
+  if (isShielded) statusNotes.push('Khiên Bảo Hộ (Chặn mua lại & 1 đòn phá hoại)');
+  if (isOutage) statusNotes.push('Đang mất điện (Thuê 0K lượt ghé tới)');
   if (hasColorMono) statusNotes.push('Độc quyền bộ màu (×2)');
-  if (isFestival) statusNotes.push('🎉 Lễ Hội (×2)');
-  if (isCup) statusNotes.push(`🏆 Cúp Quốc Gia (×${cupMult})`);
+  if (isFestival) statusNotes.push('Lễ Hội (×2)');
+  if (isCup) statusNotes.push(`Cúp Quốc Gia (×${cupMult})`);
 
   const headerPal =
     tile.kind === TileKind.PROPERTY
       ? resolveDeedGroupPalette(tile.group, tile.groupColor)
       : {
-          topHex: tile.kind === TileKind.RESORT ? '#22B8F8' : '#38BDF8',
-          bottomHex: tile.kind === TileKind.RESORT ? '#0284C7' : '#0369A1',
+          topHex: tile.kind === TileKind.RESORT ? '#0284C7' : '#1F2B3D',
+          bottomHex: tile.kind === TileKind.RESORT ? '#0369A1' : '#141C29',
         };
 
   return (
@@ -244,31 +264,31 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
       data-testid="tile-inspector-card"
       role="region"
       aria-label={`Thông tin ${tile.name}`}
-      className="fixed left-3 sm:left-4 top-1/2 -translate-y-1/2 z-25 w-[min(320px,calc(100vw-1.5rem))] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      className="fixed left-3 sm:left-4 top-1/2 -translate-y-1/2 z-25 w-[min(320px,calc(100vw-1.5rem))] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
     >
       <div
-        className="shrink-0 px-4 py-3 flex items-center justify-between gap-2.5 text-white border-b-2 border-white/50"
+        className="shrink-0 px-4 py-3 flex items-center justify-between gap-2.5 text-white border-b border-black/15"
         style={{
-          background: `linear-gradient(to bottom var(--in-oklab), ${
+          background: `linear-gradient(180deg, ${
             owner?.color || headerPal.topHex
           } 0%, ${owner?.color || headerPal.bottomHex} 100%)`,
-          textShadow: '0 1.5px 2px rgba(15, 23, 42, 0.45)',
+          textShadow: '0 1px 2px rgba(15, 23, 42, 0.4)',
         }}
       >
         <div className="flex items-center gap-2.5 min-w-0">
-          <CityLandmarkBadge tileIndex={tileIndex} size={44} />
+          <CityLandmarkBadge tileIndex={tileIndex} size={42} />
           <div className="min-w-0">
             {tile.groupLabel && (
-              <div className="text-[10px] font-black uppercase tracking-wider text-white/90">
+              <div className="text-[10px] font-extrabold uppercase tracking-wider text-white/90">
                 Cụm {tile.groupLabel}
               </div>
             )}
             {tile.kind === TileKind.RESORT && (
-              <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
+              <div className="text-[10px] font-extrabold uppercase tracking-wider text-amber-200">
                 Khu Nghỉ Dưỡng Đảo / Vịnh
               </div>
             )}
-            <h3 className="font-display text-lg font-black uppercase leading-snug text-white">
+            <h3 className="font-display text-lg font-black uppercase leading-snug text-white truncate">
               {tile.name}
             </h3>
           </div>
@@ -277,33 +297,33 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
           type="button"
           onClick={onClose}
           aria-label="Đóng thông tin ô đất"
-          className="icon-hit-target h-7 w-7 rounded-full bg-black/25 hover:bg-black/40 flex items-center justify-center text-white text-xs font-black cursor-pointer shrink-0"
+          className="icon-hit-target h-7 w-7 rounded-full bg-black/25 hover:bg-black/40 flex items-center justify-center text-white cursor-pointer shrink-0"
         >
-          ✕
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 space-y-3 text-sm text-slate-800">
-        <p className="text-xs text-slate-600 leading-relaxed">{tile.description}</p>
+      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3.5 space-y-3 text-sm text-[#141c2b]">
+        <p className="text-xs text-[#525e73] leading-relaxed">{tile.description}</p>
 
         {statusNotes.length > 0 && (
-          <div className="text-[11px] font-extrabold text-[#16A34A] leading-snug">
+          <div className="px-2.5 py-1.5 rounded-lg bg-[#efece4] border border-[#dcd5c6] text-[11px] font-bold text-[#141c2b] leading-snug">
             {statusNotes.join(' · ')}
           </div>
         )}
 
         {prop && (
-          <div className="flex items-center justify-between py-2 border-y border-sky-100 text-xs">
+          <div className="flex items-center justify-between py-2 border-y border-[#e2dcd0] text-xs">
             <div>
-              <span className="text-slate-500 font-semibold">Giá gốc: </span>
-              <span className="font-mono-num font-black text-slate-900">
+              <span className="text-[#525e73] font-medium">Giá gốc: </span>
+              <span className="font-mono-num font-black text-[#141c2b]">
                 {formatBusinessTourCompact(tile.price || 0)}
               </span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-500 font-semibold">Chủ:</span>
+              <span className="text-[#525e73] font-medium">Chủ:</span>
               {owner ? (
-                <span className="font-extrabold text-slate-900 flex items-center gap-1.5">
+                <span className="font-extrabold text-[#141c2b] flex items-center gap-1.5">
                   <PlayerAvatar3D
                     archetype={owner.tokenType}
                     phaseSeed={owner.id}
@@ -312,21 +332,21 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
                   {owner.name}
                 </span>
               ) : (
-                <span className="font-extrabold text-[#16A34A]">Chưa có chủ</span>
+                <span className="font-extrabold text-emerald-700">Chưa có chủ</span>
               )}
             </div>
           </div>
         )}
 
         {tile.kind === TileKind.PROPERTY && tile.rents && (
-          <div className="rounded-2xl bg-sky-50/90 border border-sky-200 overflow-hidden text-xs">
-            <div className="id-subheader-strip px-3 py-1.5 font-extrabold text-[11px] uppercase flex items-center justify-between">
+          <div className="rounded-xl bg-[#f3efe6] border border-[#dad3c4] overflow-hidden text-xs">
+            <div className="id-subheader-strip px-3 py-1.5 font-extrabold text-[10.5px] uppercase tracking-wide flex items-center justify-between">
               <span>Bảng Phí Thuê</span>
               {totalPropertyMult > 1 && (
-                <span className="text-[#16A34A]">×{totalPropertyMult} Tổng Hệ Số</span>
+                <span className="text-emerald-700">×{totalPropertyMult} Hệ Số</span>
               )}
             </div>
-            <div className="p-2 space-y-0.5">
+            <div className="p-2 space-y-0.5 bg-white/70">
               {[
                 {
                   label: 'Đất khởi điểm',
@@ -358,8 +378,8 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
                   key={idx}
                   className={`flex items-center justify-between py-1 px-2 rounded-lg ${
                     row.active
-                      ? 'bg-[#F5B800]/25 text-slate-950 font-black'
-                      : 'text-slate-700 font-medium'
+                      ? 'bg-amber-100/90 border border-amber-300 text-[#141c2b] font-black'
+                      : 'text-[#475569] font-medium'
                   }`}
                 >
                   <span>{row.label}</span>
@@ -368,17 +388,17 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
                   </span>
                 </div>
               ))}
-              <div className="pt-1.5 mt-1 border-t border-sky-200 px-2 space-y-0.5 text-[11px] text-slate-600">
+              <div className="pt-1.5 mt-1 border-t border-[#e2dcd0] px-2 space-y-0.5 text-[11px] text-[#525e73]">
                 <div className="flex items-center justify-between">
                   <span>Giá xây mỗi cấp</span>
-                  <span className="font-mono-num font-extrabold text-slate-900">
+                  <span className="font-mono-num font-extrabold text-[#141c2b]">
                     {formatBusinessTourCompact(tile.houseCost || 0)}
                   </span>
                 </div>
                 {prop && prop.ownerId !== null && prop.level < 4 && !isShielded && (
                   <div className="flex items-center justify-between">
                     <span>Giá mua lại (2×)</span>
-                    <span className="font-mono-num font-extrabold text-[#D97706]">
+                    <span className="font-mono-num font-extrabold text-amber-700">
                       {formatBusinessTourCompact(calculateBuyoutPrice(tileIndex, prop.level))}
                     </span>
                   </div>
@@ -389,16 +409,18 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
         )}
 
         {tile.kind === TileKind.RESORT && (
-          <div className="rounded-2xl bg-sky-50/90 border border-sky-200 overflow-hidden text-xs">
-            <div className="id-subheader-strip px-3 py-1.5 font-extrabold text-[11px] uppercase flex items-center justify-between">
+          <div className="rounded-xl bg-[#f3efe6] border border-[#dad3c4] overflow-hidden text-xs">
+            <div className="id-subheader-strip px-3 py-1.5 font-extrabold text-[10.5px] uppercase tracking-wide flex items-center justify-between">
               <span>Phí Thuê Khu Nghỉ Dưỡng</span>
               {isOutage ? (
-                <span className="text-rose-600">⚡ Mất Điện · 0K</span>
+                <span className="text-rose-600 inline-flex items-center gap-0.5">
+                  <Zap className="h-3 w-3" aria-hidden="true" /> Mất Điện · 0K
+                </span>
               ) : (
-                <span className="text-[#0284C7]">4/4 Thắng Ngay</span>
+                <span className="text-[#141c2b]">4/4 Thắng Ngay</span>
               )}
             </div>
-            <div className="p-2 space-y-0.5">
+            <div className="p-2 space-y-0.5 bg-white/70">
               {RESORT_RENTS.map((rentVal, idx) => {
                 const countNeeded = idx + 1;
                 const active = ownedResortsByOwner === countNeeded;
@@ -408,8 +430,8 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
                     key={countNeeded}
                     className={`flex items-center justify-between py-1 px-2 rounded-lg ${
                       active
-                        ? 'bg-[#F5B800]/25 text-slate-950 font-black'
-                        : 'text-slate-700 font-medium'
+                        ? 'bg-amber-100/90 border border-amber-300 text-[#141c2b] font-black'
+                        : 'text-[#475569] font-medium'
                     }`}
                   >
                     <span>Sở hữu {countNeeded} Khu nghỉ dưỡng</span>
@@ -424,19 +446,20 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
         )}
 
         {tile.kind === TileKind.TAX && (
-          <div className="rounded-2xl bg-rose-50 border border-rose-200 p-3 text-xs font-bold text-rose-900 leading-relaxed">
+          <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs font-semibold text-rose-900 leading-relaxed">
             Thuế bằng <span className="font-black">10% tổng giá trị vốn</span> toàn bộ thành phố và khu nghỉ dưỡng bạn đang sở hữu.
           </div>
         )}
       </div>
 
       {canPingTile && onPingTile && (
-        <div className="shrink-0 px-3 py-2.5 bg-sky-50/95 border-t border-sky-200 space-y-1.5">
-          <div className="flex items-center justify-between px-0.5 text-[10px] font-black uppercase tracking-wide text-sky-900">
+        <div className="shrink-0 px-3 py-2.5 bg-[#f3efe6] border-t border-[#dad3c4] space-y-1.5">
+          <div className="flex items-center justify-between px-0.5 text-[10px] font-extrabold uppercase tracking-wide text-[#525e73]">
             <span>Ping công khai trên bàn cờ</span>
             {isOnPingCooldown && (
-              <span className="font-mono-num text-amber-700">
-                ⏳ {pingCooldownSecondsLeft}s
+              <span className="font-mono-num text-amber-700 inline-flex items-center gap-0.5">
+                <Hourglass className="h-3 w-3" aria-hidden="true" />
+                <span>{pingCooldownSecondsLeft}s</span>
               </span>
             )}
           </div>
@@ -446,27 +469,30 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
               data-testid="bt-tile-ping-TARGET"
               disabled={isOnPingCooldown}
               onClick={() => onPingTile(tileIndex, 'TARGET')}
-              className="bt-btn-cyan py-1.5 px-1.5 rounded-xl text-[11px] font-black leading-tight text-center disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
+              className="bt-btn-white py-1.5 px-1.5 rounded-xl text-[10.5px] font-extrabold leading-tight flex items-center justify-center gap-1 disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
             >
-              🎯 Nhắm ô này
+              <Crosshair className="h-3.5 w-3.5 text-sky-600 shrink-0" aria-hidden="true" />
+              <span>Nhắm ô này</span>
             </button>
             <button
               type="button"
               data-testid="bt-tile-ping-DANGER"
               disabled={isOnPingCooldown}
               onClick={() => onPingTile(tileIndex, 'DANGER')}
-              className="id-btn-crimson py-1.5 px-1.5 rounded-xl text-[11px] font-black leading-tight text-center disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
+              className="bt-btn-white py-1.5 px-1.5 rounded-xl text-[10.5px] font-extrabold leading-tight flex items-center justify-center gap-1 disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
             >
-              ⚠️ Coi chừng
+              <AlertTriangle className="h-3.5 w-3.5 text-rose-600 shrink-0" aria-hidden="true" />
+              <span>Coi chừng</span>
             </button>
             <button
               type="button"
               data-testid="bt-tile-ping-TROPHY"
               disabled={isOnPingCooldown}
               onClick={() => onPingTile(tileIndex, 'TROPHY')}
-              className="bt-btn-gold text-slate-950 py-1.5 px-1.5 rounded-xl text-[11px] font-black leading-tight text-center disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
+              className="bt-btn-white py-1.5 px-1.5 rounded-xl text-[10.5px] font-extrabold leading-tight flex items-center justify-center gap-1 disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
             >
-              🏆 Đặt Cúp đây
+              <Trophy className="h-3.5 w-3.5 text-amber-600 shrink-0" aria-hidden="true" />
+              <span>Đặt Cúp đây</span>
             </button>
           </div>
         </div>
@@ -476,7 +502,7 @@ export const TileInspectorCard: React.FC<TileInspectorProps> = ({
 };
 
 /* ==========================================
- * 2. BUY UNOWNED PROPERTY / RESORT DECISION PROMPT
+ * 2. AUTHENTIC TITLE DEED ("SỔ ĐỎ") BUY MODAL
  * ========================================== */
 interface BuyDecisionModalProps {
   tileIndex: number;
@@ -528,31 +554,39 @@ export const BuyDecisionModal: React.FC<BuyDecisionModalProps> = ({
     return new Set([player.id]);
   }, [matchMode, player.id, player.teamId, players]);
 
-  let groupInfo = '';
+  let groupLabel = '';
+  let ownedInSet = 0;
+  let totalInSet = 0;
+  let setColorHex = tile.groupColor || '#0284C7';
   let completesMono = false;
   let ownedResortsCount = 0;
+
   if (tile.group) {
     const groupMeta = COLOR_GROUP_META[tile.group];
-    const ownedInGroup = groupMeta.tileIndices.filter((idx) => {
+    ownedInSet = groupMeta.tileIndices.filter((idx) => {
       const oid = properties[idx]?.ownerId;
       return oid !== null && oid !== undefined && teamOwnerIds.has(oid);
     }).length;
-    completesMono = ownedInGroup === groupMeta.tileIndices.length - 1;
-    groupInfo = `Cụm ${groupMeta.label} (${ownedInGroup}/${groupMeta.tileIndices.length})`;
+    totalInSet = groupMeta.tileIndices.length;
+    completesMono = ownedInSet === totalInSet - 1;
+    groupLabel = `Cụm ${groupMeta.label}`;
   } else if (tile.kind === TileKind.RESORT) {
     ownedResortsCount = RESORT_TILE_INDICES.filter((idx) => {
       const oid = properties[idx]?.ownerId;
       return oid !== null && oid !== undefined && teamOwnerIds.has(oid);
     }).length;
+    ownedInSet = ownedResortsCount;
+    totalInSet = 4;
+    setColorHex = '#0284C7';
     completesMono = ownedResortsCount === RESORT_TILE_INDICES.length - 1;
-    groupInfo = `Khu nghỉ dưỡng (${ownedResortsCount}/4)`;
+    groupLabel = 'Khu nghỉ dưỡng';
   }
 
   const instantWin = wouldOwnTileWinMatch(player.id, tileIndex, players, properties, matchMode);
   const isFestival = boardModifiers.festivalTileIndices.includes(tileIndex);
   const buyPal = isBtCity
     ? resolveDeedGroupPalette(tile.group, tile.groupColor)
-    : { topHex: '#22B8F8', bottomHex: '#0284C7' };
+    : { topHex: '#0284C7', bottomHex: '#0369A1' };
 
   return (
     <div
@@ -562,85 +596,101 @@ export const BuyDecisionModal: React.FC<BuyDecisionModalProps> = ({
       aria-modal="true"
       aria-labelledby="buy-modal-title"
       data-testid="buy-decision-modal"
-      className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-25 w-[min(460px,93vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-25 w-[min(470px,93vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
     >
+      {/* Title Deed Color Band Header (Zero Redundant Price Box) */}
       <div
-        className="shrink-0 px-5 py-3.5 text-white border-b-2 border-white/50 flex items-center justify-between gap-2.5"
+        className="shrink-0 px-5 py-3.5 text-white border-b border-black/15 flex items-center justify-between gap-3"
         style={{
-          background: `linear-gradient(to bottom var(--in-oklab), ${buyPal.topHex} 0%, ${buyPal.bottomHex} 100%)`,
-          textShadow: '0 1.5px 2px rgba(15, 23, 42, 0.45)',
+          background: `linear-gradient(180deg, ${buyPal.topHex} 0%, ${buyPal.bottomHex} 100%)`,
+          textShadow: '0 1px 2px rgba(15, 23, 42, 0.42)',
         }}
       >
         <div className="flex items-center gap-3 min-w-0">
-          <CityLandmarkBadge tileIndex={tileIndex} size={50} />
+          <CityLandmarkBadge tileIndex={tileIndex} size={46} />
           <div className="min-w-0">
-            <div className="text-[10px] font-black uppercase tracking-wider text-white/90">
-              {isBtCity ? `Mua Đô Thị · Vòng ${player.laps + 1}` : 'Mua Khu Nghỉ Dưỡng'}
+            <div className="text-[10px] font-extrabold uppercase tracking-wider text-white/90">
+              {isBtCity ? `Sổ Địa Ốc · Vòng ${player.laps + 1}` : 'Sổ Khu Nghỉ Dưỡng'}
             </div>
             <h3
               id="buy-modal-title"
-              className="font-display text-xl sm:text-2xl font-black uppercase leading-tight text-white"
+              className="font-display text-xl sm:text-2xl font-black uppercase leading-tight text-white truncate"
             >
               {tile.name}
             </h3>
           </div>
         </div>
-        <div className="text-right shrink-0 bg-black/20 rounded-xl px-3 py-1.5 border border-white/30">
-          <div className="text-[9px] font-bold uppercase text-white/90">Tổng chi phí</div>
-          <div className="font-mono-num text-base sm:text-lg font-black leading-none">
-            {formatBusinessTourCompact(totalCost)}
+        <div className="shrink-0 text-right">
+          <div className="text-[10px] font-bold uppercase text-white/85">Giá đất gốc</div>
+          <div className="font-mono-num text-base sm:text-lg font-black leading-none text-white">
+            {formatBusinessTourCompact(price)}
           </div>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 sm:p-5 space-y-3.5">
-        {groupInfo && (
-          <div className="flex flex-wrap items-center gap-1.5 text-xs font-extrabold text-sky-900">
-            <span>{groupInfo}</span>
-            {isFestival && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="text-[#D97706] font-black">🎉 Lễ Hội ×2!</span>
-              </>
-            )}
-            {instantWin ? (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="text-[#16A34A] font-black">
-                  🏆 Mua ô này THẮNG NGAY!
+      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 sm:p-5 space-y-3">
+        {/* Set Progress Dots + Strategic Badges */}
+        {groupLabel && (
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#e6e0d3]">
+            <div className="flex items-center gap-2 text-xs font-extrabold text-[#141c2b]">
+              <GroupProgressDots
+                ownedCount={ownedInSet}
+                totalCount={totalInSet}
+                colorHex={setColorHex}
+              />
+              <span>
+                {groupLabel} ({ownedInSet}/{totalInSet})
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {isFestival && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-300 text-[10.5px] font-extrabold text-amber-800">
+                  <Sparkles className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  <span>Lễ Hội ×2</span>
                 </span>
-              </>
-            ) : (
-              completesMono && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span className="text-[#16A34A] font-black">
+              )}
+              {instantWin ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-300 text-[10.5px] font-black text-emerald-700">
+                  <Trophy className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  <span>Mua ô này THẮNG NGAY!</span>
+                </span>
+              ) : (
+                completesMono && (
+                  <span className="px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-300 text-[10.5px] font-black text-emerald-700">
                     {tile.kind === TileKind.RESORT ? 'Đủ 4/4 THẮNG NGAY!' : 'Đủ bộ màu ×2!'}
                   </span>
-                </>
-              )
-            )}
+                )
+              )}
+            </div>
           </div>
         )}
-        <p className="text-xs text-slate-600 leading-relaxed">{tile.description}</p>
+
+        <p className="text-xs text-[#525e73] leading-relaxed">{tile.description}</p>
 
         {tile.kind === TileKind.RESORT && (
-          <div className="px-3.5 py-2 rounded-2xl bg-sky-50 border border-sky-200 flex items-center justify-between text-xs">
-            <span className="font-bold text-slate-700">Phí thuê sau khi sở hữu</span>
-            <span className="font-mono-num font-black text-[#16A34A]">
+          <div className="px-3.5 py-2.5 rounded-xl bg-[#f3efe6] border border-[#dad3c4] flex items-center justify-between text-xs">
+            <span className="font-bold text-[#334155]">Phí thuê sau khi sở hữu</span>
+            <span className="font-mono-num font-black text-emerald-700 text-sm">
               {formatBusinessTourCompact(RESORT_RENTS[Math.min(3, ownedResortsCount)])}
             </span>
           </div>
         )}
 
+        {/* Symmetrical Construction Tier Row (Zero Orphan Grid Cell, Preserves Lap-1 No-3-House Rule) */}
         {isBtCity && tile.rents && (
           <div className="space-y-2">
-            <div className="text-xs font-bold text-slate-700">
-              {player.laps === 0
-                ? 'Vòng 1 cho phép xây tối đa 2 Nhà (qua Bắt Đầu mở Cấp 3):'
-                : 'Chọn cấp công trình xây ngay (Ghé lại thành phố đã có 3 Nhà để nâng lên Khách sạn ★):'}
+            <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#525e73]">
+              <span>Chọn quy mô xây dựng</span>
+              {player.laps === 0 && (
+                <span className="text-[#788497]">Vòng 2 mở khóa xây cấp 3</span>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div
+              className={`grid gap-2 ${
+                tiers.length <= 3 ? 'grid-cols-3' : 'grid-cols-2 sm:grid-cols-4'
+              }`}
+            >
               {tiers.map((t) => {
                 const isSelected = selectedLevel === t.level;
                 const rentVal =
@@ -651,23 +701,22 @@ export const BuyDecisionModal: React.FC<BuyDecisionModalProps> = ({
                     type="button"
                     disabled={!t.affordable}
                     onClick={() => setSelectedLevel(t.level)}
-                    className={`p-2.5 rounded-2xl border-2 text-left transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                    className={`p-2.5 rounded-xl border text-center flex flex-col items-center gap-1 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                       isSelected
-                        ? 'bg-emerald-50 border-[#58B916] shadow-sm scale-[1.01]'
-                        : 'bg-sky-50/70 border-sky-200 hover:border-sky-400'
+                        ? 'bg-emerald-50 border-emerald-600 ring-2 ring-emerald-500/25 shadow-xs'
+                        : 'bg-white border-[#ded8ca] hover:border-[#b7ae9c]'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="font-display text-xs sm:text-sm font-black text-slate-900">
-                        {t.label}
-                      </span>
-                      <span className="font-mono-num text-xs sm:text-sm font-black text-sky-800">
-                        {formatBusinessTourCompact(t.totalCost)}
-                      </span>
-                    </div>
-                    <div className="font-mono-num text-[11px] font-extrabold text-[#16A34A] mt-0.5">
-                      Thuê: {formatBusinessTourCompact(rentVal)}
-                    </div>
+                    <BuildingLevelVisual level={t.level} className="h-6 w-7 shrink-0" />
+                    <span className="font-display text-xs font-black text-[#141c2b] leading-tight">
+                      {t.label}
+                    </span>
+                    <span className="font-mono-num text-xs font-black text-[#182232]">
+                      {formatBusinessTourCompact(t.totalCost)}
+                    </span>
+                    <span className="font-mono-num text-[10.5px] font-bold text-emerald-700">
+                      Thuê {formatBusinessTourCompact(rentVal)}
+                    </span>
                   </button>
                 );
               })}
@@ -676,12 +725,12 @@ export const BuyDecisionModal: React.FC<BuyDecisionModalProps> = ({
         )}
       </div>
 
-      <div className="shrink-0 px-4 sm:px-5 py-3 bg-sky-50/95 border-t border-sky-200 grid grid-cols-2 gap-2.5">
+      <div className="shrink-0 px-4 sm:px-5 py-3 bg-[#f3efe6] border-t border-[#dad3c4] grid grid-cols-2 gap-2.5">
         <button
           type="button"
           disabled={!canAfford}
           onClick={() => onBuy(isBtCity ? selectedLevel : 0)}
-          className="bt-btn-green py-2.5 px-2.5 sm:px-4 rounded-2xl disabled:opacity-40 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+          className="bt-btn-green py-2.5 px-3 rounded-xl disabled:opacity-40 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
         >
           {canAfford
             ? `Mua Ngay (${formatBusinessTourCompact(totalCost)})`
@@ -690,7 +739,7 @@ export const BuyDecisionModal: React.FC<BuyDecisionModalProps> = ({
         <button
           type="button"
           onClick={onSkip}
-          className="bt-btn-white py-2.5 px-2.5 sm:px-4 rounded-2xl font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+          className="bt-btn-white py-2.5 px-3 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
         >
           Bỏ Qua
         </button>
@@ -700,8 +749,8 @@ export const BuyDecisionModal: React.FC<BuyDecisionModalProps> = ({
 };
 
 /* ==========================================
- * 3. FULL-SCREEN ILLUSTRATED BUSINESS TOUR EVENT POPUP
- * ============================================================================ */
+ * 3. ILLUSTRATED EVENT CARD MODAL
+ * ========================================== */
 interface LuckCardModalProps {
   card: LuckCard;
   isBot: boolean;
@@ -712,12 +761,11 @@ interface LuckCardModalProps {
 const EventCartoonIllustration: React.FC<{ card: LuckCard }> = ({ card }) => {
   const kind = card.effect.type;
 
-  // 1. World Championships Trophy Cartoon Scene
   if (kind === 'HOST_CHAMPIONSHIP') {
     return (
       <svg
         viewBox="0 0 280 200"
-        className="w-56 sm:w-64 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
+        className="w-52 sm:w-60 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
         role="img"
         aria-label={card.title}
       >
@@ -739,12 +787,11 @@ const EventCartoonIllustration: React.FC<{ card: LuckCard }> = ({ card }) => {
     );
   }
 
-  // 2. Lost Island / Go To Jail Tropical Cartoon Scene
   if (kind === 'GO_TO_JAIL') {
     return (
       <svg
         viewBox="0 0 280 200"
-        className="w-56 sm:w-64 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
+        className="w-52 sm:w-60 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
         role="img"
         aria-label={card.title}
       >
@@ -762,12 +809,11 @@ const EventCartoonIllustration: React.FC<{ card: LuckCard }> = ({ card }) => {
     );
   }
 
-  // 3. World Tour / Move Travel Cartoon Scene
   if (kind === 'MOVE_TO' || kind === 'GO_TO_WORLD_TOUR') {
     return (
       <svg
         viewBox="0 0 280 200"
-        className="w-56 sm:w-64 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
+        className="w-52 sm:w-60 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
         role="img"
         aria-label={card.title}
       >
@@ -787,12 +833,11 @@ const EventCartoonIllustration: React.FC<{ card: LuckCard }> = ({ card }) => {
     );
   }
 
-  // 4. Penalty / Tax / Earthquake / Outage Alert Cartoon Scene
   if (kind === 'PAY_CASH' || kind === 'EARTHQUAKE' || kind === 'POWER_OUTAGE') {
     return (
       <svg
         viewBox="0 0 280 200"
-        className="w-56 sm:w-64 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
+        className="w-52 sm:w-60 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
         role="img"
         aria-label={card.title}
       >
@@ -813,11 +858,10 @@ const EventCartoonIllustration: React.FC<{ card: LuckCard }> = ({ card }) => {
     );
   }
 
-  // 5. Default Treasure Chest / Cash Jackpot / Escape Card Cartoon Scene
   return (
     <svg
       viewBox="0 0 280 200"
-      className="w-56 sm:w-64 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
+      className="w-52 sm:w-60 h-auto mx-auto drop-shadow-[0_12px_20px_rgba(15,23,42,0.35)]"
       role="img"
       aria-label={card.title}
     >
@@ -875,9 +919,9 @@ export const LuckCardModal: React.FC<LuckCardModalProps> = ({
         aria-labelledby="luck-card-title"
         className="bt-luck-card-dialog w-full max-w-lg shrink-0 my-auto flex flex-col items-center text-center animate-pop-in"
       >
-        <div className="bt-luck-card-badge mb-2 px-4 py-1 rounded-full bg-white/95 border-2 border-[#F5B800] shadow-md">
-          <span className="font-display text-xs font-black uppercase tracking-widest text-[#B45309]">
-            ★ Sự Kiện Cơ Hội ★
+        <div className="bt-luck-card-badge mb-2 px-4 py-1 rounded-full bg-[#182232] border border-amber-400/70 shadow-md">
+          <span className="font-display text-[11px] font-black uppercase tracking-widest text-amber-300">
+            Sự Kiện Cơ Hội
           </span>
         </div>
 
@@ -887,34 +931,20 @@ export const LuckCardModal: React.FC<LuckCardModalProps> = ({
 
         <div className="bt-luck-card-body relative -mt-4 w-full max-w-md px-3">
           <div
-            aria-hidden="true"
-            className="hidden sm:block absolute -left-2 top-4 h-12 w-8 -z-10 rounded-l-md bg-[#F3D088] border-2 border-[#B45309]"
-            style={{ clipPath: 'polygon(0 0, 100% 0, 100% 100%, 0 100%, 30% 50%)' }}
-          />
-          <div
-            aria-hidden="true"
-            className="hidden sm:block absolute -right-2 top-4 h-12 w-8 -z-10 rounded-r-md bg-[#F3D088] border-2 border-[#B45309]"
-            style={{ clipPath: 'polygon(0 0, 100% 0, 70% 50%, 100% 100%, 0 100%)' }}
-          />
-
-          <div
-            className="bt-luck-card-box rounded-2xl px-6 py-4 border-[3px] border-[#D97706] shadow-[0_14px_30px_rgba(15,23,42,0.42),inset_0_2px_0_#FFFFFF]"
+            className="bt-luck-card-box rounded-2xl px-6 py-4 border-2 border-[#d97706] shadow-[0_16px_32px_rgba(20,28,43,0.42),inset_0_1px_0_#FFFFFF]"
             style={{
-              background: 'linear-gradient(180deg, #FFFDF2 0%, #FDE68A 100%)',
+              background: 'linear-gradient(180deg, #FDFCFA 0%, #FEF3C7 100%)',
             }}
           >
             <h3
               id="luck-card-title"
               className={`font-display text-xl sm:text-2xl font-black uppercase tracking-wide leading-tight ${
-                isNegative ? 'text-[#DC2626]' : 'text-[#EA580C]'
+                isNegative ? 'text-rose-700' : 'text-[#b45309]'
               }`}
-              style={{
-                textShadow: '0 1px 0 rgba(255,255,255,0.9)',
-              }}
             >
               {card.title}
             </h3>
-            <p className="mt-1.5 text-sm sm:text-[15px] font-bold text-[#451A03] leading-snug">
+            <p className="mt-1.5 text-sm sm:text-[15px] font-semibold text-[#334155] leading-snug">
               {card.description}
             </p>
           </div>
@@ -922,8 +952,9 @@ export const LuckCardModal: React.FC<LuckCardModalProps> = ({
 
         <div className="bt-luck-card-cta mt-4 w-full max-w-xs space-y-2">
           {isBot ? (
-            <div className="px-5 py-2.5 rounded-full bg-slate-900/75 border-2 border-white/60 text-xs font-extrabold text-white shadow-lg">
-              ⏳ Đang thực hiện thẻ sự kiện...
+            <div className="px-5 py-2.5 rounded-full bg-[#182232]/90 border border-white/25 text-xs font-extrabold text-white inline-flex items-center justify-center gap-1.5 shadow-lg">
+              <Hourglass className="h-3.5 w-3.5 text-amber-300 shrink-0" aria-hidden="true" />
+              <span>Đang thực hiện thẻ sự kiện...</span>
             </div>
           ) : (
             <button
@@ -1035,7 +1066,7 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
   return (
     <div
       data-testid="asset-management-modal"
-      className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-4 bg-slate-950/42 pointer-events-auto"
+      className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-4 bg-slate-950/48 pointer-events-auto"
     >
       <div
         ref={dialogRef}
@@ -1043,7 +1074,7 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
         role="dialog"
         aria-modal="true"
         aria-labelledby="asset-modal-title"
-        className="w-full max-w-2xl bt-casual-modal rounded-3xl overflow-hidden animate-pop-in flex flex-col max-h-[calc(100dvh-1.5rem)]"
+        className="w-full max-w-2xl bt-casual-modal rounded-2xl overflow-hidden animate-pop-in flex flex-col max-h-[calc(100dvh-1.5rem)]"
       >
         <div
           className={`shrink-0 px-5 sm:px-6 py-3.5 sm:py-4 flex items-center justify-between gap-2 ${
@@ -1059,9 +1090,9 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
                 ? 'Chọn Thành Phố Để Bán Trả Nợ (Hoàn 100%)'
                 : 'Danh Mục Bất Động Sản'}
             </h3>
-            <p className="text-xs font-bold text-white/90 mt-0.5">
+            <p className="text-xs font-semibold text-white/85 mt-0.5">
               Tiền mặt hiện có của {player.name}:{' '}
-              <span className="font-mono-num font-black text-[#FEF08A]">
+              <span className="font-mono-num font-black text-amber-300">
                 {formatBusinessTourSpaced(player.cash)}
               </span>
             </p>
@@ -1071,31 +1102,30 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
               type="button"
               onClick={onClose}
               aria-label="Đóng bảng tài sản"
-              className="icon-hit-target h-8 w-8 rounded-full bg-white/20 hover:bg-white/35 flex items-center justify-center text-white font-black cursor-pointer shrink-0"
+              className="icon-hit-target h-8 w-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white cursor-pointer shrink-0"
             >
-              ✕
+              <X className="h-4 w-4" aria-hidden="true" />
             </button>
           )}
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto slim-scroll flex flex-col">
-          {/* Debt Status Bar */}
           {pendingDebt && (
-            <div className="shrink-0 px-5 sm:px-6 py-3 bg-rose-50 border-b border-rose-200 space-y-2.5">
+            <div className="shrink-0 px-5 sm:px-6 py-3 bg-rose-50/90 border-b border-rose-200 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div className="text-rose-950 font-semibold">
                   <strong className="font-black">{pendingDebt.reason}:</strong> Cần trả{' '}
-                  <span className="font-mono-num font-black text-rose-600">
+                  <span className="font-mono-num font-black text-rose-700">
                     {formatBusinessTourSpaced(pendingDebt.amount)}
                   </span>
                 </div>
                 <div className="flex items-center gap-3 font-black">
                   {shortfall > 0 ? (
-                    <span className="text-rose-600">
+                    <span className="text-rose-700">
                       Còn thiếu: <span className="font-mono-num">{formatBusinessTourSpaced(shortfall)}</span>
                     </span>
                   ) : (
-                    <span className="text-[#16A34A]">
+                    <span className="text-emerald-700">
                       Tiền dư sau trả nợ:{' '}
                       <span className="font-mono-num">{formatBusinessTourSpaced(surplus)}</span>
                     </span>
@@ -1104,7 +1134,7 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
               </div>
 
               {autoPlan && !autoPlan.sufficient && (
-                <div className="px-3 py-2 rounded-xl bg-rose-100 border border-rose-300 text-xs font-extrabold text-rose-800">
+                <div className="px-3 py-2 rounded-xl bg-rose-100 border border-rose-300 text-xs font-bold text-rose-800">
                   Tổng giá trị toàn bộ tài sản ({formatBusinessTourSpaced(autoPlan.totalRefund)}) vẫn
                   không đủ thanh toán khoản nợ này — bạn cần tuyên bố Phá Sản!
                 </div>
@@ -1116,7 +1146,7 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
                     <button
                       type="button"
                       onClick={handleApplyAutoSale}
-                      className="bt-btn-cyan px-3.5 py-1.5 rounded-xl text-xs font-black uppercase cursor-pointer whitespace-nowrap"
+                      className="bt-btn-white px-3.5 py-1.5 rounded-xl text-xs font-extrabold uppercase cursor-pointer whitespace-nowrap"
                     >
                       Bán Tự Động Tối Ưu
                     </button>
@@ -1133,7 +1163,7 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
                 <button
                   type="button"
                   onClick={onDeclareBankruptcy}
-                  className="id-btn-crimson px-3.5 py-1.5 rounded-xl text-xs font-black uppercase cursor-pointer whitespace-nowrap"
+                  className="bt-btn-danger-solid px-3.5 py-1.5 rounded-xl text-xs font-black uppercase cursor-pointer whitespace-nowrap"
                 >
                   Phá Sản
                 </button>
@@ -1141,14 +1171,14 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
             </div>
           )}
 
-          <div className="id-subheader-strip shrink-0 px-5 sm:px-6 py-2 flex items-center justify-between text-xs font-extrabold uppercase">
+          <div className="id-subheader-strip shrink-0 px-5 sm:px-6 py-2 flex items-center justify-between text-[11px] font-extrabold uppercase tracking-wide">
             <span>Bất Động Sản Sở Hữu ({owned.length})</span>
             <span>{pendingDebt ? 'Giá Trị Hoàn 100%' : 'Giá Trị / Phí Thuê'}</span>
           </div>
 
           <div className="p-4 sm:p-5 space-y-2">
             {owned.length === 0 ? (
-              <div className="text-center py-10 text-sm font-bold text-slate-400">
+              <div className="text-center py-10 text-sm font-semibold text-[#788497]">
                 Bạn chưa sở hữu bất động sản nào trên bàn cờ.
               </div>
             ) : (
@@ -1167,113 +1197,118 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
                   tile.group &&
                   ownsFullColorGroup(player.id, tile.group, properties, players, matchMode);
 
-              const tags: string[] = [];
-              if (tile.kind === TileKind.RESORT) tags.push('Khu nghỉ dưỡng');
-              if (isMono) tags.push('Độc quyền ×2');
-              if (prop.level >= 4) tags.push('Khách sạn ★');
-              if (boardModifiers.festivalTileIndices.includes(prop.tileIndex)) {
-                tags.push('🎉 Lễ Hội ×2');
-              }
-              if (boardModifiers.championshipTileIndex === prop.tileIndex) {
-                tags.push(`🏆 Cúp ×${boardModifiers.championshipMultiplier}`);
-              }
-              if (boardModifiers.shieldedTileIndices?.includes(prop.tileIndex)) {
-                tags.push('🛡️ Khiên Bảo Hộ');
-              }
-              if (boardModifiers.outageTileIndices?.includes(prop.tileIndex)) {
-                tags.push('⚡ Mất điện');
-              }
+                const tags: string[] = [];
+                if (tile.kind === TileKind.RESORT) tags.push('Khu nghỉ dưỡng');
+                if (isMono) tags.push('Độc quyền ×2');
+                if (prop.level >= 4) tags.push('Khách sạn ★');
+                if (boardModifiers.festivalTileIndices.includes(prop.tileIndex)) {
+                  tags.push('Lễ Hội ×2');
+                }
+                if (boardModifiers.championshipTileIndex === prop.tileIndex) {
+                  tags.push(`Cúp ×${boardModifiers.championshipMultiplier}`);
+                }
+                if (boardModifiers.shieldedTileIndices?.includes(prop.tileIndex)) {
+                  tags.push('Khiên Bảo Hộ');
+                }
+                if (boardModifiers.outageTileIndices?.includes(prop.tileIndex)) {
+                  tags.push('Mất điện');
+                }
 
-              const rowBody = (
-                <div className="flex items-center justify-between gap-3 w-full">
-                  <div className="flex items-center gap-3 min-w-0">
-                    {pendingDebt && (
-                      <span
-                        className={`h-5 w-5 rounded-md border-2 flex items-center justify-center text-xs font-black shrink-0 ${
-                          isSelected
-                            ? 'bg-[#E91E63] border-[#E91E63] text-white'
-                            : 'bg-white border-slate-300 text-transparent'
-                        }`}
-                      >
-                        ✓
-                      </span>
-                    )}
-                    <div
-                      className="h-9 w-3.5 rounded-md shrink-0 border border-white shadow-xs"
-                      style={{
-                        backgroundColor:
-                          tile.kind === TileKind.RESORT
-                            ? '#0EA5E9'
-                            : tile.groupColor || player.color,
-                      }}
-                    />
-                    <div className="min-w-0 text-left">
-                      <div className="flex flex-wrap items-baseline gap-1.5">
-                        <span className="font-display font-black text-slate-900 text-sm sm:text-base leading-tight">
-                          {tile.name}
+                const rowBody = (
+                  <div className="flex items-center justify-between gap-3 w-full">
+                    <div className="flex items-center gap-3 min-w-0">
+                      {pendingDebt && (
+                        <span
+                          className={`h-5 w-5 rounded-md border-2 flex items-center justify-center shrink-0 ${
+                            isSelected
+                              ? 'bg-rose-600 border-rose-600 text-white'
+                              : 'bg-white border-[#c5bdaa] text-transparent'
+                          }`}
+                        >
+                          <Check className="h-3.5 w-3.5 stroke-[3]" aria-hidden="true" />
                         </span>
-                        {tags.length > 0 && (
-                          <span className="text-[11px] font-extrabold text-[#16A34A]">
-                            · {tags.join(' · ')}
+                      )}
+                      <div
+                        className="h-9 w-2 rounded-full shrink-0"
+                        style={{
+                          backgroundColor:
+                            tile.kind === TileKind.RESORT
+                              ? '#0EA5E9'
+                              : tile.groupColor || player.color,
+                        }}
+                      />
+                      <BuildingLevelVisual
+                        level={prop.level}
+                        isResort={tile.kind === TileKind.RESORT}
+                        className="h-6 w-7 shrink-0"
+                      />
+                      <div className="min-w-0 text-left">
+                        <div className="flex flex-wrap items-baseline gap-1.5">
+                          <span className="font-display font-black text-[#141c2b] text-sm sm:text-base leading-tight">
+                            {tile.name}
                           </span>
-                        )}
-                      </div>
-                      <div className="text-xs text-slate-600 tabular-nums mt-0.5">
-                        {tile.kind === TileKind.PROPERTY
-                          ? prop.level === 0
-                            ? 'Đất khởi điểm'
-                            : prop.level === 4
-                              ? 'Khách sạn Cấp 4 (★)'
-                              : `Nhà Cấp ${prop.level}`
-                          : 'Khu nghỉ dưỡng biển đảo'}{' '}
-                        · Thuê: {formatBusinessTourCompact(currentRent)}
+                          {tags.length > 0 && (
+                            <span className="text-[11px] font-bold text-emerald-700">
+                              · {tags.join(' · ')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-[#525e73] tabular-nums mt-0.5">
+                          {tile.kind === TileKind.PROPERTY
+                            ? prop.level === 0
+                              ? 'Đất khởi điểm'
+                              : prop.level === 4
+                                ? 'Khách sạn Cấp 4 (★)'
+                                : `Nhà Cấp ${prop.level}`
+                            : 'Khu nghỉ dưỡng biển đảo'}{' '}
+                          · Thuê: {formatBusinessTourCompact(currentRent)}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="text-right shrink-0">
-                    <div className="font-mono-num text-sm font-black text-sky-900">
-                      {formatBusinessTourCompact(investedVal)}
+                    <div className="text-right shrink-0">
+                      <div className="font-mono-num text-sm font-black text-[#141c2b]">
+                        {formatBusinessTourCompact(investedVal)}
+                      </div>
+                      {pendingDebt && (
+                        <div className="text-[10px] font-bold text-[#64748b]">Hoàn 100%</div>
+                      )}
                     </div>
-                    {pendingDebt && (
-                      <div className="text-[10px] font-bold text-slate-500">Hoàn 100%</div>
-                    )}
                   </div>
-                </div>
-              );
+                );
 
-              return pendingDebt ? (
-                <button
-                  key={prop.tileIndex}
-                  type="button"
-                  onClick={() => toggleSelectTile(prop.tileIndex)}
-                  className={`w-full p-3 rounded-2xl border-2 transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-rose-50 border-[#E91E63] shadow-xs'
-                      : 'bg-sky-50/60 border-sky-200 hover:border-sky-400'
-                  }`}
-                >
-                  {rowBody}
-                </button>
-              ) : (
-                <div
-                  key={prop.tileIndex}
-                  className="p-3 rounded-2xl bg-sky-50/60 border border-sky-200"
-                >
-                  {rowBody}
-                </div>
-              );
-            })
-          )}
+                return pendingDebt ? (
+                  <button
+                    key={prop.tileIndex}
+                    type="button"
+                    onClick={() => toggleSelectTile(prop.tileIndex)}
+                    className={`w-full p-3 rounded-xl border transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-rose-50 border-rose-500 ring-1 ring-rose-300'
+                        : 'bg-white border-[#ded8ca] hover:border-[#b7ae9c]'
+                    }`}
+                  >
+                    {rowBody}
+                  </button>
+                ) : (
+                  <div
+                    key={prop.tileIndex}
+                    className="p-3 rounded-xl bg-white border border-[#ded8ca]"
+                  >
+                    {rowBody}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
         {!pendingDebt && (
-          <div className="shrink-0 px-5 sm:px-6 py-3 bg-sky-50 border-t border-sky-200 flex justify-end">
+          <div className="shrink-0 px-5 sm:px-6 py-3 bg-[#f3efe6] border-t border-[#dad3c4] flex justify-end">
             <button
               type="button"
               onClick={onClose}
-              className="bt-btn-green px-6 py-2 rounded-2xl text-sm font-black uppercase cursor-pointer whitespace-nowrap"
+              className="bt-btn-green px-6 py-2 rounded-xl text-sm font-black uppercase cursor-pointer whitespace-nowrap"
             >
               Đóng
             </button>
@@ -1285,7 +1320,7 @@ export const AssetManagementModal: React.FC<AssetManagementModalProps> = ({
 };
 
 /* ==========================================
- * 5. PAUSE MENU & VICTORY MODAL
+ * 5. PAUSE MENU & VICTORY MODAL (Strict Button Hierarchy)
  * ========================================== */
 export const PauseModal: React.FC<{
   onlineRoomCode?: string | null;
@@ -1313,7 +1348,7 @@ export const PauseModal: React.FC<{
   const showOnlineNote = Boolean(isOnlineMatch || onlineRoomCode);
 
   return (
-    <div className="fixed inset-0 z-45 flex items-center justify-center p-3 sm:p-4 bg-slate-950/42 pointer-events-auto">
+    <div className="fixed inset-0 z-45 flex items-center justify-center p-3 sm:p-4 bg-slate-950/48 pointer-events-auto">
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -1321,59 +1356,79 @@ export const PauseModal: React.FC<{
         role="dialog"
         aria-modal="true"
         aria-labelledby="pause-modal-title"
-        className="w-full max-w-sm max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in text-center"
+        className="w-full max-w-sm max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in text-center"
       >
-        <div className="shrink-0 bt-header-sky px-6 py-4">
+        <div className="shrink-0 bt-header-sky px-6 py-3.5">
           <h2
             id="pause-modal-title"
-            className="font-display text-xl font-black uppercase tracking-wide text-white"
+            className="font-display text-lg font-black uppercase tracking-wide text-white"
           >
             {onlineRoomCode ? `Phòng Online ${onlineRoomCode}` : 'Tạm Dừng Ván Đấu'}
           </h2>
-        </div>
-        <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-5 sm:p-6 space-y-3">
           {showOnlineNote && (
-            <p className="px-3 py-2 rounded-xl bg-sky-50 border border-sky-200 text-[11px] font-bold text-sky-900 leading-snug">
-              Trận Online vẫn tiếp tục đồng hồ trực tiếp trong khi bạn mở menu này
+            <p className="text-[11px] font-medium text-slate-300 mt-0.5 leading-snug">
+              Đồng hồ trận Online vẫn tiếp tục chạy
             </p>
           )}
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-5 space-y-2.5">
           <button
             type="button"
             onClick={onResume}
-            className="bt-btn-green w-full py-2.5 rounded-2xl font-black text-sm sm:text-base uppercase tracking-wide cursor-pointer whitespace-nowrap"
+            className="bt-btn-green w-full py-2.5 px-4 rounded-xl font-black text-sm uppercase tracking-wide flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
           >
-            Tiếp Tục Chơi
+            <Play className="h-4 w-4 fill-current shrink-0" aria-hidden="true" />
+            <span>Tiếp Tục Chơi</span>
           </button>
-          {onlineRoomCode && onCopyInviteLink && (
+
+          <div className="space-y-2 pt-1">
+            {onlineRoomCode && onCopyInviteLink && (
+              <button
+                type="button"
+                onClick={onCopyInviteLink}
+                className="bt-btn-white w-full py-2.5 px-4 rounded-xl font-bold text-sm flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+              >
+                {copiedInviteToast ? (
+                  <>
+                    <Check className="h-4 w-4 text-emerald-600 shrink-0" aria-hidden="true" />
+                    <span className="text-emerald-700 font-extrabold">Đã Chép Link Mời!</span>
+                  </>
+                ) : (
+                  <>
+                    <Link2 className="h-4 w-4 text-[#525e73] shrink-0" aria-hidden="true" />
+                    <span>Copy Link Mời Bạn Bè</span>
+                  </>
+                )}
+              </button>
+            )}
             <button
               type="button"
-              onClick={onCopyInviteLink}
-              className="bt-btn-gold text-slate-950 w-full py-2.5 rounded-2xl font-extrabold text-sm sm:text-base cursor-pointer whitespace-nowrap"
+              onClick={onOpenRulebook}
+              className="bt-btn-white w-full py-2.5 px-4 rounded-xl font-bold text-sm flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
             >
-              {copiedInviteToast ? '✓ Đã Chép Link Mời!' : '📋 Copy Link Mời Bạn Bè'}
+              <BookOpen className="h-4 w-4 text-[#525e73] shrink-0" aria-hidden="true" />
+              <span>Sổ Tay Luật Chơi</span>
             </button>
-          )}
-          <button
-            type="button"
-            onClick={onOpenRulebook}
-            className="bt-btn-white w-full py-2.5 rounded-2xl font-extrabold text-sm sm:text-base cursor-pointer whitespace-nowrap"
-          >
-            Sổ Tay Luật Chơi
-          </button>
-          <button
-            type="button"
-            onClick={onResetCamera}
-            className="bt-btn-cyan w-full py-2.5 rounded-2xl font-extrabold text-sm sm:text-base cursor-pointer whitespace-nowrap"
-          >
-            Đặt Lại Góc Nhìn 3D
-          </button>
-          <button
-            type="button"
-            onClick={onRestartToTitle}
-            className="id-btn-crimson w-full py-2.5 rounded-2xl font-extrabold text-sm sm:text-base cursor-pointer whitespace-nowrap"
-          >
-            {onlineRoomCode ? 'Rời Phòng Online' : 'Sảnh Chờ Mới'}
-          </button>
+            <button
+              type="button"
+              onClick={onResetCamera}
+              className="bt-btn-white w-full py-2.5 px-4 rounded-xl font-bold text-sm flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+            >
+              <Compass className="h-4 w-4 text-[#525e73] shrink-0" aria-hidden="true" />
+              <span>Đặt Lại Góc Nhìn 3D</span>
+            </button>
+          </div>
+
+          <div className="pt-2 border-t border-[#e2dcd0]">
+            <button
+              type="button"
+              onClick={onRestartToTitle}
+              className="id-btn-crimson w-full py-2.5 px-4 rounded-xl font-extrabold text-sm flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+            >
+              <LogOut className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>{onlineRoomCode ? 'Rời Phòng Online' : 'Sảnh Chờ Mới'}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1664,7 +1719,7 @@ export const VictoryModal: React.FC<{
   return (
     <div
       data-testid="victory-modal"
-      className="fixed inset-0 z-30 flex items-center justify-center p-2.5 sm:p-4 bg-slate-950/34 pointer-events-auto"
+      className="fixed inset-0 z-30 flex items-center justify-center p-2.5 sm:p-4 bg-slate-950/42 pointer-events-auto"
     >
       <ConfettiOverlay graphicsQualityTier={graphicsQualityTier} />
       <div
@@ -1673,29 +1728,32 @@ export const VictoryModal: React.FC<{
         role="dialog"
         aria-modal="true"
         aria-labelledby="victory-modal-title"
-        className="relative z-40 w-full max-w-xl max-h-[calc(100dvh-1.25rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in"
+        className="relative z-40 w-full max-w-xl max-h-[calc(100dvh-1.25rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in"
       >
-        <div className="shrink-0 bt-header-sky px-4 sm:px-6 py-3 sm:py-4 text-center">
-          <div className="text-xs font-extrabold uppercase tracking-wider text-white/90">
+        <div className="shrink-0 bt-header-sky px-4 sm:px-6 py-3.5 sm:py-4 text-center">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
             Chung Cuộc · {turnCount} Lượt Đấu
             {victoryCondition === 'TIME_LIMIT' ? ' · Hết giờ (20:00)' : ''}
             {roomCode ? ` · Phòng ${roomCode}` : ''}
           </div>
           <h2
             id="victory-modal-title"
-            className="font-display text-xl sm:text-3xl font-black uppercase text-[#FEF08A] mt-1"
+            className="font-display text-xl sm:text-2xl font-black uppercase text-amber-300 mt-1 flex items-center justify-center gap-2"
           >
-            {isTeamVictory
-              ? `🏆 Đội ${winningTeamId === 0 ? 'A (Xanh)' : 'B (Đỏ)'} Chiến Thắng!`
-              : `🏆 ${winner.name} Chiến Thắng!`}
+            <Trophy className="h-6 w-6 text-amber-400 shrink-0" aria-hidden="true" />
+            <span>
+              {isTeamVictory
+                ? `Đội ${winningTeamId === 0 ? 'A (Xanh)' : 'B (Đỏ)'} Chiến Thắng!`
+                : `${winner.name} Chiến Thắng!`}
+            </span>
           </h2>
           {victoryCondition === 'TIME_LIMIT' && (
-            <div className="mt-1 inline-block px-3 py-0.5 rounded-full bg-white/20 text-[11px] font-black text-white">
+            <div className="mt-1 inline-block px-3 py-0.5 rounded-full bg-white/15 text-[11px] font-bold text-white">
               Hết giờ (20:00) — Tổng Tài Sản
             </div>
           )}
           {victoryLabel && (
-            <p className="mt-1 text-xs font-extrabold text-white">{victoryLabel}</p>
+            <p className="mt-1 text-xs font-semibold text-slate-200">{victoryLabel}</p>
           )}
         </div>
 
@@ -1703,43 +1761,45 @@ export const VictoryModal: React.FC<{
           {isTeamVictory && (
             <div className="grid grid-cols-2 gap-2">
               <div
-                className={`p-2.5 rounded-2xl border-2 text-center ${
+                className={`p-2.5 rounded-xl border text-center ${
                   winningTeamId === 0
-                    ? 'bg-sky-50 border-sky-400 ring-2 ring-sky-200'
-                    : 'bg-slate-50 border-slate-200'
+                    ? 'bg-sky-50 border-sky-400 ring-1 ring-sky-200'
+                    : 'bg-white border-[#ded8ca]'
                 }`}
               >
-                <div className="text-[11px] font-black uppercase text-sky-800">
-                  Đội A (Xanh) {winningTeamId === 0 ? '🏆' : ''}
+                <div className="text-[11px] font-extrabold uppercase text-sky-800 inline-flex items-center gap-1">
+                  <span>Đội A (Xanh)</span>
+                  {winningTeamId === 0 && <Trophy className="h-3 w-3 text-amber-600" aria-hidden="true" />}
                 </div>
-                <div className="font-mono-num text-sm sm:text-base font-black text-slate-900">
+                <div className="font-mono-num text-sm sm:text-base font-black text-[#141c2b]">
                   {formatBusinessTourSpaced(teamATotal)}
                 </div>
               </div>
               <div
-                className={`p-2.5 rounded-2xl border-2 text-center ${
+                className={`p-2.5 rounded-xl border text-center ${
                   winningTeamId === 1
-                    ? 'bg-rose-50 border-rose-400 ring-2 ring-rose-200'
-                    : 'bg-slate-50 border-slate-200'
+                    ? 'bg-rose-50 border-rose-400 ring-1 ring-rose-200'
+                    : 'bg-white border-[#ded8ca]'
                 }`}
               >
-                <div className="text-[11px] font-black uppercase text-rose-800">
-                  Đội B (Đỏ) {winningTeamId === 1 ? '🏆' : ''}
+                <div className="text-[11px] font-extrabold uppercase text-rose-800 inline-flex items-center gap-1">
+                  <span>Đội B (Đỏ)</span>
+                  {winningTeamId === 1 && <Trophy className="h-3 w-3 text-amber-600" aria-hidden="true" />}
                 </div>
-                <div className="font-mono-num text-sm sm:text-base font-black text-slate-900">
+                <div className="font-mono-num text-sm sm:text-base font-black text-[#141c2b]">
                   {formatBusinessTourSpaced(teamBTotal)}
                 </div>
               </div>
             </div>
           )}
 
-          <div className="rounded-2xl bg-sky-50 border border-sky-200 overflow-hidden">
-            <div className="id-subheader-strip px-4 py-2 grid grid-cols-[46px_minmax(0,1fr)_auto] gap-2 text-xs font-black uppercase">
+          <div className="rounded-xl bg-white border border-[#dad3c4] overflow-hidden">
+            <div className="id-subheader-strip px-4 py-2 grid grid-cols-[46px_minmax(0,1fr)_auto] gap-2 text-[11px] font-extrabold uppercase tracking-wide">
               <span>Hạng</span>
               <span>Tỷ Phú</span>
               <span className="text-right">Tổng Tài Sản</span>
             </div>
-            <div className="divide-y divide-sky-100">
+            <div className="divide-y divide-[#ede8dc]">
               {ranked.map((pl, i) => {
                 const worth = worthOf(pl);
                 const isChamp = isTeamVictory
@@ -1751,10 +1811,10 @@ export const VictoryModal: React.FC<{
                     data-testid={`victory-rank-row-${i + 1}`}
                     data-player-id={pl.id}
                     className={`px-4 py-2.5 grid grid-cols-[46px_minmax(0,1fr)_auto] gap-2 items-center text-sm ${
-                      isChamp ? 'bg-[#F5B800]/22' : ''
+                      isChamp ? 'bg-amber-50/85' : ''
                     }`}
                   >
-                    <span className="font-mono-num font-black text-sky-800">
+                    <span className="font-mono-num font-black text-[#525e73]">
                       #{i + 1}
                     </span>
                     <div className="flex items-center gap-2.5 min-w-0">
@@ -1771,22 +1831,22 @@ export const VictoryModal: React.FC<{
                         size="xs"
                       />
                       <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
-                        <span className="font-extrabold text-slate-900 truncate">
+                        <span className="font-extrabold text-[#141c2b] truncate">
                           {pl.name}
                         </span>
                         {matchMode === 'TEAMS_2V2' && pl.teamId !== undefined && (
                           <span
-                            className={`shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                            className={`shrink-0 px-1.5 py-0.5 rounded-md text-[9px] font-extrabold uppercase border ${
                               pl.teamId === 0
-                                ? 'bg-sky-100 text-sky-800 border border-sky-300'
-                                : 'bg-rose-100 text-rose-800 border border-rose-300'
+                                ? 'bg-sky-50 text-sky-800 border-sky-200'
+                                : 'bg-rose-50 text-rose-800 border-rose-200'
                             }`}
                           >
                             {pl.teamId === 0 ? 'Đội A' : 'Đội B'}
                           </span>
                         )}
                         {isChamp && (
-                          <span className="shrink-0 px-1.5 py-0.5 rounded-full bg-amber-400/90 text-[10px] font-black uppercase tracking-wide text-amber-950">
+                          <span className="shrink-0 px-1.5 py-0.5 rounded-md bg-amber-300/80 text-[10px] font-black uppercase tracking-wide text-[#141c2b]">
                             Vô địch
                           </span>
                         )}
@@ -1796,7 +1856,7 @@ export const VictoryModal: React.FC<{
                       className={`text-right font-black whitespace-nowrap ${
                         pl.bankrupt
                           ? 'font-display text-rose-600 text-xs uppercase tracking-wide'
-                          : 'font-mono-num text-[#16A34A]'
+                          : 'font-mono-num text-emerald-700'
                       }`}
                     >
                       {pl.bankrupt ? 'PHÁ SẢN' : formatBusinessTourSpaced(worth)}
@@ -1810,13 +1870,13 @@ export const VictoryModal: React.FC<{
           {postMatchAwards && postMatchAwards.length > 0 && (
             <div
               data-testid="bt-post-match-awards"
-              className="rounded-2xl bg-amber-50/85 border border-amber-200 p-3 space-y-2"
+              className="rounded-xl bg-[#f3efe6] border border-[#dad3c4] p-3 space-y-2"
             >
               <div className="flex items-center justify-between gap-2">
-                <h3 className="font-display text-xs font-black uppercase tracking-wide text-amber-900">
-                  🎖️ Danh hiệu Hài hước
+                <h3 className="font-display text-xs font-black uppercase tracking-wide text-[#141c2b]">
+                  Danh hiệu Trận đấu
                 </h3>
-                <span className="text-[10px] font-extrabold text-amber-700">
+                <span className="text-[10px] font-bold text-[#64748b]">
                   Khoảnh khắc nổi bật
                 </span>
               </div>
@@ -1825,28 +1885,25 @@ export const VictoryModal: React.FC<{
                   <div
                     key={award.id}
                     data-testid={`bt-post-match-award-${award.id}`}
-                    className="rounded-xl bg-white border border-amber-200/90 p-2.5 flex items-start gap-2 shadow-2xs min-w-0"
+                    className="rounded-xl bg-white border border-[#ded8ca] p-2.5 flex items-start gap-2 min-w-0"
                     style={{
                       borderLeftWidth: '4px',
                       borderLeftColor: award.playerColor || '#F5B800',
                     }}
                   >
-                    <span className="text-lg leading-none shrink-0 mt-0.5" aria-hidden="true">
-                      {award.icon}
-                    </span>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-1.5">
-                        <span className="text-xs font-black text-slate-900 truncate">
+                        <span className="text-xs font-black text-[#141c2b] truncate">
                           {award.title}
                         </span>
-                        <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-900 font-mono-num text-[10px] font-black shrink-0">
+                        <span className="px-1.5 py-0.5 rounded-md bg-[#efece4] text-[#141c2b] font-mono-num text-[10px] font-black shrink-0">
                           {award.valueLabel}
                         </span>
                       </div>
-                      <div className="text-[11px] font-extrabold text-sky-800 truncate">
+                      <div className="text-[11px] font-bold text-[#334155] truncate">
                         {award.playerName}
                       </div>
-                      <div className="text-[10px] font-semibold text-slate-500 leading-snug">
+                      <div className="text-[10px] font-medium text-[#64748b] leading-snug">
                         {award.subtitle}
                       </div>
                     </div>
@@ -1859,37 +1916,37 @@ export const VictoryModal: React.FC<{
           {sortedSeriesStandings.length > 0 && (
             <div
               data-testid="bt-victory-series-standings"
-              className="rounded-2xl bg-sky-50 border border-sky-200 overflow-hidden"
+              className="rounded-xl bg-white border border-[#dad3c4] overflow-hidden"
             >
-              <div className="id-subheader-strip px-3.5 py-1.5 flex items-center justify-between text-[11px] font-black uppercase">
-                <span>🏆 Chuỗi trận phòng đấu</span>
+              <div className="id-subheader-strip px-3.5 py-1.5 flex items-center justify-between text-[11px] font-extrabold uppercase">
+                <span>Chuỗi trận phòng đấu</span>
                 <span>Cúp · Điểm</span>
               </div>
-              <div className="divide-y divide-sky-100">
+              <div className="divide-y divide-[#ede8dc]">
                 {sortedSeriesStandings.map((entry, idx) => (
                   <div
                     key={entry.participantId}
                     data-testid={`bt-victory-series-row-${idx + 1}`}
                     className={`px-3.5 py-2 flex items-center justify-between gap-2 text-xs ${
-                      idx === 0 ? 'bg-amber-50/80' : 'bg-white/75'
+                      idx === 0 ? 'bg-amber-50/75' : 'bg-white'
                     }`}
                   >
                     <div className="flex items-center gap-2 min-w-0">
-                      <span className="font-mono-num font-black text-sky-800 shrink-0">
+                      <span className="font-mono-num font-black text-[#525e73] shrink-0">
                         #{idx + 1}
                       </span>
-                      <span className="font-extrabold text-slate-900 truncate">
+                      <span className="font-extrabold text-[#141c2b] truncate">
                         {entry.playerName}
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 font-mono-num font-black whitespace-nowrap">
-                      <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px]">
-                        🏆 {entry.wins} Cúp
+                      <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 text-[10px]">
+                        {entry.wins} Cúp
                       </span>
-                      <span className="text-slate-500 font-semibold text-[11px] hidden sm:inline">
+                      <span className="text-[#64748b] font-semibold text-[11px] hidden sm:inline">
                         {entry.matchesPlayed} trận
                       </span>
-                      <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-900 text-[11px]">
+                      <span className="px-2 py-0.5 rounded-md bg-[#eae4d6] text-[#141c2b] text-[11px]">
                         {entry.seriesPoints} điểm
                       </span>
                     </div>
@@ -1899,25 +1956,27 @@ export const VictoryModal: React.FC<{
             </div>
           )}
 
-          <div className="rounded-2xl bg-sky-50/80 border border-sky-200 p-2.5 space-y-2">
+          <div className="rounded-xl bg-[#f3efe6] border border-[#dad3c4] p-2.5 space-y-2">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <button
                 type="button"
                 data-testid="bt-copy-victory-card-btn"
                 disabled={exportBusy}
                 onClick={() => void handleCopyVictoryCard()}
-                className="bt-btn-cyan py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wide cursor-pointer disabled:opacity-55 whitespace-nowrap"
+                className="bt-btn-white py-2 px-3 rounded-xl text-xs font-extrabold uppercase tracking-wide flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55 whitespace-nowrap"
               >
-                📋 Copy Ảnh
+                <Copy className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>Copy Ảnh</span>
               </button>
               <button
                 type="button"
                 data-testid="bt-download-victory-card-btn"
                 disabled={exportBusy}
                 onClick={() => void handleDownloadVictoryCard()}
-                className="bt-btn-gold text-slate-950 py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wide cursor-pointer disabled:opacity-55 whitespace-nowrap"
+                className="bt-btn-gold py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wide flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55 whitespace-nowrap"
               >
-                ⬇️ Tải Ảnh PNG
+                <Download className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>Tải Ảnh PNG</span>
               </button>
             </div>
             {exportFeedback && (
@@ -1925,7 +1984,7 @@ export const VictoryModal: React.FC<{
                 role="status"
                 aria-live="polite"
                 data-testid="bt-victory-export-feedback"
-                className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] font-extrabold text-emerald-800 text-center"
+                className="px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] font-bold text-emerald-800 text-center"
               >
                 {exportFeedback}
               </div>
@@ -1939,7 +1998,7 @@ export const VictoryModal: React.FC<{
           )}
         </div>
 
-        <div className="shrink-0 px-4 sm:px-6 py-2.5 sm:py-3.5 bg-sky-50/95 border-t border-sky-200">
+        <div className="shrink-0 px-4 sm:px-6 py-3 bg-[#f3efe6] border-t border-[#dad3c4]">
           {isOnlineMatch ? (
             <div className="space-y-2">
               {isOnlineHost && onReturnToOnlineLobby ? (
@@ -1947,19 +2006,20 @@ export const VictoryModal: React.FC<{
                   type="button"
                   data-start="true"
                   onClick={onReturnToOnlineLobby}
-                  className="bt-btn-green w-full py-2.5 sm:py-3 rounded-full font-black text-sm sm:text-lg uppercase tracking-wider cursor-pointer whitespace-normal sm:whitespace-nowrap leading-tight"
+                  className="bt-btn-green w-full py-2.5 sm:py-3 rounded-xl font-black text-sm sm:text-base uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer whitespace-normal sm:whitespace-nowrap leading-tight"
                 >
-                  🔄 Về Sảnh Phòng Chơi Tiếp
+                  <RotateCcw className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>Về Sảnh Phòng Chơi Tiếp</span>
                 </button>
               ) : (
-                <div className="px-4 py-2 rounded-full bg-sky-100 border border-sky-200 text-xs font-extrabold text-sky-900 text-center">
-                  ⏳ Đang chờ Chủ phòng mở ván mới...
+                <div className="px-4 py-2 rounded-xl bg-white border border-[#ded8ca] text-xs font-bold text-[#525e73] text-center">
+                  Đang chờ Chủ phòng mở ván mới...
                 </div>
               )}
               <button
                 type="button"
                 onClick={onPlayAgain}
-                className="id-btn-crimson w-full py-2 sm:py-2.5 rounded-full font-extrabold text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
+                className="id-btn-crimson w-full py-2 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
               >
                 Rời Phòng
               </button>
@@ -1969,7 +2029,7 @@ export const VictoryModal: React.FC<{
               type="button"
               data-start="true"
               onClick={onPlayAgain}
-              className="bt-btn-green w-full py-2.5 sm:py-3 rounded-full font-black text-sm sm:text-lg uppercase tracking-wider cursor-pointer whitespace-nowrap"
+              className="bt-btn-green w-full py-2.5 sm:py-3 rounded-xl font-black text-sm sm:text-base uppercase tracking-wider cursor-pointer whitespace-nowrap"
             >
               Chơi Ván Mới
             </button>

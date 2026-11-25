@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Flame, Plane, Shield, Trophy, X, Zap } from 'lucide-react';
 import { BOARD_TILES, COLOR_GROUP_META } from '../game/boardData';
 import {
   applyChampionshipHost,
@@ -12,7 +13,6 @@ import {
   getValidTacticalCardTargets,
   isValidWorldTourTarget,
   ownsFullColorGroup,
-  RESORT_TILE_INDICES,
   resolveWorldTourMovement,
   START_SALARY,
   WORLD_TOUR_FEE,
@@ -28,6 +28,7 @@ import {
 } from '../game/types';
 import { resolveDeedGroupPalette } from '../three/textures';
 import { CityLandmarkBadge } from './CityLandmarkBadge';
+import { BuildingLevelVisual } from './GameUiPrimitives';
 import { PlayerAvatar3D } from './PlayerAvatar3D';
 import { useDialogFocusTrap } from './TileModalAndDialogs';
 
@@ -125,42 +126,42 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
       aria-modal="true"
       aria-labelledby="upgrade-modal-title"
       data-testid="upgrade-decision-modal"
-      className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-25 w-[min(460px,93vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-25 w-[min(460px,93vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
     >
       <div
-        className="shrink-0 px-5 py-3.5 text-white border-b-2 border-white/50 flex items-center justify-between gap-2.5"
+        className="shrink-0 px-5 py-3.5 text-white border-b border-black/15 flex items-center justify-between gap-2.5"
         style={{
-          background: `linear-gradient(to bottom var(--in-oklab), ${upgPal.topHex} 0%, ${upgPal.bottomHex} 100%)`,
-          textShadow: '0 1.5px 2px rgba(15, 23, 42, 0.45)',
+          background: `linear-gradient(180deg, ${upgPal.topHex} 0%, ${upgPal.bottomHex} 100%)`,
+          textShadow: '0 1px 2px rgba(15, 23, 42, 0.4)',
         }}
       >
         <div className="flex items-center gap-3 min-w-0">
-          <CityLandmarkBadge tileIndex={tileIndex} size={48} />
+          <CityLandmarkBadge tileIndex={tileIndex} size={46} />
           <div className="min-w-0">
-            <div className="text-[10px] font-black uppercase tracking-wider text-white/90">
-              {`Ghé Thăm Đô Thị Sở Hữu · Vòng ${player.laps + 1}`}
+            <div className="text-[10px] font-extrabold uppercase tracking-wider text-white/90">
+              {`Nâng Cấp Đô Thị · Vòng ${player.laps + 1}`}
             </div>
             <h3
               id="upgrade-modal-title"
-              className="font-display text-xl sm:text-2xl font-black uppercase leading-tight text-white"
+              className="font-display text-xl sm:text-2xl font-black uppercase leading-tight text-white truncate"
             >
               {tile.name}
             </h3>
           </div>
         </div>
-        <div className="text-right text-xs font-extrabold text-white/95 shrink-0 bg-black/20 rounded-xl px-3 py-1.5 border border-white/30">
-          Hiện tại: {currentLevel === 0 ? 'Đất khởi điểm' : `Nhà Cấp ${currentLevel}`}
+        <div className="text-right text-xs font-extrabold text-white shrink-0 bg-black/25 rounded-lg px-2.5 py-1">
+          {currentLevel === 0 ? 'Đất trống' : `Cấp ${currentLevel}`}
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 sm:p-5 space-y-3.5">
-        <p className="text-xs text-slate-700 leading-relaxed">
+      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 sm:p-5 space-y-2.5">
+        <div className="text-[11px] font-bold text-[#525e73]">
           {player.laps === 0
-            ? 'Vòng đầu tiên cho phép xây tối đa 2 Nhà. Đi qua ô BẮT ĐẦU để mở khóa Cấp 3!'
+            ? 'Vòng 1 xây tối đa 2 Nhà (qua Bắt Đầu mở Cấp 3).'
             : currentLevel < 3
-              ? 'Từ Vòng 2 trở đi, bạn có thể nâng tối đa lên 3 Nhà. Ghé lại thành phố đã có 3 Nhà để mở khóa Khách sạn Biểu tượng (★)!'
-              : 'Thành phố đã đạt 3 Nhà — đủ điều kiện nâng cấp lên Khách sạn Biểu tượng (★) miễn mua đứt!'}
-        </p>
+              ? 'Chọn cấp công trình muốn nâng cấp:'
+              : 'Đã đủ 3 Nhà — sẵn sàng lên Khách sạn Biểu tượng (★):'}
+        </div>
 
         <div className="space-y-1.5">
           {options.map((opt) => {
@@ -171,36 +172,39 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
                 type="button"
                 disabled={!opt.allowed}
                 onClick={() => setSelectedLevel(opt.level)}
-                className={`w-full px-3.5 py-2.5 rounded-2xl border-2 flex items-center justify-between gap-2 text-left transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
+                className={`w-full px-3.5 py-2.5 rounded-xl border flex items-center justify-between gap-2.5 text-left transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
                   isSelected && opt.allowed
-                    ? 'bg-emerald-50 border-[#58B916] shadow-xs'
-                    : 'bg-sky-50/70 border-sky-200 hover:border-sky-400'
+                    ? 'bg-emerald-50 border-emerald-600 ring-1 ring-emerald-500/25'
+                    : 'bg-white border-[#ded8ca] hover:border-[#b7ae9c]'
                 }`}
               >
-                <div className="min-w-0">
-                  <div className="flex items-baseline gap-1.5 flex-wrap">
-                    <span className="font-display text-sm font-black text-slate-900">
-                      {opt.label}
-                    </span>
-                    {opt.note && (
-                      <span className="text-[11px] font-extrabold text-rose-700">
-                        · {opt.note}
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <BuildingLevelVisual level={opt.level} className="h-6 w-7 shrink-0" />
+                  <div className="min-w-0">
+                    <div className="flex items-baseline gap-1.5 flex-wrap">
+                      <span className="font-display text-sm font-black text-[#141c2b]">
+                        {opt.label}
                       </span>
+                      {opt.note && (
+                        <span className="text-[10.5px] font-bold text-rose-700">
+                          · {opt.note}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-[#525e73] mt-0.5">
+                      Thuê mới:{' '}
+                      <span className="font-mono-num font-extrabold text-emerald-700">
+                        {formatBusinessTourCompact(opt.rentAfter)}
+                      </span>
+                    </div>
+                    {opt.lockReason && (
+                      <div className="text-[10px] font-bold text-rose-600 mt-0.5 leading-snug">
+                        {opt.lockReason}
+                      </div>
                     )}
                   </div>
-                  <div className="text-[11px] text-slate-600 mt-0.5">
-                    Phí thuê mới:{' '}
-                    <span className="font-mono-num font-extrabold text-[#16A34A]">
-                      {formatBusinessTourCompact(opt.rentAfter)}
-                    </span>
-                  </div>
-                  {opt.lockReason && (
-                    <div className="text-[10px] font-bold text-rose-600 mt-0.5 leading-snug">
-                      {opt.lockReason}
-                    </div>
-                  )}
                 </div>
-                <span className="font-mono-num text-base font-black text-sky-900 shrink-0">
+                <span className="font-mono-num text-sm sm:text-base font-black text-[#141c2b] shrink-0">
                   -{formatBusinessTourCompact(opt.cost)}
                 </span>
               </button>
@@ -209,13 +213,13 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
         </div>
       </div>
 
-      <div className="shrink-0 px-4 sm:px-5 py-3 bg-sky-50/95 border-t border-sky-200 grid grid-cols-2 gap-2.5">
+      <div className="shrink-0 px-4 sm:px-5 py-3 bg-[#f3efe6] border-t border-[#dad3c4] grid grid-cols-2 gap-2.5">
         <button
           type="button"
           data-testid="bt-confirm-upgrade-btn"
           disabled={!selectedOpt?.allowed}
           onClick={() => selectedOpt?.allowed && onUpgradeToLevel(selectedOpt.level)}
-          className="bt-btn-green py-2.5 px-2.5 sm:px-4 rounded-2xl disabled:opacity-40 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+          className="bt-btn-green py-2.5 px-3 rounded-xl disabled:opacity-40 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
         >
           {selectedOpt?.allowed
             ? `Nâng Cấp (-${formatBusinessTourCompact(selectedOpt.cost)})`
@@ -224,7 +228,7 @@ export const UpgradeDecisionModal: React.FC<UpgradeDecisionModalProps> = ({
         <button
           type="button"
           onClick={onSkip}
-          className="bt-btn-white py-2.5 px-2.5 sm:px-4 rounded-2xl font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+          className="bt-btn-white py-2.5 px-3 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
         >
           Giữ Nguyên
         </button>
@@ -282,7 +286,7 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
   const strategicBonus = useMemo(() => {
     const instantWin = wouldOwnTileWinMatch(buyer.id, tileIndex, players, properties, matchMode);
     if (instantWin) {
-      return `🏆 Mua đứt thành công sẽ THẮNG NGAY (${
+      return `Mua đứt thành công sẽ THẮNG NGAY (${
         instantWin.condition === 'TRIPLE_MONOPOLY'
           ? 'Độc quyền 3 bộ màu'
           : instantWin.condition === 'SIDE_MONOPOLY'
@@ -334,11 +338,11 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
       aria-modal="true"
       aria-labelledby="buyout-modal-title"
       data-testid="buyout-decision-modal"
-      className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-25 w-[min(450px,93vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-25 w-[min(450px,93vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
     >
       <div className="shrink-0 bt-header-sky px-5 py-3.5 flex items-center justify-between gap-2">
         <div>
-          <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
+          <div className="text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
             Quyền Thâu Tóm Đô Thị (Giá 2×)
           </div>
           <h3
@@ -348,16 +352,16 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
             Mua Lại {tile.name}?
           </h3>
         </div>
-        <div className="text-right shrink-0 bg-black/20 rounded-xl px-3 py-1.5 border border-white/30">
-          <div className="text-[9px] font-bold uppercase text-white/90">Giá mua lại</div>
-          <div className="font-mono-num text-lg font-black text-[#FEF08A] leading-none">
+        <div className="text-right shrink-0">
+          <div className="text-[9.5px] font-bold uppercase text-slate-300">Giá mua lại</div>
+          <div className="font-mono-num text-lg font-black text-amber-300 leading-none">
             {formatBusinessTourCompact(buyoutCost)}
           </div>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 sm:p-5 space-y-3.5">
-        <div className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-sky-50 border border-sky-200">
+      <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-4 sm:p-5 space-y-3">
+        <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-white border border-[#ded8ca]">
           <div className="flex items-center gap-2.5 min-w-0">
             <PlayerAvatar3D
               archetype={owner.tokenType}
@@ -365,31 +369,31 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
               size="sm"
             />
             <div className="min-w-0">
-              <div className="text-[11px] font-semibold text-slate-500">Chủ hiện tại</div>
-              <div className="font-display text-sm font-black text-slate-900 truncate">
+              <div className="text-[11px] font-medium text-[#64748b]">Chủ hiện tại</div>
+              <div className="font-display text-sm font-black text-[#141c2b] truncate">
                 {owner.name}
               </div>
             </div>
           </div>
           <div className="text-right text-xs">
-            <div className="text-slate-500 font-semibold">Hiện trạng</div>
-            <div className="font-extrabold text-slate-900">
+            <div className="text-[#64748b] font-medium">Hiện trạng</div>
+            <div className="font-extrabold text-[#141c2b]">
               {level === 0 ? 'Đất khởi điểm' : `Nhà Cấp ${level}`}
             </div>
           </div>
         </div>
 
-        <p className="text-xs text-slate-700 leading-relaxed">
-          Bạn vừa thanh toán{' '}
+        <p className="text-xs text-[#334155] leading-relaxed">
+          Bạn vừa trả{' '}
           <span className="font-mono-num font-black text-rose-600">
             {formatBusinessTourCompact(rentPaid)}
           </span>{' '}
           phí thuê. Chi{' '}
-          <span className="font-mono-num font-black text-slate-900">
+          <span className="font-mono-num font-black text-[#141c2b]">
             {formatBusinessTourCompact(buyoutCost)}
           </span>{' '}
-          để mua đứt {tile.name} (giữ nguyên cấp nhà, tiền thuê khi bạn sở hữu:{' '}
-          <span className="font-mono-num font-black text-[#16A34A]">
+          để mua đứt {tile.name} (giữ nguyên cấp nhà, phí thuê mới:{' '}
+          <span className="font-mono-num font-black text-emerald-700">
             {formatBusinessTourCompact(rentAfterBuyout)}
           </span>
           ).
@@ -397,24 +401,24 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
 
         {strategicBonus && (
           <div className="px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-300 text-xs font-extrabold text-amber-950">
-            Lợi thế chiến thuật: {strategicBonus}
+            Lợi thế: {strategicBonus}
           </div>
         )}
       </div>
 
-      <div className="shrink-0 px-4 sm:px-5 py-3 bg-sky-50/95 border-t border-sky-200 grid grid-cols-2 gap-2.5">
+      <div className="shrink-0 px-4 sm:px-5 py-3 bg-[#f3efe6] border-t border-[#dad3c4] grid grid-cols-2 gap-2.5">
         <button
           type="button"
           disabled={buyer.cash < buyoutCost}
           onClick={onConfirmBuyout}
-          className="bt-btn-gold text-slate-950 py-2.5 px-2.5 sm:px-4 rounded-2xl disabled:opacity-40 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+          className="bt-btn-gold py-2.5 px-3 rounded-xl disabled:opacity-40 font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
         >
           Thâu Tóm (-{formatBusinessTourCompact(buyoutCost)})
         </button>
         <button
           type="button"
           onClick={onSkipBuyout}
-          className="bt-btn-white py-2.5 px-2.5 sm:px-4 rounded-2xl font-black text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
+          className="bt-btn-white py-2.5 px-3 rounded-xl font-extrabold text-xs sm:text-sm uppercase tracking-wide cursor-pointer whitespace-normal leading-tight"
         >
           Bỏ Qua
         </button>
@@ -424,7 +428,7 @@ export const BuyoutDecisionModal: React.FC<BuyoutDecisionModalProps> = ({
 };
 
 /* ============================================================================
- * 3. COMPACT DOCKED WORLD CHAMPIONSHIPS SELECTOR (Unobstructed 3D Board!)
+ * 3. COMPACT DOCKED WORLD CHAMPIONSHIPS SELECTOR
  * ============================================================================ */
 interface ChampionshipDecisionModalProps {
   player: PlayerState;
@@ -480,31 +484,32 @@ export const ChampionshipDecisionModal: React.FC<ChampionshipDecisionModalProps>
       data-testid="championship-decision-modal"
       role="region"
       aria-label="Chọn thành phố đặt Cúp Quốc Gia"
-      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(560px,94vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(560px,94vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
     >
       <div className="shrink-0 bt-header-sky px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
+          <div className="text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
             {fee === 0
               ? 'Đăng Cai Cúp Quốc Gia · Miễn Phí 0K'
               : `Sân Vận Động Trung Tâm · Phí ${formatBusinessTourCompact(fee)}`}
           </div>
-          <h3 className="font-display text-base sm:text-lg font-black uppercase leading-tight text-white truncate">
-            🏆 Chọn Thành Phố Đặt Cúp (×{nextMult})
+          <h3 className="font-display text-base sm:text-lg font-black uppercase leading-tight text-white flex items-center gap-1.5 truncate">
+            <Trophy className="h-4 w-4 text-amber-400 shrink-0" aria-hidden="true" />
+            <span className="truncate">Chọn Thành Phố Đặt Cúp (×{nextMult})</span>
           </h3>
         </div>
         <button
           type="button"
           onClick={onSkip}
-          className="px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-xs font-extrabold text-white cursor-pointer whitespace-nowrap shrink-0"
+          className="px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-xs font-extrabold text-white cursor-pointer whitespace-nowrap shrink-0"
         >
           Bỏ Qua
         </button>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3 sm:p-3.5 space-y-2">
-        <p className="text-[11px] sm:text-xs text-slate-700 leading-snug">
-          Nhấn trực tiếp vào <strong className="font-bold text-[#0284C7]">thành phố của bạn trên bàn cờ 3D</strong> hoặc chọn nhanh bên dưới để nhân <strong className="font-black text-[#D97706]">×{nextMult}</strong> tiền thuê:
+        <p className="text-[11px] sm:text-xs text-[#525e73] leading-snug">
+          Nhấn trực tiếp vào <strong className="font-bold text-[#141c2b]">thành phố của bạn trên bàn cờ 3D</strong> hoặc chọn nhanh để nhân <strong className="font-black text-amber-700">×{nextMult}</strong> tiền thuê:
         </p>
 
         <div className="max-h-36 overflow-y-auto slim-scroll grid grid-cols-1 sm:grid-cols-2 gap-1.5 pr-1">
@@ -513,20 +518,20 @@ export const ChampionshipDecisionModal: React.FC<ChampionshipDecisionModalProps>
               key={city.tileIndex}
               type="button"
               onClick={() => onSelectCity(city.tileIndex)}
-              className="px-3 py-2 rounded-2xl bg-amber-50/80 hover:bg-amber-100 border-2 border-amber-200 hover:border-[#F5B800] flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
+              className="px-3 py-2 rounded-xl bg-white hover:bg-amber-50 border border-[#ded8ca] hover:border-amber-400 flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
             >
               <div className="flex items-center gap-2 min-w-0">
                 <span
-                  className="h-5 w-2 rounded-full shrink-0"
+                  className="h-5 w-1.5 rounded-full shrink-0"
                   style={{ backgroundColor: city.color }}
                 />
                 <div className="min-w-0">
-                  <div className="font-display text-xs font-black text-slate-900 truncate">
+                  <div className="font-display text-xs font-black text-[#141c2b] truncate">
                     {city.name}
-                    {city.isFestival ? ' 🎉' : ''}
-                    {city.isCurrentCup ? ' 🏆' : ''}
+                    {city.isFestival ? ' · Lễ Hội' : ''}
+                    {city.isCurrentCup ? ' · Đang giữ Cúp' : ''}
                   </div>
-                  <div className="text-[10px] font-semibold text-slate-600">
+                  <div className="text-[10px] font-semibold text-[#64748b]">
                     {city.level === 4
                       ? 'Khách sạn ★'
                       : city.level > 0
@@ -535,7 +540,7 @@ export const ChampionshipDecisionModal: React.FC<ChampionshipDecisionModalProps>
                   </div>
                 </div>
               </div>
-              <div className="font-mono-num text-xs font-black text-[#16A34A] shrink-0">
+              <div className="font-mono-num text-xs font-black text-emerald-700 shrink-0">
                 {formatBusinessTourCompact(city.projectedRent)}
               </div>
             </button>
@@ -547,7 +552,7 @@ export const ChampionshipDecisionModal: React.FC<ChampionshipDecisionModalProps>
 };
 
 /* ============================================================================
- * 4. COMPACT DOCKED WORLD TOUR FLIGHT SELECTOR (Unobstructed 3D Board!)
+ * 4. COMPACT DOCKED WORLD TOUR FLIGHT SELECTOR
  * ============================================================================ */
 interface WorldTourPromptProps {
   player: PlayerState;
@@ -583,7 +588,6 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
           )
         : new Set([player.id]);
 
-    // 1. Unowned purchasable tiles completing Resort, Color Group, or Side Monopoly (accounting for Start salary along flight)
     for (const t of validTiles) {
       if (!isPurchasableTileSafe(t.kind)) continue;
       if (properties[t.index]?.ownerId !== null || !t.price) continue;
@@ -617,7 +621,6 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
       }
     }
 
-    // 2. Own PROPERTY cities genuinely upgradable upon arrival (respecting post-flight lap, Lv3 cap & Lv3->Lv4 Hotel rule!)
     for (const pr of Object.values(properties)) {
       if (picks.length >= 6) break;
       if (
@@ -659,7 +662,6 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
       }
     }
 
-    // 3. Prime unowned Resorts / Cities
     for (const t of [...validTiles].reverse()) {
       if (picks.length >= 6) break;
       const move = resolveWorldTourMovement(player.position, t.index);
@@ -689,30 +691,31 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
       data-testid="world-tour-modal"
       role="region"
       aria-label="Chọn điểm đến Du Lịch Xuyên Việt"
-      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(580px,94vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(580px,94vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
     >
       <div className="shrink-0 bt-header-green px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
+          <div className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">
             Chuyến Bay Đầu Lượt · Vé Bay {formatBusinessTourCompact(WORLD_TOUR_FEE)}
           </div>
-          <h3 className="font-display text-base sm:text-lg font-black uppercase leading-tight text-white truncate">
-            ✈️ Du Lịch Xuyên Việt — Chọn Điểm Đến
+          <h3 className="font-display text-base sm:text-lg font-black uppercase leading-tight text-white flex items-center gap-1.5 truncate">
+            <Plane className="h-4 w-4 text-emerald-200 shrink-0" aria-hidden="true" />
+            <span className="truncate">Du Lịch Xuyên Việt — Chọn Điểm Đến</span>
           </h3>
         </div>
         <button
           type="button"
           onClick={onSkipWorldTour}
-          className="px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-xs font-extrabold text-white cursor-pointer whitespace-nowrap shrink-0"
+          className="px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-xs font-extrabold text-white cursor-pointer whitespace-nowrap shrink-0"
         >
           Đổ Xúc Xắc Thường
         </button>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3 sm:p-3.5 space-y-2">
-        <p className="text-[11px] sm:text-xs text-slate-700 leading-snug">
-          Nhấn trực tiếp vào <strong className="font-bold text-[#0284C7]">bất kỳ ô đất/khu nghỉ dưỡng trống hoặc tài sản của bạn trên bàn cờ 3D</strong> (qua Bắt Đầu nhận{' '}
-          <span className="font-mono-num font-black text-[#16A34A]">
+        <p className="text-[11px] sm:text-xs text-[#525e73] leading-snug">
+          Nhấn vào <strong className="font-bold text-[#141c2b]">ô đất trống hoặc tài sản của bạn trên bàn cờ 3D</strong> (qua Bắt Đầu nhận{' '}
+          <span className="font-mono-num font-black text-emerald-700">
             +{formatBusinessTourSpaced(START_SALARY)}
           </span>
           ) hoặc chọn nhanh:
@@ -726,12 +729,12 @@ export const WorldTourPrompt: React.FC<WorldTourPromptProps> = ({
                 key={item.tileIndex}
                 type="button"
                 onClick={() => onSelectTargetTile(item.tileIndex)}
-                className="p-2 rounded-2xl bg-sky-50 hover:bg-sky-100 border-2 border-sky-200 hover:border-[#29B6F6] text-left transition-colors cursor-pointer"
+                className="p-2 rounded-xl bg-white hover:bg-[#efece4] border border-[#ded8ca] hover:border-[#b7ae9c] text-left transition-colors cursor-pointer"
               >
-                <div className="font-display text-xs font-black text-slate-900 truncate">
+                <div className="font-display text-xs font-black text-[#141c2b] truncate">
                   {t.name}
                 </div>
-                <div className="text-[10px] font-extrabold text-[#16A34A] truncate mt-0.5">
+                <div className="text-[10px] font-bold text-emerald-700 truncate mt-0.5">
                   {item.tag}
                 </div>
               </button>
@@ -749,7 +752,6 @@ function isPurchasableTileSafe(kind: TileKind): boolean {
 
 /* ============================================================================
  * 5. COMPACT DOCKED TACTICAL CHANCE CARD TARGET SELECTOR
- *    (EARTHQUAKE 🌋 · POWER_OUTAGE ⚡ · SHIELD_CITY 🛡️)
  * ============================================================================ */
 interface TacticalCardTargetModalProps {
   kind: TacticalCardActionKind;
@@ -776,22 +778,25 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
     kind === 'SHIELD_CITY'
       ? {
           badge: 'Thẻ Chiến Thuật Phòng Thủ',
-          title: '🛡️ Chọn Thành Phố Của Bạn Để Dựng Khiên',
-          hint: 'Khiên Bảo Hộ chặn Mua đứt 2× và hấp thụ 1 đòn Động đất hoặc Mất điện!',
+          title: 'Chọn Thành Phố Của Bạn Để Dựng Khiên',
+          hint: 'Khiên Bảo Hộ chặn Mua đứt 2× và hấp thụ 1 đòn Động đất hoặc Mất điện.',
           headerClass: 'bt-header-sky',
+          icon: <Shield className="h-4 w-4 text-sky-300 shrink-0" aria-hidden="true" />,
         }
       : kind === 'POWER_OUTAGE'
         ? {
             badge: 'Thẻ Chiến Thuật Tấn Công',
-            title: '⚡ Chọn Đô Thị Đối Thủ Để Cắt Điện (Thuê = 0K)',
+            title: 'Chọn Đô Thị Đối Thủ Để Cắt Điện (Thuê = 0K)',
             hint: 'Nhấn trực tiếp vào đô thị đối thủ trên bàn cờ 3D hoặc chọn trong danh sách:',
             headerClass: 'bt-header-pink',
+            icon: <Zap className="h-4 w-4 text-amber-300 shrink-0" aria-hidden="true" />,
           }
         : {
             badge: 'Thẻ Chiến Thuật Tấn Công',
-            title: '🌋 Chọn Thành Phố Đối Thủ Để Gây Địa Chấn',
+            title: 'Chọn Thành Phố Đối Thủ Để Gây Địa Chấn',
             hint: 'Hạ 1 cấp nhà của đối thủ, hoặc san phẳng đất trống về Ngân hàng (Khách sạn ★ miễn nhiễm):',
             headerClass: 'bt-header-pink',
+            icon: <Flame className="h-4 w-4 text-amber-300 shrink-0" aria-hidden="true" />,
           };
 
   const candidates = useMemo(() => {
@@ -813,7 +818,7 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
           tileIndex: idx,
           name: tile.name,
           ownerName: owner?.name || '',
-          color: owner?.color || tile.groupColor || '#0284C7',
+          color: owner?.color || tile.groupColor || '#182232',
           level: pr?.level ?? 0,
           isResort: tile.kind === TileKind.RESORT,
           isShielded: shieldSet.has(idx),
@@ -829,28 +834,29 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
       data-testid="tactical-card-target-modal"
       role="region"
       aria-label={meta.title}
-      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(560px,94vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-3xl overflow-hidden animate-pop-in pointer-events-auto"
+      className="fixed bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-25 w-[min(560px,94vw)] max-h-[calc(100dvh-1.5rem)] flex flex-col bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto"
     >
       <div className={`shrink-0 ${meta.headerClass} px-4 sm:px-5 py-2.5 flex items-center justify-between gap-2`}>
         <div className="min-w-0">
-          <div className="text-[10px] font-black uppercase tracking-wider text-[#FEF08A]">
+          <div className="text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
             {meta.badge}
           </div>
-          <h3 className="font-display text-base sm:text-lg font-black uppercase leading-tight text-white truncate">
-            {meta.title}
+          <h3 className="font-display text-base sm:text-lg font-black uppercase leading-tight text-white flex items-center gap-1.5 truncate">
+            {meta.icon}
+            <span className="truncate">{meta.title}</span>
           </h3>
         </div>
         <button
           type="button"
           onClick={onSkip}
-          className="px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-xs font-extrabold text-white cursor-pointer whitespace-nowrap shrink-0"
+          className="px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-xs font-extrabold text-white cursor-pointer whitespace-nowrap shrink-0"
         >
           Bỏ Qua
         </button>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto slim-scroll p-3 sm:p-3.5 space-y-2">
-        <p className="text-[11px] sm:text-xs text-slate-700 leading-snug">{meta.hint}</p>
+        <p className="text-[11px] sm:text-xs text-[#525e73] leading-snug">{meta.hint}</p>
 
         <div className="max-h-36 overflow-y-auto slim-scroll grid grid-cols-1 sm:grid-cols-2 gap-1.5 pr-1">
           {candidates.map((c) => (
@@ -858,18 +864,19 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
               key={c.tileIndex}
               type="button"
               onClick={() => onSelectTarget(c.tileIndex)}
-              className="px-3 py-2 rounded-2xl bg-sky-50 hover:bg-sky-100 border-2 border-sky-200 hover:border-[#0284C7] flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
+              className="px-3 py-2 rounded-xl bg-white hover:bg-[#efece4] border border-[#ded8ca] hover:border-[#b7ae9c] flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
             >
               <div className="flex items-center gap-2 min-w-0">
                 <span
-                  className="h-5 w-2 rounded-full shrink-0"
+                  className="h-5 w-1.5 rounded-full shrink-0"
                   style={{ backgroundColor: c.color }}
                 />
                 <div className="min-w-0">
-                  <div className="font-display text-xs font-black text-slate-900 truncate">
-                    {c.name} {c.isShielded ? '🛡️' : ''}
+                  <div className="font-display text-xs font-black text-[#141c2b] flex items-center gap-1 truncate">
+                    <span className="truncate">{c.name}</span>
+                    {c.isShielded && <Shield className="h-3 w-3 text-sky-600 shrink-0" aria-hidden="true" />}
                   </div>
-                  <div className="text-[10px] font-semibold text-slate-600 truncate">
+                  <div className="text-[10px] font-semibold text-[#64748b] truncate">
                     {kind === 'SHIELD_CITY' ? '' : `${c.ownerName} · `}
                     {c.isResort
                       ? 'Khu nghỉ dưỡng'
@@ -893,7 +900,7 @@ export const TacticalCardTargetModal: React.FC<TacticalCardTargetModalProps> = (
 };
 
 /* ============================================================================
- * 6. PURE BUSINESS TOUR 32-TILE RULEBOOK MODAL
+ * 6. CLEAN RULEBOOK MODAL
  * ============================================================================ */
 interface RulebookModalProps {
   onClose: () => void;
@@ -906,7 +913,7 @@ export const RulebookModal: React.FC<RulebookModalProps> = ({ onClose }) => {
   return (
     <div
       data-testid="rulebook-modal"
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/45 pointer-events-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/50 pointer-events-auto"
     >
       <div
         ref={dialogRef}
@@ -914,11 +921,11 @@ export const RulebookModal: React.FC<RulebookModalProps> = ({ onClose }) => {
         role="dialog"
         aria-modal="true"
         aria-labelledby="rulebook-modal-title"
-        className="w-full max-w-2xl bt-casual-modal rounded-3xl overflow-hidden animate-pop-in flex flex-col max-h-[calc(100dvh-1.5rem)]"
+        className="w-full max-w-2xl bt-casual-modal rounded-2xl overflow-hidden animate-pop-in flex flex-col max-h-[calc(100dvh-1.5rem)]"
       >
         <div className="shrink-0 bt-header-sky px-5 sm:px-6 py-4 flex items-center justify-between gap-3">
           <div>
-            <div className="text-xs font-extrabold text-[#FEF08A]">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
               Cẩm Nang Quy Tắc Business Tour 32 Ô Chuẩn Hóa
             </div>
             <h2
@@ -932,69 +939,94 @@ export const RulebookModal: React.FC<RulebookModalProps> = ({ onClose }) => {
             type="button"
             onClick={onClose}
             aria-label="Đóng sổ tay luật chơi"
-            className="icon-hit-target h-8 w-8 rounded-full bg-white/20 hover:bg-white/35 flex items-center justify-center text-white font-black cursor-pointer shrink-0"
+            className="icon-hit-target h-8 w-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white cursor-pointer shrink-0"
           >
-            ✕
+            <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
 
-        <div className="flex-1 min-h-0 p-5 sm:p-6 overflow-y-auto slim-scroll divide-y divide-sky-100 text-xs sm:text-sm text-slate-700">
-          <div className="pb-3.5 space-y-1">
-            <div className="font-display font-black text-slate-900">
-              01. Xây Công Trình · Lên Khách Sạn ★ &amp; Ô Bắt Đầu
+        <div className="flex-1 min-h-0 p-5 sm:p-6 overflow-y-auto slim-scroll space-y-3 text-xs sm:text-sm text-[#334155]">
+          <section className="p-3.5 rounded-xl bg-white border border-[#ded8ca] space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded-md bg-[#182232] text-amber-300 font-mono-num text-[11px] font-black">
+                01
+              </span>
+              <h3 className="font-display font-black text-[#141c2b]">
+                Xây Công Trình · Lên Khách Sạn ★ &amp; Ô Bắt Đầu
+              </h3>
             </div>
             <p className="text-xs leading-relaxed">
-              Đi qua hoặc dừng tại <strong className="font-bold text-[#16A34A]">Ô Bắt Đầu (Ô 0)</strong> nhận lương <strong className="font-mono-num text-[#16A34A]">+300K</strong> và mở khóa Vòng mới. Vòng 1 xây tối đa <strong className="font-bold text-[#16A34A]">2 Nhà</strong>; từ Vòng 2 trở đi xây tối đa <strong className="font-bold text-[#16A34A]">3 Nhà</strong>. Chỉ nâng cấp lên <strong className="font-bold text-rose-700">Khách sạn Biểu tượng (★)</strong> khi ghé lại thành phố đã có sẵn <strong className="font-bold text-slate-900">3 Nhà</strong>!
+              Đi qua hoặc dừng tại <strong className="font-bold text-emerald-700">Ô Bắt Đầu (Ô 0)</strong> nhận lương <strong className="font-mono-num text-emerald-700">+300K</strong> và mở khóa Vòng mới. Vòng 1 xây tối đa <strong className="font-bold text-[#141c2b]">2 Nhà</strong>; từ Vòng 2 trở đi xây tối đa <strong className="font-bold text-[#141c2b]">3 Nhà</strong>. Chỉ nâng cấp lên <strong className="font-bold text-rose-700">Khách sạn Biểu tượng (★)</strong> khi ghé lại thành phố đã có sẵn <strong className="font-bold text-[#141c2b]">3 Nhà</strong>.
             </p>
-          </div>
+          </section>
 
-          <div className="py-3.5 space-y-1">
-            <div className="font-display font-black text-slate-900">
-              02. Thâu Tóm Đô Thị (Mua Lại 2×) · Khu Nghỉ Dưỡng &amp; Khiên Bảo Hộ
+          <section className="p-3.5 rounded-xl bg-white border border-[#ded8ca] space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded-md bg-[#182232] text-amber-300 font-mono-num text-[11px] font-black">
+                02
+              </span>
+              <h3 className="font-display font-black text-[#141c2b]">
+                Thâu Tóm Đô Thị (Mua Lại 2×) · Khu Nghỉ Dưỡng &amp; Khiên Bảo Hộ
+              </h3>
             </div>
             <p className="text-xs leading-relaxed">
-              Sau khi trả đủ tiền thuê tại thành phố Cấp 0–3 của đối thủ, bạn có thể chi <strong className="font-bold text-[#D97706]">2× tổng vốn đầu tư</strong> để mua đứt. <strong className="font-bold text-slate-900">Khách sạn ★, Khu nghỉ dưỡng và thành phố có Khiên Bảo Hộ 🛡️</strong> miễn nhiễm mua lại. 4 Khu nghỉ dưỡng có bảng thuê lũy tiến: <strong className="font-mono-num font-bold text-[#0284C7]">50K / 150K / 400K / 1M</strong>.
+              Sau khi trả đủ tiền thuê tại thành phố Cấp 0–3 của đối thủ, bạn có thể chi <strong className="font-bold text-amber-700">2× tổng vốn đầu tư</strong> để mua đứt. <strong className="font-bold text-[#141c2b]">Khách sạn ★, Khu nghỉ dưỡng và thành phố có Khiên Bảo Hộ</strong> miễn nhiễm mua lại. 4 Khu nghỉ dưỡng có bảng thuê lũy tiến: <strong className="font-mono-num font-bold text-[#141c2b]">50K / 150K / 400K / 1M</strong>.
             </p>
-          </div>
+          </section>
 
-          <div className="py-3.5 space-y-1">
-            <div className="font-display font-black text-slate-900">
-              03. Cúp Quốc Gia (0K) · Lễ Hội Đầu Mùa (×2) · Du Lịch (50K) · Đảo Hoang &amp; Thuế
+          <section className="p-3.5 rounded-xl bg-white border border-[#ded8ca] space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded-md bg-[#182232] text-amber-300 font-mono-num text-[11px] font-black">
+                03
+              </span>
+              <h3 className="font-display font-black text-[#141c2b]">
+                Cúp Quốc Gia (0K) · Lễ Hội (×2) · Du Lịch (50K) · Đảo Hoang &amp; Thuế
+              </h3>
             </div>
             <p className="text-xs leading-relaxed">
-              <strong className="font-bold text-[#D97706]">Cúp Quốc Gia (Ô 16, 0K)</strong>: Chỉ <strong className="font-bold text-slate-900">1 thành phố duy nhất</strong> giữ Cúp tại một thời điểm — người dừng được chọn miễn phí 1 thành phố của mình đăng cai (dời Cúp về đó và tăng hệ số toàn giải <strong className="font-bold text-[#D97706]">2× → 3× → 4×...</strong>).{' '}
-              <strong className="font-bold text-[#EA580C]">Lễ Hội Đầu Mùa 🎉 (×2, tùy chọn sảnh)</strong>: Khi bật ở Phòng chờ, đầu ván chọn ngẫu nhiên <strong className="font-bold text-slate-900">3 thành phố cố định suốt trận</strong> được nhân <strong className="font-bold text-[#EA580C]">×2</strong> tiền thuê (nhân chồng với Độc quyền màu và Cúp Quốc Gia).{' '}
-              <strong className="font-bold text-[#16A34A]">Du Lịch (Ô 24, 50K)</strong>: Đầu lượt kế tiếp bay tới bất kỳ <strong className="font-bold text-slate-900">ô đất/khu nghỉ dưỡng trống hoặc tài sản của chính bạn</strong>.{' '}
-              <strong className="font-bold text-[#0284C7]">Đảo Hoang (Ô 8)</strong>: Đổ ra Đôi, dùng Thẻ Thoát Đảo hoặc nộp 200K; sang lượt thứ 3 tự giải cứu miễn phí <strong className="font-mono-num">0K</strong>.{' '}
+              <strong className="font-bold text-amber-700">Cúp Quốc Gia (Ô 16, 0K)</strong>: Chỉ 1 thành phố giữ Cúp tại một thời điểm — người dừng chọn miễn phí 1 thành phố của mình đăng cai và tăng hệ số giải <strong className="font-bold text-amber-700">2× → 3× → 4×...</strong>.{' '}
+              <strong className="font-bold text-[#141c2b]">Lễ Hội Đầu Mùa (×2, tùy chọn sảnh)</strong>: Chọn ngẫu nhiên 3 thành phố cố định suốt trận nhân <strong className="font-bold">×2</strong> tiền thuê.{' '}
+              <strong className="font-bold text-emerald-700">Du Lịch (Ô 24, 50K)</strong>: Đầu lượt kế tiếp bay tới bất kỳ ô đất trống hoặc tài sản của chính bạn.{' '}
+              <strong className="font-bold text-[#141c2b]">Đảo Hoang (Ô 8)</strong>: Đổ ra Đôi, dùng Thẻ Thoát Đảo hoặc nộp 200K; sang lượt thứ 3 tự giải cứu miễn phí <strong className="font-mono-num">0K</strong>.{' '}
               <strong className="font-bold text-rose-700">Cơ Quan Thuế (Ô 30)</strong>: Nộp <strong className="font-bold">Thuế 10%</strong> tổng vốn bất động sản.{' '}
-              <strong className="font-bold text-rose-700">Thẻ Cơ Hội (?)</strong>: Gồm Tiệc Sinh Nhật thu đủ 25K từ mỗi đối thủ, Địa Chấn 🌋, Mất Điện ⚡ và Khiên Bảo Hộ 🛡️!
+              <strong className="font-bold text-[#141c2b]">Thẻ Cơ Hội (?)</strong>: Gồm Tiệc Sinh Nhật 25K, Địa Chấn, Mất Điện và Khiên Bảo Hộ.
             </p>
-          </div>
+          </section>
 
-          <div className="py-3.5 space-y-1">
-            <div className="font-display font-black text-slate-900">
-              04. Tự Động Qua Lượt · Bán Trả Nợ 100% &amp; Tùy Chọn Phòng Chờ
+          <section className="p-3.5 rounded-xl bg-white border border-[#ded8ca] space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded-md bg-[#182232] text-amber-300 font-mono-num text-[11px] font-black">
+                04
+              </span>
+              <h3 className="font-display font-black text-[#141c2b]">
+                Tự Động Qua Lượt · Bán Trả Nợ 100% &amp; Tùy Chọn Phòng Chờ
+              </h3>
             </div>
             <p className="text-xs leading-relaxed">
-              Hoàn thành hành động sẽ <strong className="font-bold text-[#0284C7]">tự động chuyển lượt</strong> (ra Đôi lần 1–2 được đổ tiếp ngay). Khi thiếu tiền trả nợ, bán thành phố về Ngân hàng hoàn <strong className="font-bold text-[#16A34A]">100% vốn</strong>. Trong Phòng chờ (mặc định tắt), bạn có thể bật <strong className="font-bold text-slate-900">Xúc xắc chiến thuật</strong> (<strong className="font-bold">Chẵn / Lẻ</strong> 3 lượt, <strong className="font-bold">Đổ lại</strong> 2 lượt) hoặc <strong className="font-bold text-slate-900">Lễ Hội Đầu Mùa (3 thành phố ×2 thuê)</strong>.
+              Hoàn thành hành động sẽ tự động chuyển lượt (ra Đôi lần 1–2 được đổ tiếp ngay). Khi thiếu tiền trả nợ, bán thành phố về Ngân hàng hoàn <strong className="font-bold text-emerald-700">100% vốn</strong>. Trong Phòng chờ (mặc định tắt), bạn có thể bật <strong className="font-bold text-[#141c2b]">Xúc xắc chiến thuật</strong> (Chẵn/Lẻ 3 lượt, Đổ lại 2 lượt) hoặc <strong className="font-bold text-[#141c2b]">Lễ Hội Đầu Mùa</strong>.
             </p>
-          </div>
+          </section>
 
-          <div className="pt-3.5 space-y-1">
-            <div className="font-display font-black text-[#D97706]">
-              05. Chiến Thắng Tức Thì · Đồng Hồ 20 Phút &amp; Đấu Đội 2v2
+          <section className="p-3.5 rounded-xl bg-white border border-[#ded8ca] space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded-md bg-amber-400 text-[#141c2b] font-mono-num text-[11px] font-black">
+                05
+              </span>
+              <h3 className="font-display font-black text-[#141c2b]">
+                Chiến Thắng Tức Thì · Đồng Hồ 20 Phút &amp; Đấu Đội 2v2
+              </h3>
             </div>
             <p className="text-xs leading-relaxed">
-              Thắng ngay khi đạt <strong className="font-bold text-slate-900">Độc Quyền 3 Bộ Màu</strong>, sở hữu <strong className="font-bold text-slate-900">Trọn 1 Cạnh Bàn Cờ</strong>, gom đủ <strong className="font-bold text-slate-900">4 Khu Nghỉ Dưỡng</strong>, hoặc người cuối cùng trụ vững. Hết <strong className="font-mono-num text-slate-900">20 phút (20:00)</strong> phân định theo Tổng Tài Sản Ròng! Chế độ <strong className="font-bold text-[#0284C7]">Đấu Đội 2v2</strong> miễn tiền thuê giữa đồng đội và gộp tài sản để xét bộ độc quyền.
+              Thắng ngay khi đạt <strong className="font-bold text-[#141c2b]">Độc Quyền 3 Bộ Màu</strong>, sở hữu <strong className="font-bold text-[#141c2b]">Trọn 1 Cạnh Bàn Cờ</strong>, gom đủ <strong className="font-bold text-[#141c2b]">4 Khu Nghỉ Dưỡng</strong>, hoặc người cuối cùng trụ vững. Hết <strong className="font-mono-num text-[#141c2b]">20 phút (20:00)</strong> phân định theo Tổng Tài Sản Ròng. Chế độ <strong className="font-bold text-[#141c2b]">Đấu Đội 2v2</strong> miễn tiền thuê giữa đồng đội và gộp tài sản để xét bộ độc quyền.
             </p>
-          </div>
+          </section>
         </div>
 
-        <div className="shrink-0 px-5 py-3 bg-sky-50 border-t border-sky-200 flex justify-end">
+        <div className="shrink-0 px-5 py-3 bg-[#f3efe6] border-t border-[#dad3c4] flex justify-end">
           <button
             type="button"
             onClick={onClose}
-            className="bt-btn-green px-7 py-2.5 rounded-2xl text-sm font-black uppercase tracking-wide cursor-pointer whitespace-nowrap"
+            className="bt-btn-green px-7 py-2.5 rounded-xl text-sm font-black uppercase tracking-wide cursor-pointer whitespace-nowrap"
           >
             Đã Hiểu Luật Chơi
           </button>
