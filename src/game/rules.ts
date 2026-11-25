@@ -1,4 +1,5 @@
 import { BOARD_TILES, COLOR_GROUP_META } from './boardData';
+import type { BotDifficulty } from './onlineTypes';
 import {
   AutoSalePlan,
   BotQuipPayload,
@@ -16,6 +17,8 @@ import {
   TileDefinition,
   TileKind,
 } from './types';
+
+export type { BotDifficulty };
 
 export const TOTAL_TILES = 32;
 export const LOST_ISLAND_TILE_INDEX = 8;
@@ -1623,10 +1626,12 @@ function isStrategicWinOrBlockTile(
   tileIndex: number,
   players: PlayerState[],
   properties: Record<number, PropertyState>,
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  options?: { includeOwnSecondResort?: boolean }
 ): boolean {
   const tile = BOARD_TILES[tileIndex];
   if (!tile) return false;
+  const includeOwnSecondResort = options?.includeOwnSecondResort ?? true;
 
   const activePlayers = players.filter((p) => !p.bankrupt);
   const ownerGroups: Set<number>[] =
@@ -1660,6 +1665,7 @@ function isStrategicWinOrBlockTile(
       if (ownedResorts >= RESORT_TILE_INDICES.length - 1) return true;
     }
     if (
+      includeOwnSecondResort &&
       RESORT_TILE_INDICES.some((idx) => {
         if (idx === tileIndex) return false;
         const oid = properties[idx]?.ownerId;
@@ -1685,16 +1691,21 @@ function isStrategicWinOrBlockTile(
   return false;
 }
 
+function getTwoDiceProbabilityWeight(steps: number): number {
+  if (steps < 2 || steps > 12) return 0;
+  return (6 - Math.abs(7 - steps)) / 36;
+}
+
 /**
- * Bot buys unowned tile if remaining cash >= 400K, or >= 100K when completing/blocking
- * a Color Group, Board Side, or Resort Monopoly.
+ * Bot buys unowned tile according to difficulty cash reserve thresholds and strategic blocking.
  */
 export function botShouldBuyProperty(
   bot: PlayerState,
   tileIndex: number,
   players: PlayerState[],
   properties: Record<number, PropertyState>,
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  difficulty: BotDifficulty = 'normal'
 ): boolean {
   const tile = BOARD_TILES[tileIndex];
   if (!tile || !tile.price || !isPurchasableTile(tile)) return false;
@@ -1705,11 +1716,15 @@ export function botShouldBuyProperty(
   }
 
   const cashAfter = bot.cash - tile.price;
-  if (cashAfter >= 400_000) return true;
+  const generalReserve =
+    difficulty === 'easy' ? 650_000 : difficulty === 'hard' ? 250_000 : 400_000;
+  if (cashAfter >= generalReserve) return true;
 
+  const strategicReserve =
+    difficulty === 'easy' ? 350_000 : difficulty === 'hard' ? 25_000 : 100_000;
   if (
     isStrategicWinOrBlockTile(bot.id, tileIndex, players, properties, matchMode) &&
-    cashAfter >= 100_000
+    cashAfter >= strategicReserve
   ) {
     return true;
   }
@@ -1718,16 +1733,20 @@ export function botShouldBuyProperty(
 }
 
 /**
- * Bot chooses how many initial houses (0..3) to build while obeying lap caps.
+ * Bot chooses how many initial houses (0..3) to build while obeying lap caps and difficulty reserves.
  */
 export function botPickInitialPurchaseTier(
   bot: PlayerState,
   tileIndex: number,
   properties: Record<number, PropertyState>,
   players?: PlayerState[],
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  difficulty: BotDifficulty = 'normal'
 ): 0 | 1 | 2 | 3 {
-  const tiers = getInitialPurchaseTiers(bot, tileIndex).filter((t) => t.affordable);
+  const maxTierCap = difficulty === 'easy' ? 2 : 3;
+  const tiers = getInitialPurchaseTiers(bot, tileIndex).filter(
+    (t) => t.affordable && t.level <= maxTierCap
+  );
   if (tiers.length <= 1) return 0;
 
   const tile = BOARD_TILES[tileIndex];
@@ -1739,7 +1758,18 @@ export function botPickInitialPurchaseTier(
       const oid = properties[idx]?.ownerId;
       return oid !== null && oid !== undefined && actorTeam.has(oid);
     });
-  const reserveTarget = completesMono ? 250_000 : 450_000;
+  const reserveTarget =
+    difficulty === 'easy'
+      ? completesMono
+        ? 450_000
+        : 650_000
+      : difficulty === 'hard'
+        ? completesMono
+          ? 150_000
+          : 300_000
+        : completesMono
+          ? 250_000
+          : 450_000;
 
   let chosen: 0 | 1 | 2 | 3 = 0;
   for (const tier of tiers) {
@@ -1751,12 +1781,14 @@ export function botPickInitialPurchaseTier(
 }
 
 /**
- * When a Bot lands on its own PROPERTY, picks highest legal upgrade target level respecting lap caps & Lv3->Lv4 rule.
+ * When a Bot lands on its own PROPERTY, picks highest legal upgrade target level respecting lap caps,
+ * Lv3->Lv4 rule, and difficulty thresholds.
  */
 export function botPickOnTileUpgradeTargetLevel(
   bot: PlayerState,
   tileIndex: number,
-  properties: Record<number, PropertyState>
+  properties: Record<number, PropertyState>,
+  difficulty: BotDifficulty = 'normal'
 ): number | null {
   const prop = properties[tileIndex];
   const tile = BOARD_TILES[tileIndex];
@@ -1764,13 +1796,25 @@ export function botPickOnTileUpgradeTargetLevel(
     return null;
   }
 
-  for (let target = 4; target > prop.level; target--) {
+  const maxTarget = difficulty === 'easy' && bot.laps <= 1 ? 2 : 4;
+  for (let target = maxTarget; target > prop.level; target--) {
     const check = canUpgradeProperty(bot, tileIndex, properties, {
       isOnTileLanding: true,
       targetLevel: target,
     });
     if (!check.allowed) continue;
-    const minReserve = target === 4 ? 200_000 : 350_000;
+    const minReserve =
+      difficulty === 'easy'
+        ? target === 4
+          ? 450_000
+          : 550_000
+        : difficulty === 'hard'
+          ? target === 4
+            ? 100_000
+            : 200_000
+          : target === 4
+            ? 200_000
+            : 350_000;
     if (bot.cash - check.cost >= minReserve) {
       return target;
     }
@@ -1787,7 +1831,8 @@ export function botShouldBuyoutProperty(
   players: PlayerState[],
   properties: Record<number, PropertyState>,
   modifiers?: MatchBoardModifiers,
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  difficulty: BotDifficulty = 'normal'
 ): boolean {
   const check = canBuyoutProperty(bot, tileIndex, properties, modifiers, players, matchMode);
   if (!check.allowed) return false;
@@ -1818,13 +1863,27 @@ export function botShouldBuyoutProperty(
         return oid !== null && oid !== undefined && actorTeam.has(oid);
       })
   );
-  if ((completesBotColor || completesBotSide) && cashAfter >= 150_000) return true;
+  const completesReserve =
+    difficulty === 'easy' ? 500_000 : difficulty === 'hard' ? 80_000 : 150_000;
+  if ((completesBotColor || completesBotSide) && cashAfter >= completesReserve) return true;
 
   const ownerId = prop.ownerId;
   const ownerTeam = getTeamOwnerIds(ownerId, players, matchMode);
   const ownerBrokenMono =
     Boolean(tile.group) &&
     ownsFullColorGroup(ownerId, tile.group!, properties, players, matchMode);
+  const groupTiles = tile.group ? COLOR_GROUP_META[tile.group].tileIndices : [];
+  const ownerColorCount = groupTiles.filter((idx) => {
+    const oid = properties[idx]?.ownerId;
+    return oid !== null && oid !== undefined && ownerTeam.has(oid);
+  }).length;
+  const ownerNearColor =
+    groupTiles.length > 0 &&
+    ownerColorCount === groupTiles.length - 1 &&
+    groupTiles.every((idx) => {
+      const oid = properties[idx]?.ownerId;
+      return oid === null || oid === undefined || !actorTeam.has(oid);
+    });
   const ownerMonoCount = Object.values(ColorGroup).filter((g) =>
     ownsFullColorGroup(ownerId, g, properties, players, matchMode)
   ).length;
@@ -1839,11 +1898,20 @@ export function botShouldBuyoutProperty(
   );
   const ownerExists = players.some((p) => p.id === ownerId && !p.bankrupt);
 
-  if (ownerExists && (ownerBrokenMono || ownerMonoCount >= 2 || ownerNearSide) && cashAfter >= 280_000) {
+  const disruptReserve =
+    difficulty === 'easy' ? 900_000 : difficulty === 'hard' ? 100_000 : 280_000;
+  const shouldDisrupt =
+    ownerBrokenMono ||
+    ownerMonoCount >= 2 ||
+    ownerNearSide ||
+    (difficulty === 'hard' && ownerNearColor);
+  if (ownerExists && shouldDisrupt && cashAfter >= disruptReserve) {
     return true;
   }
 
-  return cashAfter >= 700_000;
+  const generalReserve =
+    difficulty === 'easy' ? 1_200_000 : difficulty === 'hard' ? 450_000 : 700_000;
+  return cashAfter >= generalReserve;
 }
 
 /**
@@ -1855,7 +1923,8 @@ export function botPickChampionshipTarget(
   modifiers: MatchBoardModifiers,
   isFree = false,
   players: PlayerState[] = [],
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  difficulty: BotDifficulty = 'normal'
 ): number | null {
   const fee = isFree ? 0 : CHAMPIONSHIP_FEE;
   if (bot.cash < fee) return null;
@@ -1866,12 +1935,40 @@ export function botPickChampionshipTarget(
   );
   if (ownedCities.length === 0) return null;
 
+  const actorTeam = getTeamOwnerIds(bot.id, players, matchMode);
+  const shieldSet = new Set(modifiers.shieldedTileIndices ?? []);
+  const activeOpponents =
+    difficulty === 'hard'
+      ? players.filter((p) => !p.bankrupt && !p.inJail && !actorTeam.has(p.id))
+      : [];
+
   let bestTile = ownedCities[0].tileIndex;
   let bestScore = -1;
   for (const city of ownedCities) {
-    const simMods = applyChampionshipHost(modifiers, city.tileIndex);
-    const projectedRent = calculateRent(city.tileIndex, properties, simMods, players, matchMode);
-    const score = projectedRent + city.level * 15_000;
+    let score: number;
+    if (difficulty === 'easy') {
+      const rawRent = BOARD_TILES[city.tileIndex]?.rents?.[city.level] ?? 0;
+      score = rawRent + city.level * 10_000;
+    } else {
+      const simMods = applyChampionshipHost(modifiers, city.tileIndex);
+      const projectedRent = calculateRent(city.tileIndex, properties, simMods, players, matchMode);
+      if (difficulty === 'hard') {
+        if (projectedRent <= 0) {
+          score = city.level * 1_000;
+        } else {
+          const protectionBonus = city.level >= 4 || shieldSet.has(city.tileIndex) ? 0.15 : 0;
+          let proximityWeight = 0;
+          for (const opp of activeOpponents) {
+            const steps = (city.tileIndex - opp.position + TOTAL_TILES) % TOTAL_TILES;
+            proximityWeight += getTwoDiceProbabilityWeight(steps) * 0.6;
+          }
+          proximityWeight = Math.min(0.25, proximityWeight);
+          score = projectedRent * (1 + protectionBonus + proximityWeight) + city.level * 15_000;
+        }
+      } else {
+        score = projectedRent + city.level * 15_000;
+      }
+    }
     if (score > bestScore) {
       bestScore = score;
       bestTile = city.tileIndex;
@@ -1889,7 +1986,8 @@ export function botPickWorldTourTarget(
   properties: Record<number, PropertyState>,
   modifiers: MatchBoardModifiers,
   players: PlayerState[] = [],
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  difficulty: BotDifficulty = 'normal'
 ): number | null {
   if (bot.cash < WORLD_TOUR_FEE) return null;
 
@@ -1910,7 +2008,9 @@ export function botPickWorldTourTarget(
     }
   }
 
-  if (bot.cash < WORLD_TOUR_FEE + 150_000) return null;
+  const entryReserve =
+    difficulty === 'easy' ? 350_000 : difficulty === 'hard' ? 80_000 : 150_000;
+  if (bot.cash < WORLD_TOUR_FEE + entryReserve) return null;
 
   // 1. Monopoly completion on unowned tiles (single or 2v2 team combined)
   const actorTeam = getTeamOwnerIds(bot.id, players, matchMode);
@@ -1921,10 +2021,12 @@ export function botPickWorldTourTarget(
       t.price
   );
 
+  const monoReserve =
+    difficulty === 'easy' ? 300_000 : difficulty === 'hard' ? 40_000 : 120_000;
   for (const tile of validUnowned) {
     const move = resolveWorldTourMovement(bot.position, tile.index);
     const cashBudget = bot.cash + (move.passedStart ? START_SALARY : 0) - WORLD_TOUR_FEE;
-    if (cashBudget - tile.price! < 120_000) continue;
+    if (cashBudget - tile.price! < monoReserve) continue;
 
     if (tile.kind === TileKind.RESORT) {
       const ownedResorts = RESORT_TILE_INDICES.filter((i) => {
@@ -1955,6 +2057,22 @@ export function botPickWorldTourTarget(
     }
   }
 
+  // 1b. Hard bots also fly to block genuine opponent near-monopolies (excluding generic 2nd-resort buy heuristic)
+  if (difficulty === 'hard') {
+    for (const tile of validUnowned) {
+      const move = resolveWorldTourMovement(bot.position, tile.index);
+      const cashBudget = bot.cash + (move.passedStart ? START_SALARY : 0) - WORLD_TOUR_FEE;
+      if (cashBudget - tile.price! < monoReserve) continue;
+      if (
+        isStrategicWinOrBlockTile(bot.id, tile.index, players, properties, matchMode, {
+          includeOwnSecondResort: false,
+        })
+      ) {
+        return tile.index;
+      }
+    }
+  }
+
   // 2. Upgrade own city to next legal level (Lv3, or Hotel ★ when already at Lv3)
   const ownUpgradable = Object.values(properties)
     .filter(
@@ -1977,22 +2095,38 @@ export function botPickWorldTourTarget(
       cash: bot.cash + (move.passedStart ? START_SALARY : 0) - WORLD_TOUR_FEE,
       laps: bot.laps + move.lapsDelta,
     };
-    const bestTarget = botPickOnTileUpgradeTargetLevel(simBot, cand.tileIndex, properties);
+    const bestTarget = botPickOnTileUpgradeTargetLevel(simBot, cand.tileIndex, properties, difficulty);
     if (bestTarget !== null) {
       return cand.tileIndex;
     }
   }
 
-  // 3. Best affordable unowned Resort or City
+  // 3. Best affordable unowned Resort or City (lower fallback after blocks/upgrades)
+  const ownResortCount = RESORT_TILE_INDICES.filter((i) => {
+    const oid = properties[i]?.ownerId;
+    return oid !== null && oid !== undefined && actorTeam.has(oid);
+  }).length;
+  const generalWtReserve =
+    difficulty === 'easy' ? 550_000 : difficulty === 'hard' ? 200_000 : 350_000;
   const bestUnowned = validUnowned
     .filter((t) => {
       const move = resolveWorldTourMovement(bot.position, t.index);
       const cashBudget = bot.cash + (move.passedStart ? START_SALARY : 0) - WORLD_TOUR_FEE;
-      return cashBudget - (t.price ?? 0) >= 350_000;
+      return cashBudget - (t.price ?? 0) >= generalWtReserve;
     })
     .sort((a, b) => {
-      const scoreA = a.kind === TileKind.RESORT ? 250_000 : a.price ?? 0;
-      const scoreB = b.kind === TileKind.RESORT ? 250_000 : b.price ?? 0;
+      const scoreA =
+        a.kind === TileKind.RESORT
+          ? difficulty === 'hard' && ownResortCount >= 1
+            ? 500_000
+            : 250_000
+          : (a.price ?? 0);
+      const scoreB =
+        b.kind === TileKind.RESORT
+          ? difficulty === 'hard' && ownResortCount >= 1
+            ? 500_000
+            : 250_000
+          : (b.price ?? 0);
       return scoreB - scoreA;
     });
 
@@ -2004,10 +2138,13 @@ export function botPickWorldTourTarget(
 }
 
 export function botChooseJailAction(
-  bot: PlayerState
+  bot: PlayerState,
+  difficulty: BotDifficulty = 'normal'
 ): 'USE_CARD' | 'PAY_FINE' | 'ROLL_DOUBLES' {
   if (bot.jailFreeCards > 0) return 'USE_CARD';
-  if (bot.cash >= 650_000) return 'PAY_FINE';
+  const payThreshold =
+    difficulty === 'easy' ? 950_000 : difficulty === 'hard' ? 450_000 : 650_000;
+  if (bot.cash >= payThreshold) return 'PAY_FINE';
   return 'ROLL_DOUBLES';
 }
 
@@ -2504,7 +2641,8 @@ export function botPickTacticalCardTarget(
   players: PlayerState[],
   properties: Record<number, PropertyState>,
   modifiers: MatchBoardModifiers,
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  difficulty: BotDifficulty = 'normal'
 ): number | null {
   const valid = getValidTacticalCardTargets(
     kind,
@@ -2520,6 +2658,10 @@ export function botPickTacticalCardTarget(
   });
   if (valid.length === 0) return null;
 
+  if (difficulty === 'easy') {
+    return valid[0];
+  }
+
   const shieldSet = new Set(modifiers.shieldedTileIndices ?? []);
 
   let bestIdx = valid[0];
@@ -2530,41 +2672,63 @@ export function botPickTacticalCardTarget(
     const tile = BOARD_TILES[idx];
     if (!prop || !tile) continue;
 
+    const hasCup = modifiers.championshipTileIndex === idx;
+    const hasFestival = modifiers.festivalTileIndices.includes(idx);
+    const rent = calculateRent(idx, properties, modifiers, players, matchMode);
+    let score: number;
+
     if (kind === 'SHIELD_CITY') {
-      const rent = calculateRent(idx, properties, modifiers, players, matchMode);
-      const vulnerableBonus = prop.level < 4 ? 120_000 : 0;
+      const vulnerableBonus =
+        prop.level < 4 ? (difficulty === 'hard' ? 350_000 : 120_000) : 0;
       const monoBonus =
         tile.group && ownsFullColorGroup(bot.id, tile.group, properties, players, matchMode)
-          ? 200_000
+          ? difficulty === 'hard'
+            ? 300_000
+            : 200_000
           : 0;
-      const score = rent + vulnerableBonus + monoBonus;
-      if (score > bestScore) {
-        bestScore = score;
-        bestIdx = idx;
+      const modifierBonus =
+        difficulty === 'hard' ? (hasCup ? 250_000 : 0) + (hasFestival ? 150_000 : 0) : 0;
+      score = rent + vulnerableBonus + monoBonus + modifierBonus;
+    } else if (kind === 'POWER_OUTAGE') {
+      if (difficulty === 'hard') {
+        const mult = (hasCup ? 1.25 : 1) * (hasFestival ? 1.15 : 1);
+        const shieldPenalty = shieldSet.has(idx) ? 0.05 : 1;
+        score = (rent * mult + (hasCup ? 80_000 : 0) + (hasFestival ? 40_000 : 0)) * shieldPenalty;
+      } else {
+        const shieldPenalty = shieldSet.has(idx) ? 0.35 : 1;
+        score = rent * shieldPenalty;
       }
-      continue;
+    } else {
+      // EARTHQUAKE: prioritize breaking raw-land monopolies or downgrading highest-rent multi-house cities
+      const breaksMonopoly =
+        prop.level === 0 &&
+        Boolean(tile.group) &&
+        ownsFullColorGroup(prop.ownerId!, tile.group!, properties, players, matchMode);
+
+      if (difficulty === 'hard') {
+        let rentAfter = 0;
+        if (prop.level > 0) {
+          const simProps: Record<number, PropertyState> = {
+            ...properties,
+            [idx]: { ...prop, level: prop.level - 1 },
+          };
+          rentAfter = calculateRent(idx, simProps, modifiers, players, matchMode);
+        }
+        const rentDrop = Math.max(0, rent - rentAfter);
+        const rawScore =
+          rent +
+          rentDrop * 0.5 +
+          (breaksMonopoly ? 350_000 : 0) +
+          (hasCup ? 150_000 : 0) +
+          (hasFestival ? 80_000 : 0);
+        score = shieldSet.has(idx) ? rawScore * 0.05 : rawScore;
+      } else {
+        const rawScore =
+          rent + (breaksMonopoly ? 450_000 : 0) + (prop.level > 0 ? prop.level * 80_000 : 40_000);
+        score = shieldSet.has(idx) ? rawScore * 0.3 : rawScore;
+      }
     }
 
-    if (kind === 'POWER_OUTAGE') {
-      const rent = calculateRent(idx, properties, modifiers, players, matchMode);
-      const shieldPenalty = shieldSet.has(idx) ? 0.35 : 1;
-      const score = rent * shieldPenalty;
-      if (score > bestScore) {
-        bestScore = score;
-        bestIdx = idx;
-      }
-      continue;
-    }
-
-    // EARTHQUAKE: prioritize breaking raw-land monopolies or downgrading highest-rent multi-house cities
-    const rent = calculateRent(idx, properties, modifiers, players, matchMode);
-    const breaksMonopoly =
-      prop.level === 0 &&
-      Boolean(tile.group) &&
-      ownsFullColorGroup(prop.ownerId!, tile.group!, properties, players, matchMode);
-    const rawScore =
-      rent + (breaksMonopoly ? 450_000 : 0) + (prop.level > 0 ? prop.level * 80_000 : 40_000);
-    const score = shieldSet.has(idx) ? rawScore * 0.3 : rawScore;
     if (score > bestScore) {
       bestScore = score;
       bestIdx = idx;
@@ -2713,7 +2877,8 @@ export function botChooseTacticalDice(
   players: PlayerState[],
   properties: Record<number, PropertyState>,
   modifiers: MatchBoardModifiers,
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  difficulty: BotDifficulty = 'normal'
 ): TacticalDiceChoice {
   if (bot.inJail || (bot.evenOddCharges ?? 0) <= 0) return 'NORMAL';
 
@@ -2728,7 +2893,8 @@ export function botChooseTacticalDice(
 
   const evenAvg = evenSum / EVEN_DICE_PAIRS.length;
   const oddAvg = oddSum / ODD_DICE_PAIRS.length;
-  const threshold = 120_000;
+  const threshold =
+    difficulty === 'easy' ? 280_000 : difficulty === 'hard' ? 70_000 : 120_000;
 
   if (evenAvg - oddAvg >= threshold) return 'EVEN';
   if (oddAvg - evenAvg >= threshold) return 'ODD';
@@ -2745,7 +2911,8 @@ export function botShouldRerollDice(
   players: PlayerState[],
   properties: Record<number, PropertyState>,
   modifiers: MatchBoardModifiers,
-  matchMode: MatchMode = 'FFA'
+  matchMode: MatchMode = 'FFA',
+  difficulty: BotDifficulty = 'normal'
 ): boolean {
   if (bot.inJail || (bot.rerollCharges ?? 0) <= 0) return false;
 
@@ -2758,14 +2925,18 @@ export function botShouldRerollDice(
   const tile = BOARD_TILES[targetIdx];
   if (!tile) return false;
 
-  if (tile.kind === TileKind.LOST_ISLAND) return true;
-  if (tile.kind === TileKind.TAX && calculateTaxAmount(bot.id, properties) >= 150_000) {
+  if (tile.kind === TileKind.LOST_ISLAND) return difficulty !== 'easy';
+  const taxThreshold =
+    difficulty === 'easy' ? 300_000 : difficulty === 'hard' ? 120_000 : 150_000;
+  if (tile.kind === TileKind.TAX && calculateTaxAmount(bot.id, properties) >= taxThreshold) {
     return true;
   }
 
   if (isPurchasableTile(tile)) {
     const rent = calculateRent(targetIdx, properties, modifiers, players, matchMode, bot.id);
-    if (rent > 0 && (rent > bot.cash || rent >= bot.cash * 0.35)) {
+    const rentRatio =
+      difficulty === 'easy' ? 0.65 : difficulty === 'hard' ? 0.25 : 0.35;
+    if (rent > 0 && (rent > bot.cash || rent >= bot.cash * rentRatio)) {
       return true;
     }
   }

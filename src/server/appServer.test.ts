@@ -130,3 +130,131 @@ test('BUG-26: /api/bot-quip validates field types, sanitizes control characters,
     await srv.close();
   }
 });
+
+async function withEnv(
+  overrides: Record<string, string | undefined>,
+  fn: () => Promise<void>
+): Promise<void> {
+  const prev = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    prev.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of prev.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+test('Phase 1 Task 3: GET /api/rtc-config returns default STUN iceServers and allows microphone=(self) in Permissions-Policy', async () => {
+  await withEnv(
+    {
+      TURN_URLS: undefined,
+      TURN_USERNAME: undefined,
+      TURN_CREDENTIAL: undefined,
+    },
+    async () => {
+      const srv = await startHttpTestServer();
+      try {
+        const res = await fetch(`${srv.baseUrl}/api/rtc-config`);
+        assert.equal(res.status, 200);
+        assert.match(res.headers.get('content-type') || '', /application\/json/);
+        assert.equal(res.headers.get('cache-control'), 'no-store');
+
+        const permissionsPolicy = res.headers.get('permissions-policy') ?? '';
+        assert.match(permissionsPolicy, /microphone=\(self\)/);
+        assert.equal(permissionsPolicy.includes('microphone=()'), false);
+        assert.equal(permissionsPolicy, 'camera=(), microphone=(self), geolocation=()');
+
+        const body = (await res.json()) as { iceServers?: RTCIceServer[] };
+        assert.deepEqual(body.iceServers, [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun.cloudflare.com:3478' },
+        ]);
+      } finally {
+        await srv.close();
+      }
+    }
+  );
+});
+
+test('Phase 1 Task 3: GET /api/rtc-config appends TURN server from TURN_URLS (single and comma-separated) with credentials', async () => {
+  await withEnv(
+    {
+      TURN_URLS: 'turn:turn.example.com:3478',
+      TURN_USERNAME: 'u',
+      TURN_CREDENTIAL: 'p',
+    },
+    async () => {
+      const srv = await startHttpTestServer();
+      try {
+        const res1 = await fetch(`${srv.baseUrl}/api/rtc-config`);
+        assert.equal(res1.status, 200);
+        const body1 = (await res1.json()) as { iceServers?: RTCIceServer[] };
+        assert.deepEqual(body1.iceServers, [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun.cloudflare.com:3478' },
+          {
+            urls: 'turn:turn.example.com:3478',
+            username: 'u',
+            credential: 'p',
+          },
+        ]);
+
+        // Comma-separated list with surrounding spaces and trailing comma
+        await withEnv(
+          {
+            TURN_URLS: ' turn:turn1.example.com:3478 , turns:turn2.example.com:5349 , ',
+            TURN_USERNAME: 'alice',
+            TURN_CREDENTIAL: 'secret',
+          },
+          async () => {
+            const res2 = await fetch(`${srv.baseUrl}/api/rtc-config`);
+            assert.equal(res2.status, 200);
+            const body2 = (await res2.json()) as { iceServers?: RTCIceServer[] };
+            assert.deepEqual(body2.iceServers, [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun.cloudflare.com:3478' },
+              {
+                urls: ['turn:turn1.example.com:3478', 'turns:turn2.example.com:5349'],
+                username: 'alice',
+                credential: 'secret',
+              },
+            ]);
+          }
+        );
+
+        // Whitespace-only TURN_URLS should not append an empty TURN server
+        await withEnv(
+          {
+            TURN_URLS: '  ,  ',
+            TURN_USERNAME: 'ignored',
+            TURN_CREDENTIAL: 'ignored',
+          },
+          async () => {
+            const res3 = await fetch(`${srv.baseUrl}/api/rtc-config`);
+            assert.equal(res3.status, 200);
+            const body3 = (await res3.json()) as { iceServers?: RTCIceServer[] };
+            assert.deepEqual(body3.iceServers, [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun.cloudflare.com:3478' },
+            ]);
+          }
+        );
+      } finally {
+        await srv.close();
+      }
+    }
+  );
+});

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Check, Clock, Copy, Gamepad2, Globe, X } from 'lucide-react';
 import { soundEngine } from './audio/soundEngine';
 import { ActionDock, ActionDockMenuKind } from './components/ActionDock';
+import { AvatarTauntFlight, AvatarTauntOverlay } from './components/AvatarTauntOverlay';
 import {
   BuyoutDecisionModal,
   ChampionshipDecisionModal,
@@ -9,8 +11,10 @@ import {
   UpgradeDecisionModal,
   WorldTourPrompt,
 } from './components/BusinessTourActionModals';
+import { getEmote3DMeta, parseEmote3DKey } from './components/EmoteAndTaunt3D';
 import { MonopolyCanvas, MonopolyCanvasHandle } from './components/MonopolyCanvas';
-import { setAvatarGraphicsTier } from './components/PlayerAvatar3D';
+import { OnlineChatDrawer } from './components/OnlineChatDrawer';
+import { emitAvatarMoodBurst, setAvatarGraphicsTier } from './components/PlayerAvatar3D';
 import { PlayerHUD } from './components/PlayerHUD';
 import { StartModal } from './components/StartModal';
 import {
@@ -21,6 +25,7 @@ import {
   TileInspectorCard,
   VictoryModal,
 } from './components/TileModalAndDialogs';
+import { VoiceControlBar } from './components/VoiceControlBar';
 import {
   BOARD_TILES,
   CHANCE_CARDS,
@@ -127,13 +132,70 @@ import {
   TileKind,
   TurnPhase,
 } from './game/types';
-import type { OnlineVisualEvent } from './game/onlineTypes';
+import type {
+  BoardTauntKind,
+  ChatChannel,
+  OnlineVisualEvent,
+  RoomChatMessage,
+  RtcSignalPayload,
+  TilePingIntent,
+} from './game/onlineTypes';
 import {
   loadSavedCinematicCameraPref,
   saveCinematicCameraPref,
 } from './three/cameraDirector';
 import { fetchBotQuip } from './utils/botQuipClient';
 import { useOnlineMultiplayer } from './utils/onlineClient';
+import {
+  VoiceInputMode,
+  VoiceMeshClient,
+  VoiceMeshSnapshot,
+} from './utils/voiceMeshClient';
+
+const DEFAULT_VOICE_SNAPSHOT: VoiceMeshSnapshot = {
+  micEnabled: false,
+  inputMode: 'open_mic',
+  pttPressed: false,
+  permissionStatus: 'idle',
+  localSpeaking: false,
+  peers: {},
+};
+
+const DISABLE_3D_TAUNTS_STORAGE_KEY = 'bt_disable_3d_taunts_v1';
+
+function loadSavedDisable3dTaunts(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = window.localStorage?.getItem(DISABLE_3D_TAUNTS_STORAGE_KEY);
+    return raw === 'true' || raw === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveDisable3dTaunts(disabled: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage?.setItem(
+      DISABLE_3D_TAUNTS_STORAGE_KEY,
+      disabled ? 'true' : 'false'
+    );
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function formatTilePingLabel(intent: TilePingIntent, senderName: string): string {
+  const trimmed = senderName.trim();
+  const shortName = trimmed.length > 12 ? `${trimmed.slice(0, 11)}…` : trimmed;
+  const prefix =
+    intent === 'DANGER'
+      ? '⚠️ Nguy hiểm!'
+      : intent === 'TROPHY'
+        ? '🏆 Đặt Cúp!'
+        : '🎯 Nhắm!';
+  return shortName ? `${prefix} · ${shortName}` : prefix;
+}
 
 function shuffleCards<T>(arr: T[]): T[] {
   const copy = [...arr];
@@ -333,9 +395,40 @@ export default function App() {
   );
   const [nightMode, setNightMode] = useState<boolean>(false);
   const [soundMuted, setSoundMuted] = useState<boolean>(false);
+  const [disable3dTaunts, setDisable3dTaunts] = useState<boolean>(() =>
+    loadSavedDisable3dTaunts()
+  );
+  const disable3dTauntsRef = useRef<boolean>(disable3dTaunts);
+  disable3dTauntsRef.current = disable3dTaunts;
+  const [openTauntTargetPlayerId, setOpenTauntTargetPlayerId] = useState<number | null>(
+    null
+  );
+  const [offlineTauntCooldownUntil, setOfflineTauntCooldownUntil] = useState<number>(0);
+  const [avatarTauntFlights, setAvatarTauntFlights] = useState<AvatarTauntFlight[]>([]);
+  const avatarTauntIdRef = useRef<number>(1);
+  const triggerAvatarTauntFlight = useCallback(
+    (kind: BoardTauntKind, fromPlayerId: number, targetPlayerId: number) => {
+      const id = avatarTauntIdRef.current++;
+      setAvatarTauntFlights((prev) => [
+        ...prev.slice(-5),
+        { id, kind, fromPlayerId, targetPlayerId, startedAt: Date.now() },
+      ]);
+    },
+    []
+  );
+  const handleAvatarTauntFlightComplete = useCallback((flightId: number) => {
+    setAvatarTauntFlights((prev) => prev.filter((f) => f.id !== flightId));
+  }, []);
   const [botBubbles, setBotBubbles] = useState<Record<number, BotChatBubbleState>>({});
   const [offlinePlayerEmotes, setOfflinePlayerEmotes] = useState<Record<number, string>>({});
   const [onlinePlayerEmotes, setOnlinePlayerEmotes] = useState<Record<number, string>>({});
+  const [chatDrawerOpen, setChatDrawerOpen] = useState<boolean>(false);
+  const [voicePopoverOpen, setVoicePopoverOpen] = useState<boolean>(false);
+  const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
+  const [playerChatBubbles, setPlayerChatBubbles] = useState<
+    Record<number, { id: number; text: string; isTeam?: boolean }>
+  >({});
+  const [voiceState, setVoiceState] = useState<VoiceMeshSnapshot>(DEFAULT_VOICE_SNAPSHOT);
   const [onlinePauseOpen, setOnlinePauseOpen] = useState<boolean>(false);
   const [copiedInviteToast, setCopiedInviteToast] = useState<boolean>(false);
 
@@ -363,6 +456,16 @@ export default function App() {
   const canvasRef = useRef<MonopolyCanvasHandle | null>(null);
   const activeViewPlayerIdRef = useRef<number | null>(null);
   const viewPlayersForVisualRef = useRef<PlayerState[]>([]);
+  const viewScreenStateRef = useRef<GameScreenState>(screenState);
+  const onlineParticipantIdRef = useRef<string | null>(null);
+  const onlineRoomStatusRef = useRef<string | null>(null);
+  const chatDrawerOpenRef = useRef<boolean>(false);
+  const voiceClientRef = useRef<VoiceMeshClient | null>(null);
+  const pendingRtcSignalsRef = useRef<
+    Array<{ fromParticipantId: string; signal: RtcSignalPayload }>
+  >([]);
+  const lastReportedMicEnabledRef = useRef<boolean | null>(null);
+  const playerChatBubbleTimersRef = useRef<Record<number, number>>({});
   const prevRevealedCardKeyRef = useRef<string | null>(null);
   const prevCeremonyKeyRef = useRef<string | null>(null);
   const logIdRef = useRef<number>(logs.length + 1);
@@ -475,6 +578,14 @@ export default function App() {
 
     if (event.kind === 'PLAYER_EMOTE') {
       soundEngine.playChatPop();
+      const emote3dKey = parseEmote3DKey(event.emoteText);
+      if (emote3dKey) {
+        emitAvatarMoodBurst({
+          playerId: event.playerId,
+          mood: getEmote3DMeta(emote3dKey).moodBurst,
+          durationMs: 1800,
+        });
+      }
       setOnlinePlayerEmotes((prev) => ({ ...prev, [event.playerId]: event.emoteText }));
       if (onlineEmoteTimersRef.current[event.playerId]) {
         window.clearTimeout(onlineEmoteTimersRef.current[event.playerId]);
@@ -518,12 +629,203 @@ export default function App() {
           return next;
         });
       }, clearDelayMs);
+      return;
+    }
+
+    if (event.kind === 'BOARD_TAUNT') {
+      if (
+        !disable3dTauntsRef.current &&
+        viewScreenStateRef.current !== 'title' &&
+        viewScreenStateRef.current !== 'gameover'
+      ) {
+        triggerAvatarTauntFlight(
+          event.tauntKind,
+          event.fromPlayerId,
+          event.targetPlayerId
+        );
+        canvasRef.current?.playBoardTaunt(
+          event.tauntKind,
+          event.fromPlayerId,
+          event.targetPlayerId
+        );
+        soundEngine.playBoardTauntSfx(event.tauntKind);
+      }
+      return;
+    }
+
+    if (event.kind === 'TILE_PING') {
+      if (
+        viewScreenStateRef.current !== 'title' &&
+        viewScreenStateRef.current !== 'gameover'
+      ) {
+        const pingLabel = formatTilePingLabel(event.intent, event.senderName);
+        canvasRef.current?.playTilePing(event.tileIndex, event.senderColor, pingLabel);
+        soundEngine.playTilePingSfx(event.intent);
+      }
+    }
+  }, []);
+
+  const handleIncomingRtcSignal = useCallback(
+    (fromParticipantId: string, signal: RtcSignalPayload) => {
+      const client = voiceClientRef.current;
+      if (client) {
+        void client.handleSignal(fromParticipantId, signal);
+        return;
+      }
+      if (pendingRtcSignalsRef.current.length < 50) {
+        pendingRtcSignalsRef.current.push({ fromParticipantId, signal });
+      }
+    },
+    []
+  );
+
+  const handleIncomingChatMessage = useCallback((msg: RoomChatMessage) => {
+    const isOwn =
+      Boolean(onlineParticipantIdRef.current) &&
+      msg.participantId === onlineParticipantIdRef.current;
+    if (!isOwn) {
+      soundEngine.playChatPop();
+    }
+
+    const inPlayingStatus = onlineRoomStatusRef.current === 'playing';
+    const isDrawerVisible =
+      inPlayingStatus && chatDrawerOpenRef.current && viewScreenStateRef.current === 'playing';
+
+    if (!isOwn && inPlayingStatus && !isDrawerVisible) {
+      setUnreadChatCount((prev) => prev + 1);
+    }
+
+    if (inPlayingStatus && !chatDrawerOpenRef.current && msg.playerId !== null) {
+      const playerId = msg.playerId;
+      const bubbleId = msg.id;
+      if (playerChatBubbleTimersRef.current[playerId]) {
+        window.clearTimeout(playerChatBubbleTimersRef.current[playerId]);
+      }
+      setPlayerChatBubbles((prev) => ({
+        ...prev,
+        [playerId]: {
+          id: bubbleId,
+          text: msg.text,
+          isTeam: msg.channel === 'TEAM',
+        },
+      }));
+      playerChatBubbleTimersRef.current[playerId] = window.setTimeout(() => {
+        delete playerChatBubbleTimersRef.current[playerId];
+        setPlayerChatBubbles((prev) => {
+          if (prev[playerId]?.id !== bubbleId) return prev;
+          const next = { ...prev };
+          delete next[playerId];
+          return next;
+        });
+      }, 4000);
     }
   }, []);
 
   const online = useOnlineMultiplayer(handleOnlineVisualEvent, {
     skipInitialAutoReconnect: isAutostart,
+    onRtcSignal: handleIncomingRtcSignal,
+    onChatMessage: handleIncomingChatMessage,
   });
+
+  const onlineRoomCode = online.roomSnapshot?.roomCode ?? null;
+  const onlineParticipantId = online.yourParticipantId;
+  const onlineParticipants = online.roomSnapshot?.participants ?? null;
+
+  onlineParticipantIdRef.current = onlineParticipantId;
+  onlineRoomStatusRef.current = online.roomSnapshot?.status ?? null;
+  chatDrawerOpenRef.current = chatDrawerOpen;
+
+  const sendRtcSignalRef = useRef(online.sendRtcSignal);
+  sendRtcSignalRef.current = online.sendRtcSignal;
+  const updateVoiceStateRef = useRef(online.updateVoiceState);
+  updateVoiceStateRef.current = online.updateVoiceState;
+
+  useEffect(() => {
+    if (!onlineRoomCode || !onlineParticipantId) {
+      voiceClientRef.current?.dispose();
+      voiceClientRef.current = null;
+      pendingRtcSignalsRef.current = [];
+      lastReportedMicEnabledRef.current = null;
+      setVoiceState(DEFAULT_VOICE_SNAPSHOT);
+      return;
+    }
+
+    const client = new VoiceMeshClient({
+      myParticipantId: onlineParticipantId,
+      sendSignal: (targetParticipantId, signal) => {
+        sendRtcSignalRef.current(targetParticipantId, signal);
+      },
+    });
+    voiceClientRef.current = client;
+    lastReportedMicEnabledRef.current = false;
+    setVoiceState(client.getSnapshot());
+
+    const unsubscribe = client.subscribe((snap) => {
+      setVoiceState(snap);
+      if (snap.micEnabled !== lastReportedMicEnabledRef.current) {
+        if (updateVoiceStateRef.current(snap.micEnabled)) {
+          lastReportedMicEnabledRef.current = snap.micEnabled;
+        } else {
+          lastReportedMicEnabledRef.current = null;
+        }
+      }
+    });
+
+    if (pendingRtcSignalsRef.current.length > 0) {
+      const queued = pendingRtcSignalsRef.current.splice(0);
+      for (const item of queued) {
+        void client.handleSignal(item.fromParticipantId, item.signal);
+      }
+    }
+
+    return () => {
+      unsubscribe();
+      client.dispose();
+      if (voiceClientRef.current === client) {
+        voiceClientRef.current = null;
+      }
+      pendingRtcSignalsRef.current = [];
+      lastReportedMicEnabledRef.current = null;
+      setVoiceState(DEFAULT_VOICE_SNAPSHOT);
+    };
+  }, [onlineRoomCode, onlineParticipantId]);
+
+  useEffect(() => {
+    const client = voiceClientRef.current;
+    if (!client || !onlineParticipantId || !onlineParticipants) return;
+    const remoteConnectedIds = onlineParticipants
+      .filter((p) => p.connected === true && p.participantId !== onlineParticipantId)
+      .map((p) => p.participantId);
+    client.syncPeers(remoteConnectedIds);
+  }, [onlineRoomCode, onlineParticipantId, onlineParticipants]);
+
+  useEffect(() => {
+    if (!online.isSynced) {
+      lastReportedMicEnabledRef.current = null;
+      return;
+    }
+    const client = voiceClientRef.current;
+    if (!client || !onlineRoomCode || !onlineParticipantId) return;
+    const currentMicEnabled = client.getSnapshot().micEnabled;
+    const serverParticipant = onlineParticipants?.find(
+      (p) => p.participantId === onlineParticipantId
+    );
+    if (
+      lastReportedMicEnabledRef.current === null &&
+      serverParticipant &&
+      serverParticipant.micEnabled === currentMicEnabled
+    ) {
+      lastReportedMicEnabledRef.current = currentMicEnabled;
+      return;
+    }
+    if (lastReportedMicEnabledRef.current !== currentMicEnabled) {
+      if (updateVoiceStateRef.current(currentMicEnabled)) {
+        lastReportedMicEnabledRef.current = currentMicEnabled;
+      } else {
+        lastReportedMicEnabledRef.current = null;
+      }
+    }
+  }, [online.isSynced, onlineRoomCode, onlineParticipantId, onlineParticipants]);
   const onlineMatch =
     online.roomSnapshot &&
     online.roomSnapshot.match &&
@@ -748,6 +1050,30 @@ export default function App() {
     prevOnlineSyncedRef.current = online.isSynced;
   }, [isOnlineMatch, online.isSynced]);
 
+  const clearPlayerChatBubbles = useCallback(() => {
+    for (const timerId of Object.values(playerChatBubbleTimersRef.current)) {
+      window.clearTimeout(timerId);
+    }
+    playerChatBubbleTimersRef.current = {};
+    setPlayerChatBubbles({});
+  }, []);
+
+  useEffect(
+    () => () => {
+      for (const timerId of Object.values(playerChatBubbleTimersRef.current)) {
+        window.clearTimeout(timerId);
+      }
+      playerChatBubbleTimersRef.current = {};
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (chatDrawerOpen) {
+      setUnreadChatCount(0);
+    }
+  }, [chatDrawerOpen]);
+
   const prevOnlineStatusRef = useRef<string | null>(null);
   useEffect(() => {
     const nextStatus = online.roomSnapshot?.status ?? null;
@@ -760,6 +1086,7 @@ export default function App() {
         window.clearTimeout(timerId);
       }
       onlineEmoteTimersRef.current = {};
+      clearPlayerChatBubbles();
       if (copyToastTimerRef.current !== null) {
         window.clearTimeout(copyToastTimerRef.current);
         copyToastTimerRef.current = null;
@@ -768,6 +1095,10 @@ export default function App() {
       setShowAssetsModal(false);
       setOnlinePauseOpen(false);
       setOpenActionMenu('none');
+      setOpenTauntTargetPlayerId(null);
+      setChatDrawerOpen(false);
+      setVoicePopoverOpen(false);
+      setUnreadChatCount(0);
       setCopiedInviteToast(false);
       setBotBubbles({});
       setOnlinePlayerEmotes({});
@@ -787,6 +1118,7 @@ export default function App() {
         window.clearTimeout(timerId);
       }
       onlineEmoteTimersRef.current = {};
+      clearPlayerChatBubbles();
       if (copyToastTimerRef.current !== null) {
         window.clearTimeout(copyToastTimerRef.current);
         copyToastTimerRef.current = null;
@@ -795,6 +1127,10 @@ export default function App() {
       setShowAssetsModal(false);
       setSelectedTileIndex(null);
       setOpenActionMenu('none');
+      setOpenTauntTargetPlayerId(null);
+      setChatDrawerOpen(false);
+      setVoicePopoverOpen(false);
+      setUnreadChatCount(0);
       setCopiedInviteToast(false);
       setBotBubbles({});
       setOnlinePlayerEmotes({});
@@ -803,10 +1139,12 @@ export default function App() {
       canvasRef.current?.cancelPendingAnimations();
     }
     prevOnlineStatusRef.current = nextStatus;
-  }, [online.roomSnapshot?.status]);
+  }, [clearPlayerChatBubbles, online.roomSnapshot?.status]);
 
   const isOnlineMatchRef = useRef(isOnlineMatch);
   isOnlineMatchRef.current = isOnlineMatch;
+  const onlineIsSpectatorRef = useRef(online.isSpectator);
+  onlineIsSpectatorRef.current = online.isSpectator;
   const isActivelyControlledByMeRef = useRef(isActivelyControlledByMe);
   isActivelyControlledByMeRef.current = isActivelyControlledByMe;
   const viewPlayersRef = useRef(viewPlayers);
@@ -817,7 +1155,6 @@ export default function App() {
   viewActiveIdxRef.current = viewActivePlayerIndex;
   const viewTurnPhaseRef = useRef(viewTurnPhase);
   viewTurnPhaseRef.current = viewTurnPhase;
-  const viewScreenStateRef = useRef(viewScreenState);
   viewScreenStateRef.current = viewScreenState;
   const viewBoardModifiersRef = useRef(viewBoardModifiers);
   viewBoardModifiersRef.current = viewBoardModifiers;
@@ -829,6 +1166,60 @@ export default function App() {
   viewTacticalDiceEnabledRef.current = viewTacticalDiceEnabled;
   const onlinePauseOpenRef = useRef(onlinePauseOpen);
   onlinePauseOpenRef.current = onlinePauseOpen;
+
+  const isTurnDecisionModalOpen =
+    viewScreenState === 'playing' &&
+    ((!(isOnlineDecisionPendingAck && isActivelyControlledByMe) &&
+      viewTurnPhase === 'CARD_REVEAL' &&
+      Boolean(viewDrawnCard)) ||
+      (!isOnlineDecisionPendingAck &&
+        isActivelyControlledByMe &&
+        (viewTurnPhase === 'BUY_DECISION' ||
+          viewTurnPhase === 'UPGRADE_DECISION' ||
+          viewTurnPhase === 'BUYOUT_DECISION' ||
+          viewTurnPhase === 'CHAMPIONSHIP_SELECTION' ||
+          viewTurnPhase === 'WORLD_TOUR' ||
+          (viewTurnPhase === 'CARD_TARGET_SELECTION' && Boolean(viewPendingTacticalCard)) ||
+          viewTurnPhase === 'DEBT_RESOLUTION')));
+
+  const offlineTauntActorId = useMemo(() => {
+    if (isOnlineMatch) return null;
+    const activeP = players[activePlayerIndex];
+    if (activeP && !activeP.isBot && !activeP.bankrupt) return activeP.id;
+    const firstHuman = players.find((p) => !p.isBot && !p.bankrupt);
+    return firstHuman ? firstHuman.id : null;
+  }, [isOnlineMatch, players, activePlayerIndex]);
+
+  const activeTauntActorId = isOnlineMatch
+    ? online.isSpectator
+      ? null
+      : online.yourPlayerId
+    : offlineTauntActorId;
+
+  const openTauntTargetPlayer =
+    openTauntTargetPlayerId !== null
+      ? viewPlayers.find((p) => p.id === openTauntTargetPlayerId)
+      : undefined;
+  const isOpenTauntTargetValid = Boolean(
+    viewScreenState === 'playing' &&
+      activeTauntActorId !== null &&
+      openTauntTargetPlayer &&
+      !openTauntTargetPlayer.bankrupt &&
+      openTauntTargetPlayer.id !== activeTauntActorId &&
+      !showRulebookModal &&
+      !showAssetsModal &&
+      selectedTileIndex === null &&
+      !isTurnDecisionModalOpen
+  );
+  const effectiveOpenTauntTargetPlayerId = isOpenTauntTargetValid
+    ? openTauntTargetPlayerId
+    : null;
+
+  useEffect(() => {
+    if (openTauntTargetPlayerId !== null && !isOpenTauntTargetValid) {
+      setOpenTauntTargetPlayerId(null);
+    }
+  }, [openTauntTargetPlayerId, isOpenTauntTargetValid]);
 
   // BUG-11: Always reset tactical dice choice ('EVEN'/'ODD' -> 'NORMAL') on turn/decision transitions,
   // jail entry, or exhausted Even/Odd charges so stale choices are never sent on subsequent turns.
@@ -4228,6 +4619,10 @@ export default function App() {
   useEffect(() => {
     if (viewScreenState !== 'playing') {
       setOpenActionMenu('none');
+      setChatDrawerOpen(false);
+    }
+    if (viewScreenState === 'paused' || viewScreenState === 'gameover') {
+      setVoicePopoverOpen(false);
     }
   }, [viewScreenState]);
 
@@ -4378,6 +4773,11 @@ export default function App() {
           setOpenActionMenu('none');
           return;
         }
+        if (effectiveOpenTauntTargetPlayerId !== null) {
+          e.preventDefault();
+          setOpenTauntTargetPlayerId(null);
+          return;
+        }
         if (viewScreenState === 'title') {
           return;
         }
@@ -4461,7 +4861,12 @@ export default function App() {
           return next;
         });
       } else if (e.code === 'Space' || e.code === 'Enter') {
-        if (showAssetsModal || openActionMenu !== 'none' || isOnlineDecisionPendingAckRef.current) {
+        if (
+          showAssetsModal ||
+          openActionMenu !== 'none' ||
+          effectiveOpenTauntTargetPlayerId !== null ||
+          isOnlineDecisionPendingAckRef.current
+        ) {
           return;
         }
         if (isActivelyControlledByMeRef.current) {
@@ -4484,6 +4889,7 @@ export default function App() {
   }, [
     viewScreenState,
     openActionMenu,
+    effectiveOpenTauntTargetPlayerId,
     selectedTileIndex,
     showAssetsModal,
     showRulebookModal,
@@ -4576,6 +4982,14 @@ export default function App() {
       if (!humanActor) return;
 
       soundEngine.playChatPop();
+      const emote3dKey = parseEmote3DKey(emoteText);
+      if (emote3dKey) {
+        emitAvatarMoodBurst({
+          playerId: humanActor.id,
+          mood: getEmote3DMeta(emote3dKey).moodBurst,
+          durationMs: 1800,
+        });
+      }
       setOfflinePlayerEmotes((prev) => ({ ...prev, [humanActor.id]: emoteText }));
       if (offlineEmoteTimersRef.current[humanActor.id]) {
         window.clearTimeout(offlineEmoteTimersRef.current[humanActor.id]);
@@ -4607,7 +5021,7 @@ export default function App() {
     const activeEmote = isOnlineMatch
       ? onlinePlayerEmotes[currentPlayer.id]
       : offlinePlayerEmotes[currentPlayer.id];
-    if (activeEmote) return activeEmote;
+    if (activeEmote && !parseEmote3DKey(activeEmote)) return activeEmote;
     if (viewTurnPhase === 'ROLLING_DICE') return 'Đang đổ xúc xắc... 🎲';
     if (viewTurnPhase === 'REROLL_DECISION') return 'Giữ kết quả hay Đổ lại? 🎲';
     if (viewTurnPhase === 'MOVING_TOKEN') return 'Đang di chuyển...';
@@ -4831,11 +5245,15 @@ export default function App() {
 
   const handleOpenAssetsModal = useCallback(() => {
     setSelectedTileIndex(null);
+    setOpenTauntTargetPlayerId(null);
     setShowAssetsModal(true);
   }, []);
 
   const handleOpenRulebookModal = useCallback(() => {
     setSelectedTileIndex(null);
+    setOpenTauntTargetPlayerId(null);
+    setChatDrawerOpen(false);
+    setVoicePopoverOpen(false);
     setShowRulebookModal(true);
   }, []);
 
@@ -4851,14 +5269,283 @@ export default function App() {
     });
   }, []);
 
+  const handleToggleDisable3dTaunts = useCallback(() => {
+    setDisable3dTaunts((prev) => {
+      const next = !prev;
+      disable3dTauntsRef.current = next;
+      saveDisable3dTaunts(next);
+      return next;
+    });
+  }, []);
+
+  const handleSendBoardTaunt = useCallback(
+    (targetPlayerId: number, kind: BoardTauntKind) => {
+      if (viewScreenStateRef.current !== 'playing') {
+        return;
+      }
+      if (isOnlineMatchRef.current) {
+        if (onlineIsSpectatorRef.current) return;
+        setOpenTauntTargetPlayerId(null);
+        online.sendBoardTaunt(targetPlayerId, kind);
+        return;
+      }
+      const now = Date.now();
+      if (now < offlineTauntCooldownUntil) return;
+      const activeP = playersRef.current[activeIdxRef.current];
+      const actor =
+        (activeP && !activeP.isBot && !activeP.bankrupt ? activeP : null) ||
+        playersRef.current.find((p) => !p.isBot && !p.bankrupt);
+      if (!actor || actor.id === targetPlayerId) return;
+
+      setOpenTauntTargetPlayerId(null);
+      setOfflineTauntCooldownUntil(now + 4000);
+      if (!disable3dTauntsRef.current) {
+        triggerAvatarTauntFlight(kind, actor.id, targetPlayerId);
+        canvasRef.current?.playBoardTaunt(kind, actor.id, targetPlayerId);
+        soundEngine.playBoardTauntSfx(kind);
+      }
+    },
+    [online.sendBoardTaunt, offlineTauntCooldownUntil, triggerAvatarTauntFlight]
+  );
+
+  const handlePingTile = useCallback(
+    (tileIndex: number, intent: TilePingIntent) => {
+      if (!isOnlineMatchRef.current || viewScreenStateRef.current !== 'playing') {
+        return;
+      }
+      online.sendTilePing(tileIndex, intent);
+    },
+    [online.sendTilePing]
+  );
+
   const handleOpenPause = useCallback(() => {
     setSelectedTileIndex(null);
+    setOpenTauntTargetPlayerId(null);
+    setChatDrawerOpen(false);
+    setVoicePopoverOpen(false);
     if (isOnlineMatchRef.current) {
       setOnlinePauseOpen(true);
     } else {
       commitScreenState('paused');
     }
   }, [commitScreenState]);
+
+  const handleChangeOpenActionMenu = useCallback((next: ActionDockMenuKind) => {
+    setOpenActionMenu(next);
+    if (next !== 'none') {
+      setOpenTauntTargetPlayerId(null);
+      setChatDrawerOpen(false);
+      setVoicePopoverOpen(false);
+    }
+  }, []);
+
+  const handleToggleChatDrawer = useCallback(() => {
+    const next = !chatDrawerOpenRef.current;
+    chatDrawerOpenRef.current = next;
+    setChatDrawerOpen(next);
+    if (next) {
+      setOpenActionMenu('none');
+      setOpenTauntTargetPlayerId(null);
+      setVoicePopoverOpen(false);
+      setUnreadChatCount(0);
+    }
+  }, []);
+
+  const handleVoicePopoverOpenChange = useCallback((open: boolean) => {
+    setVoicePopoverOpen(open);
+    if (open) {
+      setChatDrawerOpen(false);
+      setOpenActionMenu('none');
+      setOpenTauntTargetPlayerId(null);
+    }
+  }, []);
+
+  const handleChangeOpenTauntTargetPlayerId = useCallback(
+    (targetPlayerId: number | null) => {
+      if (
+        targetPlayerId !== null &&
+        ((isOnlineMatchRef.current && onlineIsSpectatorRef.current) ||
+          viewScreenStateRef.current !== 'playing')
+      ) {
+        setOpenTauntTargetPlayerId(null);
+        return;
+      }
+      setOpenTauntTargetPlayerId(targetPlayerId);
+      if (targetPlayerId !== null) {
+        setOpenActionMenu('none');
+        setChatDrawerOpen(false);
+        setVoicePopoverOpen(false);
+      }
+    },
+    []
+  );
+
+  const handleSendChatMessage = useCallback(
+    (channel: ChatChannel, text: string) => {
+      online.sendChatMessage(channel, text);
+    },
+    [online.sendChatMessage]
+  );
+
+  const handleToggleVoiceMic = useCallback(() => {
+    void voiceClientRef.current?.toggleMic();
+  }, []);
+
+  const handleSetVoiceInputMode = useCallback((mode: VoiceInputMode) => {
+    voiceClientRef.current?.setInputMode(mode);
+  }, []);
+
+  const handleSetVoicePttPressed = useCallback((pressed: boolean) => {
+    void voiceClientRef.current?.setPushToTalkPressed(pressed);
+  }, []);
+
+  const handleSetVoicePeerMuted = useCallback((participantId: string, muted: boolean) => {
+    voiceClientRef.current?.setPeerMuted(participantId, muted);
+  }, []);
+
+  const handleSetVoicePeerVolume = useCallback((participantId: string, volume: number) => {
+    voiceClientRef.current?.setPeerVolume(participantId, volume);
+  }, []);
+
+  const canUseTeamChannel = Boolean(
+    online.roomSnapshot?.matchMode === 'TEAMS_2V2' &&
+      !online.isSpectator &&
+      online.yourSeatIndex !== null
+  );
+
+  const isOnlineHost = Boolean(
+    online.roomSnapshot &&
+      !online.isSpectator &&
+      online.yourSeatIndex !== null &&
+      online.yourSeatIndex === online.roomSnapshot.hostSeatIndex
+  );
+
+  const eligibleTakeoverBots = useMemo(() => {
+    if (!online.isSpectator || !onlineMatch || !online.roomSnapshot) {
+      return [];
+    }
+    const activeSeatByPlayerId = new Map<number, boolean>();
+    for (const participant of online.roomSnapshot.participants ?? []) {
+      if (participant.role === 'player' && participant.playerId !== null) {
+        const seat =
+          participant.seatIndex !== null
+            ? online.roomSnapshot.seats.find((s) => s.seatIndex === participant.seatIndex)
+            : undefined;
+        if (!seat || seat.occupiedByHuman) {
+          activeSeatByPlayerId.set(participant.playerId, true);
+        }
+      }
+    }
+    return onlineMatch.players
+      .filter((p) => !p.bankrupt && p.isBot && !activeSeatByPlayerId.has(p.id))
+      .map((p) => ({
+        playerId: p.id,
+        name: p.name,
+        color: p.color,
+      }));
+  }, [online.isSpectator, onlineMatch, online.roomSnapshot]);
+
+  const pendingTakeoverRequest =
+    isOnlineMatch && online.roomSnapshot?.status === 'playing'
+      ? (online.roomSnapshot.pendingTakeoverRequest ?? null)
+      : null;
+  const pendingTakeoverId = pendingTakeoverRequest?.requestId ?? null;
+  const pendingTakeoverExpiresAt = pendingTakeoverRequest?.expiresAt ?? null;
+  const [takeoverNowMs, setTakeoverNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (!isOnlineHost || !pendingTakeoverId || pendingTakeoverExpiresAt === null) {
+      return;
+    }
+    setTakeoverNowMs(Date.now());
+    const interval = window.setInterval(() => {
+      setTakeoverNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [isOnlineHost, pendingTakeoverId, pendingTakeoverExpiresAt]);
+
+  const takeoverSecondsLeft = pendingTakeoverRequest
+    ? Math.min(20, Math.max(0, Math.ceil((pendingTakeoverRequest.expiresAt - takeoverNowMs) / 1000)))
+    : 0;
+
+  const speakingParticipantIds = useMemo<Record<string, boolean>>(() => {
+    const result: Record<string, boolean> = {};
+    if (online.yourParticipantId && voiceState.localSpeaking) {
+      result[online.yourParticipantId] = true;
+    }
+    for (const [participantId, peer] of Object.entries(voiceState.peers)) {
+      if (peer.isSpeaking && !peer.mutedLocally) {
+        result[participantId] = true;
+      }
+    }
+    return result;
+  }, [online.yourParticipantId, voiceState.localSpeaking, voiceState.peers]);
+
+  const speakingPlayerIds = useMemo<Record<number, boolean>>(() => {
+    const result: Record<number, boolean> = {};
+    const participants = online.roomSnapshot?.participants ?? [];
+    if (online.yourPlayerId !== null && voiceState.localSpeaking) {
+      result[online.yourPlayerId] = true;
+    }
+    for (const p of participants) {
+      if (p.playerId === null) continue;
+      if (speakingParticipantIds[p.participantId]) {
+        result[p.playerId] = true;
+      }
+    }
+    return result;
+  }, [
+    online.roomSnapshot?.participants,
+    online.yourPlayerId,
+    speakingParticipantIds,
+    voiceState.localSpeaking,
+  ]);
+
+  const lobbyVoiceBarNode =
+    online.roomSnapshot?.status === 'lobby' ? (
+      <VoiceControlBar
+        voiceState={voiceState}
+        participants={online.roomSnapshot.participants}
+        myParticipantId={online.yourParticipantId}
+        compact={false}
+        popoverOpen={voicePopoverOpen}
+        onPopoverOpenChange={handleVoicePopoverOpenChange}
+        onToggleMic={handleToggleVoiceMic}
+        onSetInputMode={handleSetVoiceInputMode}
+        onSetPushToTalkPressed={handleSetVoicePttPressed}
+        onSetPeerMuted={handleSetVoicePeerMuted}
+        onSetPeerVolume={handleSetVoicePeerVolume}
+      />
+    ) : undefined;
+
+  const matchVoiceBarNode =
+    isOnlineMatch && online.roomSnapshot ? (
+      <VoiceControlBar
+        voiceState={voiceState}
+        participants={online.roomSnapshot.participants}
+        myParticipantId={online.yourParticipantId}
+        compact={true}
+        popoverOpen={voicePopoverOpen}
+        onPopoverOpenChange={handleVoicePopoverOpenChange}
+        onToggleMic={handleToggleVoiceMic}
+        onSetInputMode={handleSetVoiceInputMode}
+        onSetPushToTalkPressed={handleSetVoicePttPressed}
+        onSetPeerMuted={handleSetVoicePeerMuted}
+        onSetPeerVolume={handleSetVoicePeerVolume}
+      />
+    ) : undefined;
+
+  const embeddedOnlineChatNode =
+    online.roomSnapshot &&
+    (online.roomSnapshot.status === 'lobby' || online.roomSnapshot.status === 'gameover') ? (
+      <OnlineChatDrawer
+        variant="embedded"
+        messages={online.chatMessages}
+        myParticipantId={online.yourParticipantId}
+        canUseTeamChannel={canUseTeamChannel}
+        onSendMessage={handleSendChatMessage}
+      />
+    ) : undefined;
 
   const canShowActiveModals =
     viewScreenState === 'playing' || (isOnlineMatch && viewScreenState === 'paused');
@@ -4899,6 +5586,9 @@ export default function App() {
         cinematicCamera={cinematicCamera}
         nightMode={nightMode}
         onSelectTile={handleCanvasTileClick}
+        onPingTile={
+          isOnlineMatch && viewScreenState === 'playing' ? handlePingTile : undefined
+        }
       />
 
       {/* 1a. Unified Top-Center HUD Stack (Online Pill + 20-Min Match Clock + Landing Cue + Online Error) */}
@@ -4912,19 +5602,31 @@ export default function App() {
                   data-testid="bt-online-room-pill"
                   onClick={handleCopyOnlineInvite}
                   title="Nhấn để chép link mời bạn bè"
-                  className="pointer-events-auto px-3 py-1 rounded-full bt-casual-modal text-[11px] font-black text-sky-900 flex items-center gap-1.5 cursor-pointer hover:scale-103 transition-transform whitespace-nowrap"
+                  className="pointer-events-auto px-3 py-1 rounded-full bt-casual-modal text-[11px] font-extrabold text-[#141c2b] flex items-center gap-1.5 cursor-pointer hover:bg-white transition-colors whitespace-nowrap"
                 >
-                  <span>🌐 Phòng</span>
-                  <span className="font-mono-num tracking-wider text-[#0284C7]">
+                  <Globe className="h-3.5 w-3.5 text-[#525e73] shrink-0" aria-hidden="true" />
+                  <span>Phòng</span>
+                  <span className="font-mono-num tracking-wider text-[#141c2b] font-black">
                     {online.roomSnapshot.roomCode}
                   </span>
-                  <span className="text-[10px] font-extrabold text-emerald-700">
-                    {copiedInviteToast ? '✓ Đã chép' : '· Mời'}
+                  <span className="inline-flex items-center gap-0.5 text-[10px] font-extrabold text-emerald-700">
+                    {copiedInviteToast ? (
+                      <>
+                        <Check className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span>Đã chép</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span>Mời</span>
+                      </>
+                    )}
                   </span>
                 </button>
                 {online.connectionStatus === 'reconnecting' && (
-                  <div className="px-3 py-1 rounded-full bg-amber-100 border-2 border-amber-400 text-[11px] font-black text-amber-900 shadow-md whitespace-nowrap">
-                    🟡 Đang kết nối lại...
+                  <div className="px-3 py-1 rounded-full bg-amber-50 border border-amber-300 text-[11px] font-extrabold text-amber-900 shadow-sm flex items-center gap-1.5 whitespace-nowrap">
+                    <span aria-hidden="true" className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                    <span>Đang kết nối lại...</span>
                   </div>
                 )}
               </>
@@ -4935,11 +5637,16 @@ export default function App() {
                 data-testid="bt-match-clock"
                 role="timer"
                 aria-label="Thời gian còn lại của ván đấu"
-                className={`px-3 py-1 rounded-full bt-casual-modal text-[11px] sm:text-xs font-mono-num font-black flex items-center gap-1 whitespace-nowrap ${
-                  viewMatchTimeLeft <= 60 ? 'text-rose-600' : 'text-sky-900'
+                className={`px-3 py-1 rounded-full bt-casual-modal text-[11px] sm:text-xs font-mono-num font-black flex items-center gap-1.5 whitespace-nowrap ${
+                  viewMatchTimeLeft <= 60 ? 'text-rose-600 border-rose-300' : 'text-[#141c2b]'
                 }`}
               >
-                <span aria-hidden="true">⏱</span>
+                <Clock
+                  className={`h-3.5 w-3.5 shrink-0 ${
+                    viewMatchTimeLeft <= 60 ? 'text-rose-600' : 'text-[#525e73]'
+                  }`}
+                  aria-hidden="true"
+                />
                 <span>{formatCountdownClock(viewMatchTimeLeft)}</span>
               </div>
             )}
@@ -4950,7 +5657,7 @@ export default function App() {
               data-testid="bt-landing-cue"
               className="px-3.5 sm:px-4 lg:px-5 py-1.5 lg:py-2 rounded-full bt-casual-modal pointer-events-none animate-pop-in text-center max-w-full"
             >
-              <span className="font-display text-xs sm:text-sm font-black text-sky-900 whitespace-normal leading-snug">
+              <span className="font-display text-xs sm:text-sm font-extrabold text-[#141c2b] whitespace-normal leading-snug">
                 {viewLandingCueText}
               </span>
             </div>
@@ -4960,16 +5667,16 @@ export default function App() {
             <div
               role="alert"
               data-testid="bt-online-error-banner"
-              className="pointer-events-auto px-3 py-1.5 rounded-2xl bg-rose-50 border-2 border-rose-300 text-[11px] font-bold text-rose-800 shadow-md flex items-center gap-2 max-w-full"
+              className="pointer-events-auto px-3 py-1.5 rounded-xl bg-rose-50 border border-rose-300 text-[11px] font-bold text-rose-800 shadow-md flex items-center gap-2 max-w-full"
             >
               <span className="leading-snug">{online.errorMessage}</span>
               <button
                 type="button"
                 onClick={online.clearError}
                 aria-label="Đóng thông báo lỗi"
-                className="icon-hit-target h-5 w-5 rounded-full bg-rose-200 hover:bg-rose-300 text-rose-900 text-[10px] font-black flex items-center justify-center shrink-0 cursor-pointer"
+                className="icon-hit-target h-5 w-5 rounded-full bg-rose-200/80 hover:bg-rose-300 text-rose-900 flex items-center justify-center shrink-0 cursor-pointer"
               >
-                ✕
+                <X className="h-3 w-3" aria-hidden="true" />
               </button>
             </div>
           )}
@@ -4992,6 +5699,9 @@ export default function App() {
           gpuLabel={detectedGpu.label}
           onChangeGraphicsQuality={handleChangeGraphicsQuality}
           online={online}
+          voiceBarNode={lobbyVoiceBarNode}
+          onlineChatNode={embeddedOnlineChatNode}
+          speakingParticipantIds={speakingParticipantIds}
           onStartGame={startNewGame}
           onOpenRulebook={handleOpenRulebookModal}
         />
@@ -5010,10 +5720,38 @@ export default function App() {
             debtPlayerId={activeDebtPlayerId}
             botBubbles={botBubbles}
             localPlayerId={isOnlineMatch ? online.yourPlayerId : null}
+            tauntActorPlayerId={
+              isOnlineMatch
+                ? online.isSpectator
+                  ? null
+                  : online.yourPlayerId
+                : offlineTauntActorId
+            }
             playerEmotes={isOnlineMatch ? onlinePlayerEmotes : offlinePlayerEmotes}
+            speakingPlayerIds={isOnlineMatch ? speakingPlayerIds : undefined}
+            playerChatBubbles={isOnlineMatch ? playerChatBubbles : undefined}
             onDismissBubble={dismissBotBubble}
             onSelectTile={handleCanvasTileClick}
+            onSendBoardTaunt={
+              viewScreenState === 'playing' &&
+              ((isOnlineMatch && !online.isSpectator && online.yourPlayerId !== null) ||
+                (!isOnlineMatch && offlineTauntActorId !== null))
+                ? handleSendBoardTaunt
+                : undefined
+            }
+            tauntCooldownUntil={
+              isOnlineMatch ? online.tauntCooldownUntil : offlineTauntCooldownUntil
+            }
+            openTauntTargetPlayerId={effectiveOpenTauntTargetPlayerId}
+            onChangeOpenTauntTargetPlayerId={handleChangeOpenTauntTargetPlayerId}
           />
+
+          {viewScreenState === 'playing' && (
+            <AvatarTauntOverlay
+              flights={avatarTauntFlights}
+              onFlightComplete={handleAvatarTauntFlightComplete}
+            />
+          )}
 
           <ActionDock
             currentPlayer={currentPlayer}
@@ -5023,17 +5761,26 @@ export default function App() {
             canAct={isActivelyControlledByMe}
             isActionPending={isOnlineDecisionPendingAck}
             isOnlineMatch={isOnlineMatch}
+            isOnlineSpectator={online.isSpectator}
             isOnlineBotTakeover={Boolean(
               isOnlineMatch &&
+                !online.isSpectator &&
                 myOnlinePlayer?.onlineBotTakeover &&
                 !myOnlinePlayer.bankrupt
             )}
+            eligibleTakeoverBots={eligibleTakeoverBots}
+            takeoverRequestPending={Boolean(pendingTakeoverRequest)}
+            onRequestBotTakeover={online.requestBotTakeover}
             tacticalDiceEnabled={viewTacticalDiceEnabled}
             selectedDiceChoice={selectedDiceChoice}
             lastDice={viewLastDice}
             lastDiceSum={viewLastDiceSum}
             openMenu={openActionMenu}
-            onChangeOpenMenu={setOpenActionMenu}
+            onChangeOpenMenu={handleChangeOpenActionMenu}
+            unreadChatCount={unreadChatCount}
+            chatOpen={chatDrawerOpen}
+            onToggleChat={handleToggleChatDrawer}
+            voiceBarNode={matchVoiceBarNode}
             currencyStyle={currencyStyle}
             graphicsQualityPref={graphicsQualityPref}
             effectiveQualityTier={effectiveQualityTier}
@@ -5042,6 +5789,7 @@ export default function App() {
             cinematicCamera={cinematicCamera}
             nightMode={nightMode}
             soundMuted={soundMuted}
+            disable3dTaunts={disable3dTaunts}
             onRollDice={handleDockRollDice}
             onSelectDiceChoice={handleSelectDiceChoice}
             onRerollDice={() => void handleRerollDice()}
@@ -5058,9 +5806,78 @@ export default function App() {
             onToggleNightMode={handleToggleNightMode}
             onResetCamera={handleResetCamera}
             onToggleSound={handleToggleSound}
+            onToggleDisable3dTaunts={handleToggleDisable3dTaunts}
             onOpenPause={handleOpenPause}
             onTriggerEmote={handleTriggerEmote}
           />
+
+          {isOnlineMatch && viewScreenState === 'playing' && (
+            <OnlineChatDrawer
+              variant="drawer"
+              open={chatDrawerOpen}
+              onClose={() => setChatDrawerOpen(false)}
+              messages={online.chatMessages}
+              myParticipantId={online.yourParticipantId}
+              canUseTeamChannel={canUseTeamChannel}
+              onSendMessage={handleSendChatMessage}
+            />
+          )}
+
+          {isOnlineMatch && isOnlineHost && viewScreenState === 'playing' && pendingTakeoverRequest && (
+            <div
+              role="dialog"
+              aria-modal="false"
+              aria-label="Yêu cầu xin thế chỗ Bot"
+              data-testid="bt-takeover-approval-dialog"
+              className="fixed top-[168px] sm:top-[4.25rem] left-1/2 -translate-x-1/2 z-46 w-[min(430px,calc(100vw-1rem))] bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto shadow-2xl"
+            >
+              <div className="bt-header-sky px-3.5 py-2 flex items-center justify-between gap-2">
+                <span className="font-display text-xs font-black uppercase tracking-wide flex items-center gap-1.5">
+                  <Gamepad2 className="h-4 w-4 text-amber-300 shrink-0" aria-hidden="true" />
+                  <span>Xin Thế Chỗ Bot AI</span>
+                </span>
+                <span className="px-2 py-0.5 rounded-md bg-white/15 text-[11px] font-mono-num font-black text-amber-300 inline-flex items-center gap-1 whitespace-nowrap">
+                  <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  <span>{takeoverSecondsLeft}s</span>
+                </span>
+              </div>
+              <div className="p-3.5 space-y-2.5 bg-[#faf8f3]">
+                <p className="text-xs sm:text-sm font-semibold text-[#334155] leading-snug">
+                  Khán giả{' '}
+                  <span className="font-black text-[#141c2b]">
+                    {pendingTakeoverRequest.requesterName}
+                  </span>{' '}
+                  xin tiếp quản Bot{' '}
+                  <span className="font-black text-emerald-700">
+                    {pendingTakeoverRequest.targetBotName}
+                  </span>{' '}
+                  để tham gia ván đấu.
+                </p>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    data-testid="bt-takeover-reject-btn"
+                    onClick={() =>
+                      online.respondBotTakeover(pendingTakeoverRequest.requestId, false)
+                    }
+                    className="id-btn-crimson px-3.5 py-1.5 rounded-xl text-xs font-extrabold uppercase cursor-pointer whitespace-nowrap"
+                  >
+                    Từ chối
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="bt-takeover-approve-btn"
+                    onClick={() =>
+                      online.respondBotTakeover(pendingTakeoverRequest.requestId, true)
+                    }
+                    className="bt-btn-green px-4 py-1.5 rounded-xl text-xs font-black uppercase cursor-pointer whitespace-nowrap"
+                  >
+                    Chấp nhận
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
 
@@ -5072,6 +5889,11 @@ export default function App() {
           properties={viewProperties}
           boardModifiers={viewBoardModifiers}
           matchMode={viewMatchMode}
+          canPingTile={isOnlineMatch && viewScreenState === 'playing'}
+          pingCooldownUntil={online.pingCooldownUntil}
+          onPingTile={
+            isOnlineMatch && viewScreenState === 'playing' ? handlePingTile : undefined
+          }
           onClose={() => setSelectedTileIndex(null)}
         />
       )}
@@ -5241,10 +6063,7 @@ export default function App() {
               commitScreenState('playing');
             }
           }}
-          onOpenRulebook={() => {
-            setSelectedTileIndex(null);
-            setShowRulebookModal(true);
-          }}
+          onOpenRulebook={handleOpenRulebookModal}
           onResetCamera={() => {
             canvasRef.current?.resetCamera();
             if (isOnlineMatch) {
@@ -5278,15 +6097,14 @@ export default function App() {
           players={viewPlayers}
           properties={viewProperties}
           turnCount={viewTurnCount}
+          roomCode={isOnlineMatch ? online.roomSnapshot?.roomCode : undefined}
+          postMatchAwards={isOnlineMatch ? onlineMatch?.postMatchAwards : undefined}
+          seriesStandings={isOnlineMatch ? online.roomSnapshot?.seriesStandings : undefined}
           isOnlineMatch={isOnlineMatch}
-          isOnlineHost={
-            Boolean(
-              online.roomSnapshot &&
-                online.yourSeatIndex === online.roomSnapshot.hostSeatIndex
-            )
-          }
+          isOnlineHost={isOnlineHost}
           graphicsQualityTier={effectiveQualityTier}
           trapFocus={!showRulebookModal}
+          onlineChatNode={isOnlineMatch ? embeddedOnlineChatNode : undefined}
           onReturnToOnlineLobby={() => {
             canvasRef.current?.cancelPendingAnimations();
             online.returnToLobby();

@@ -78,6 +78,7 @@ import {
   wouldOwnTileWinMatch,
 } from './rules';
 import { ColorGroup, MatchBoardModifiers, PlayerState, PropertyState, TileKind } from './types';
+import type { BotDifficulty } from './onlineTypes';
 
 test('32-tile Business Tour board topology matches exact corner, resort, chance, tax and 8 color groups', () => {
   assert.equal(TOTAL_TILES, 32);
@@ -1565,6 +1566,283 @@ test('BUG-05 (Review Round 2): rankPlayersForVictory breaks Sudden Death Net Wor
     'rankPlayersForVictory must break NW+cash ties by laps identically to evaluateTimeLimitWinner'
   );
 });
+
+test('Phase 2 Task 1: 3-tier Bot AI difficulty (easy / normal / hard) differentiates reserves, upgrades, 2v2 blocking buyouts, Championship, and tactical cards', () => {
+  const players = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000);
+  const mods = createDefaultBoardModifiers(0);
+  const difficulties: BotDifficulty[] = ['easy', 'normal', 'hard'];
+  assert.equal(difficulties.length, 3);
+
+  // 1. Initial purchase tier & on-tile upgrade: easy caps at level 2 and keeps higher cash reserves; hard is aggressive
+  const botTierRich = { ...players[1], cash: 1_100_000, laps: 1 };
+  const emptyProps = makeTestProps({});
+  assert.equal(botPickInitialPurchaseTier(botTierRich, 13, emptyProps, players, 'FFA', 'easy'), 2);
+  assert.equal(botPickInitialPurchaseTier(botTierRich, 13, emptyProps, players, 'FFA', 'normal'), 3);
+  assert.equal(botPickInitialPurchaseTier(botTierRich, 13, emptyProps, players, 'FFA', 'hard'), 3);
+  // Even with 2M cash, easy still caps initial purchase tier at 2 houses
+  assert.equal(
+    botPickInitialPurchaseTier({ ...players[1], cash: 2_000_000, laps: 2 }, 13, emptyProps, players, 'FFA', 'easy'),
+    2
+  );
+
+  const botTierTight = { ...players[1], cash: 880_000, laps: 1 };
+  assert.equal(botPickInitialPurchaseTier(botTierTight, 13, emptyProps, players, 'FFA', 'easy'), 0);
+  assert.equal(botPickInitialPurchaseTier(botTierTight, 13, emptyProps, players, 'FFA', 'normal'), 2);
+  assert.equal(botPickInitialPurchaseTier(botTierTight, 13, emptyProps, players, 'FFA', 'hard'), 3);
+
+  const ownTileProps = makeTestProps({ 5: { ownerId: 1, level: 0 } });
+  assert.equal(botPickOnTileUpgradeTargetLevel({ ...players[1], cash: 800_000, laps: 1 }, 5, ownTileProps, 'easy'), 2);
+  assert.equal(botPickOnTileUpgradeTargetLevel({ ...players[1], cash: 800_000, laps: 1 }, 5, ownTileProps, 'normal'), 3);
+  assert.equal(botPickOnTileUpgradeTargetLevel({ ...players[1], cash: 600_000, laps: 1 }, 5, ownTileProps, 'easy'), null);
+  assert.equal(botPickOnTileUpgradeTargetLevel({ ...players[1], cash: 600_000, laps: 1 }, 5, ownTileProps, 'normal'), 3);
+  assert.equal(botPickOnTileUpgradeTargetLevel({ ...players[1], cash: 430_000, laps: 1 }, 5, ownTileProps, 'normal'), 1);
+  assert.equal(botPickOnTileUpgradeTargetLevel({ ...players[1], cash: 430_000, laps: 1 }, 5, ownTileProps, 'hard'), 3);
+
+  // 2. Property buy & TEAMS_2V2 N-1 block behavior
+  const resortDangerProps = makeTestProps({
+    4: { ownerId: 0 },
+    14: { ownerId: 0 },
+    18: { ownerId: 0 },
+  });
+  assert.equal(
+    botShouldBuyProperty({ ...players[1], cash: 320_000 }, 25, players, resortDangerProps, 'FFA', 'easy'),
+    false
+  );
+  assert.equal(
+    botShouldBuyProperty({ ...players[1], cash: 320_000 }, 25, players, resortDangerProps, 'FFA', 'normal'),
+    true
+  );
+  assert.equal(
+    botShouldBuyProperty({ ...players[1], cash: 240_000 }, 25, players, resortDangerProps, 'FFA', 'normal'),
+    false
+  );
+  assert.equal(
+    botShouldBuyProperty({ ...players[1], cash: 240_000 }, 25, players, resortDangerProps, 'FFA', 'hard'),
+    true
+  );
+
+  // Non-strategic general reserve differences
+  assert.equal(
+    botShouldBuyProperty({ ...players[1], cash: 700_000 }, 13, players, emptyProps, 'FFA', 'easy'),
+    false
+  );
+  assert.equal(
+    botShouldBuyProperty({ ...players[1], cash: 700_000 }, 13, players, emptyProps, 'FFA', 'normal'),
+    true
+  );
+  assert.equal(
+    botShouldBuyProperty({ ...players[1], cash: 450_000 }, 13, players, emptyProps, 'FFA', 'normal'),
+    false
+  );
+  assert.equal(
+    botShouldBuyProperty({ ...players[1], cash: 450_000 }, 13, players, emptyProps, 'FFA', 'hard'),
+    true
+  );
+
+  // 3. Buyout & TEAMS_2V2 N-1 block behavior
+  const teamPlayers = createInitialPlayers(DEFAULT_PLAYER_CONFIGS, 2_000_000, 'TEAMS_2V2');
+  // Opposing Team 1 (P1 + P3) holds 2 of 3 Cyan tiles (5 & 6); tile 7 is unowned -> N-1 near monopoly!
+  const teamNearCyanProps = makeTestProps({
+    5: { ownerId: 1, level: 0 }, // Ninh Bình (price 90K, buyout 180K)
+    6: { ownerId: 3, level: 0 }, // Huế (teammate P3)
+  });
+  // Direct purchase of tile 7 (price 120K) with 160K cash (40K left) blocks Team 1's Cyan monopoly
+  assert.equal(
+    botShouldBuyProperty({ ...teamPlayers[0], cash: 160_000 }, 7, teamPlayers, teamNearCyanProps, 'TEAMS_2V2', 'easy'),
+    false
+  );
+  assert.equal(
+    botShouldBuyProperty({ ...teamPlayers[0], cash: 160_000 }, 7, teamPlayers, teamNearCyanProps, 'TEAMS_2V2', 'normal'),
+    false
+  );
+  assert.equal(
+    botShouldBuyProperty({ ...teamPlayers[0], cash: 160_000 }, 7, teamPlayers, teamNearCyanProps, 'TEAMS_2V2', 'hard'),
+    true
+  );
+
+  const botTeam0 = { ...teamPlayers[0], cash: 400_000 }; // cashAfter buyout = 220K
+  assert.equal(
+    botShouldBuyoutProperty(botTeam0, 5, teamPlayers, teamNearCyanProps, mods, 'TEAMS_2V2', 'easy'),
+    false
+  );
+  assert.equal(
+    botShouldBuyoutProperty(botTeam0, 5, teamPlayers, teamNearCyanProps, mods, 'TEAMS_2V2', 'normal'),
+    false
+  );
+  assert.equal(
+    botShouldBuyoutProperty(botTeam0, 5, teamPlayers, teamNearCyanProps, mods, 'TEAMS_2V2', 'hard'),
+    true
+  );
+
+  // Full opponent monopoly buyout: easy refuses at 500K & 250K, normal buys at 500K, hard buys at 250K
+  const oppMonoProps = makeTestProps({
+    1: { ownerId: 0, level: 0 }, // buyout 100K
+    2: { ownerId: 0, level: 0 },
+    3: { ownerId: 0, level: 0 },
+  });
+  assert.equal(
+    botShouldBuyoutProperty({ ...players[1], cash: 500_000 }, 1, players, oppMonoProps, mods, 'FFA', 'easy'),
+    false
+  );
+  assert.equal(
+    botShouldBuyoutProperty({ ...players[1], cash: 500_000 }, 1, players, oppMonoProps, mods, 'FFA', 'normal'),
+    true
+  );
+  assert.equal(
+    botShouldBuyoutProperty({ ...players[1], cash: 250_000 }, 1, players, oppMonoProps, mods, 'FFA', 'normal'),
+    false
+  );
+  assert.equal(
+    botShouldBuyoutProperty({ ...players[1], cash: 250_000 }, 1, players, oppMonoProps, mods, 'FFA', 'hard'),
+    true
+  );
+
+  // 4. Championship target: easy uses simple raw rent ignoring Festival/Monopoly; hard factors protection & opponent proximity
+  const champProps = makeTestProps({
+    1: { ownerId: 1, level: 0 }, // raw 10K, with Brown Mono (x2) + Festival (x2) = 40K (80K w/ Cup)
+    2: { ownerId: 1, level: 0 },
+    3: { ownerId: 1, level: 0 },
+    5: { ownerId: 1, level: 0 }, // raw 18K, no multipliers = 18K (36K w/ Cup)
+  });
+  const festTile1Mods: MatchBoardModifiers = {
+    ...mods,
+    festivalTileIndices: [1],
+  };
+  assert.equal(botPickChampionshipTarget(players[1], champProps, festTile1Mods, true, players, 'FFA', 'easy'), 5);
+  assert.equal(botPickChampionshipTarget(players[1], champProps, festTile1Mods, true, players, 'FFA', 'normal'), 1);
+  assert.equal(botPickChampionshipTarget(players[1], champProps, festTile1Mods, true, players, 'FFA', 'hard'), 1);
+
+  const champRiskPlayers = players.map((p) => (p.id === 0 ? { ...p, position: 19 } : p));
+  const champRiskProps = makeTestProps({
+    26: { ownerId: 1, level: 3 }, // Đồng Nai: protected via shield, 7 steps from P0 (6/36)
+    27: { ownerId: 1, level: 3 }, // Đà Nẵng: unshielded, 8 steps from P0
+  });
+  const shield26Mods: MatchBoardModifiers = {
+    ...mods,
+    shieldedTileIndices: [26],
+  };
+  assert.equal(
+    botPickChampionshipTarget(players[1], champRiskProps, shield26Mods, true, champRiskPlayers, 'FFA', 'normal'),
+    27
+  );
+  assert.equal(
+    botPickChampionshipTarget(players[1], champRiskProps, shield26Mods, true, champRiskPlayers, 'FFA', 'hard'),
+    26
+  );
+
+  // 5. Tactical card targets: hard prioritizes highest-rent / Cup / Festival opponent tile & avoids shields; easy uses simple first target
+  const tacticalProps = makeTestProps({
+    1: { ownerId: 0, level: 0 }, // shielded Brown mono
+    2: { ownerId: 0, level: 0 },
+    3: { ownerId: 0, level: 0 },
+    15: { ownerId: 0, level: 2 }, // Nha Trang + Festival (720K rent)
+    29: { ownerId: 0, level: 2 }, // Hà Nội + Championship x2 (1.44M rent)
+    5: { ownerId: 1, level: 0 }, // Bot's cheap tile
+    21: { ownerId: 1, level: 3 }, // Bot's high-rent vulnerable city
+  });
+  const tacticalMods: MatchBoardModifiers = {
+    festivalTileIndices: [15],
+    championshipTileIndex: 29,
+    championshipMultiplier: 2,
+    shieldedTileIndices: [1],
+  };
+  assert.equal(
+    botPickTacticalCardTarget('POWER_OUTAGE', players[1], players, tacticalProps, tacticalMods, 'FFA', 'easy'),
+    1
+  );
+  assert.equal(
+    botPickTacticalCardTarget('POWER_OUTAGE', players[1], players, tacticalProps, tacticalMods, 'FFA', 'hard'),
+    29
+  );
+  assert.equal(
+    botPickTacticalCardTarget('EARTHQUAKE', players[1], players, tacticalProps, tacticalMods, 'FFA', 'easy'),
+    1
+  );
+  assert.equal(
+    botPickTacticalCardTarget('EARTHQUAKE', players[1], players, tacticalProps, tacticalMods, 'FFA', 'hard'),
+    29
+  );
+  assert.equal(
+    botPickTacticalCardTarget('SHIELD_CITY', players[1], players, tacticalProps, tacticalMods, 'FFA', 'easy'),
+    5
+  );
+  assert.equal(
+    botPickTacticalCardTarget('SHIELD_CITY', players[1], players, tacticalProps, tacticalMods, 'FFA', 'hard'),
+    21
+  );
+
+  // Hard avoids wasting POWER_OUTAGE on a shielded city when an unshielded target exists
+  const shieldTrapProps = makeTestProps({
+    5: { ownerId: 0, level: 1 }, // unshielded 54K rent
+    15: { ownerId: 0, level: 2 }, // shielded 360K rent
+  });
+  const shield15Mods: MatchBoardModifiers = { ...mods, shieldedTileIndices: [15] };
+  assert.equal(
+    botPickTacticalCardTarget('POWER_OUTAGE', players[1], players, shieldTrapProps, shield15Mods, 'FFA', 'normal'),
+    15
+  );
+  assert.equal(
+    botPickTacticalCardTarget('POWER_OUTAGE', players[1], players, shieldTrapProps, shield15Mods, 'FFA', 'hard'),
+    5
+  );
+
+  // 6. Jail, Reroll & World Tour tiers
+  assert.equal(botChooseJailAction({ ...players[1], cash: 500_000 }, 'easy'), 'ROLL_DOUBLES');
+  assert.equal(botChooseJailAction({ ...players[1], cash: 500_000 }, 'normal'), 'ROLL_DOUBLES');
+  assert.equal(botChooseJailAction({ ...players[1], cash: 500_000 }, 'hard'), 'PAY_FINE');
+  assert.equal(botChooseJailAction({ ...players[1], cash: 750_000 }, 'easy'), 'ROLL_DOUBLES');
+  assert.equal(botChooseJailAction({ ...players[1], cash: 750_000 }, 'normal'), 'PAY_FINE');
+
+  const jailRollBot = { ...players[1], position: 0, rerollCharges: 2 };
+  assert.equal(botShouldRerollDice(jailRollBot, 3, 5, players, emptyProps, mods, 'FFA', 'easy'), false);
+  assert.equal(botShouldRerollDice(jailRollBot, 3, 5, players, emptyProps, mods, 'FFA', 'normal'), true);
+  assert.equal(botShouldRerollDice(jailRollBot, 3, 5, players, emptyProps, mods, 'FFA', 'hard'), true);
+
+  // World Tour: hard flies to block opponent's N-1 Cyan monopoly even when cash is tight
+  const wtBlockBot = { ...teamPlayers[0], cash: 200_000, position: 24, pendingWorldTour: true };
+  // Passing Start from 24 -> 7 grants +300K - 50K WT fee = 450K budget; tile 7 costs 120K -> 330K left (< 350K normal general reserve)
+  assert.notEqual(
+    botPickWorldTourTarget(wtBlockBot, teamNearCyanProps, mods, teamPlayers, 'TEAMS_2V2', 'normal'),
+    7
+  );
+  assert.equal(
+    botPickWorldTourTarget(wtBlockBot, teamNearCyanProps, mods, teamPlayers, 'TEAMS_2V2', 'hard'),
+    7
+  );
+  assert.equal(
+    botPickWorldTourTarget({ ...wtBlockBot, cash: 130_000 }, teamNearCyanProps, mods, teamPlayers, 'TEAMS_2V2', 'normal'),
+    null
+  );
+  assert.equal(
+    botPickWorldTourTarget({ ...wtBlockBot, cash: 130_000 }, teamNearCyanProps, mods, teamPlayers, 'TEAMS_2V2', 'hard'),
+    7
+  );
+
+  // Hard World Tour priority: owning 1 Resort must NOT cause flying to a non-blocking 2nd Resort ahead of
+  // blocking an opponent's 2/3 color monopoly or upgrading own Lv3 city to Hotel ★
+  const hardResortVsBlockProps = makeTestProps({
+    4: { ownerId: 1, level: 0 }, // Bot already owns 1 Resort (tile 4); tiles 14, 18, 25 are unowned Resorts
+    5: { ownerId: 0, level: 1 }, // Opponent owns 2/3 Cyan (tiles 5, 6); tile 7 (Huế) is unowned
+    6: { ownerId: 0, level: 1 },
+  });
+  const hardWtBot = { ...players[1], cash: 1_200_000, laps: 1, position: 24, pendingWorldTour: true };
+  assert.equal(
+    botPickWorldTourTarget(hardWtBot, hardResortVsBlockProps, mods, players, 'FFA', 'hard'),
+    7,
+    'Hard bot owning 1 Resort must block opponent 2/3 color monopoly before flying to non-blocking 2nd Resort'
+  );
+
+  const hardResortVsHotelProps = makeTestProps({
+    4: { ownerId: 1, level: 0 }, // Bot already owns 1 Resort (tile 4); tiles 14, 18, 25 unowned Resorts
+    2: { ownerId: 1, level: 3 }, // Bot owns Lv3 city (tile 2) upgradable to Hotel ★
+  });
+  assert.equal(
+    botPickWorldTourTarget(hardWtBot, hardResortVsHotelProps, mods, players, 'FFA', 'hard'),
+    2,
+    'Hard bot owning 1 Resort must upgrade own Lv3 city to Hotel ★ before flying to non-blocking 2nd Resort'
+  );
+});
+
 
 
 

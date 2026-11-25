@@ -955,6 +955,8 @@ test.describe('Business Tour Rules Alignment & UI/Online Parity', () => {
     await guestPage.getByTestId('bt-join-room-btn').click();
     await expect(hostPage.getByText('Danh Sách Ghế Ngồi (2/2 Người)')).toBeVisible();
 
+    await guestPage.getByTestId('bt-ready-toggle-btn').click();
+    await expect(hostPage.getByTestId('bt-online-start-btn')).toBeEnabled();
     await hostPage.getByTestId('bt-online-start-btn').click();
     await expect(hostPage.locator('body')).toHaveAttribute('data-state', 'playing');
     await expect(guestPage.locator('body')).toHaveAttribute('data-state', 'playing');
@@ -1285,17 +1287,24 @@ test.describe('Business Tour Rules Alignment & UI/Online Parity', () => {
     await expect(startBtn).toBeDisabled();
     await expect(hostPage.getByTestId('bt-online-start-hint')).toBeVisible();
 
-    // Toggling fillBots ON enables Start for 2v2; toggling OFF disables again
+    // Guest marks Ready; even when Ready, 2v2 with fillBots=false and 2 humans still blocks Start.
+    // Toggling fillBots ON resets guest ready=false, so Start stays disabled until Guest confirms Ready again!
+    await guestPage.getByTestId('bt-ready-toggle-btn').click();
+    await expect(startBtn).toBeDisabled();
     const inRoomFillBotsBtn = hostPage.getByRole('button', { name: /Đang Tắt|Đang Bật/i }).first();
     await inRoomFillBotsBtn.click();
+    await expect(startBtn).toBeDisabled();
+    await guestPage.getByTestId('bt-ready-toggle-btn').click();
     await expect(startBtn).toBeEnabled();
     await expect(hostPage.getByTestId('bt-online-start-hint')).toHaveCount(0);
     await inRoomFillBotsBtn.click();
     await expect(startBtn).toBeDisabled();
 
-    // Switch to FFA 2 Người so Host & Guest start a 2-human Online match cleanly
+    // Switch to FFA 2 Người (resets guest ready=false) -> Start stays disabled until Guest clicks Ready!
     await getModeFfaToggle(hostPage).click();
     await hostPage.getByRole('button', { name: '2 Người' }).click();
+    await expect(startBtn).toBeDisabled();
+    await guestPage.getByTestId('bt-ready-toggle-btn').click();
     await expect(startBtn).toBeEnabled();
     await startBtn.click();
 

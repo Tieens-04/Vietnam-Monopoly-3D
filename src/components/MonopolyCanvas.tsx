@@ -1,4 +1,4 @@
-import React, { useEffect, useImperativeHandle, useRef } from 'react';
+import React, { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -22,6 +22,7 @@ import {
   resolveGraphicsProfile,
   shouldKeepBoardAnimating,
 } from '../game/graphicsQuality';
+import { BoardTauntKind, TilePingIntent } from '../game/onlineTypes';
 import {
   computeDayNightLightingState,
   computeTokenHopTiming,
@@ -30,6 +31,7 @@ import {
   getTileTransform,
   getTokenSlotOffset,
   isPurchasableTile,
+  TOTAL_TILES,
 } from '../game/rules';
 import {
   CurrencyStyleId,
@@ -132,6 +134,12 @@ export interface MonopolyCanvasHandle {
   resetCamera: () => void;
   dispatchAnimationCue: (cue: AnimationCuePayload) => void;
   fastForwardVisualAnimations: () => void;
+  playBoardTaunt: (
+    kind: BoardTauntKind,
+    fromPlayerId: number,
+    targetPlayerId: number
+  ) => void;
+  playTilePing: (tileIndex: number, colorHex: string, label: string) => void;
 }
 
 interface MonopolyCanvasProps {
@@ -154,6 +162,13 @@ interface MonopolyCanvasProps {
   cinematicCamera: boolean;
   nightMode: boolean;
   onSelectTile: (tileIndex: number) => void;
+  onPingTile?: (tileIndex: number, intent: TilePingIntent) => void;
+}
+
+interface ActiveTilePingOverlay {
+  tileIndex: number;
+  colorHex: string;
+  label: string;
 }
 
 interface TileVisualEntry {
@@ -219,6 +234,9 @@ const _scratchDefaultCamPos = new THREE.Vector3();
 const _scratchDefaultCamTarget = new THREE.Vector3();
 const _scratchUnitScale = new THREE.Vector3(1, 1, 1);
 const _scratchSpeechProj = new THREE.Vector3();
+const _scratchPingProj = new THREE.Vector3();
+const MAX_ACTIVE_TILE_PINGS = 4;
+const TILE_PING_DURATION_MS = 3500;
 const _camActivePlayerPos: CameraPoint3 = { x: 0, y: 0, z: 0 };
 const _camHopPos: CameraPoint3 = { x: 0, y: 0, z: 0 };
 const _camHopNextPos: CameraPoint2 = { x: 0, z: 0 };
@@ -384,6 +402,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       cinematicCamera,
       nightMode,
       onSelectTile,
+      onPingTile,
     },
     ref
   ) => {
@@ -392,8 +411,17 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
     const speechTextSpanRef = useRef<HTMLSpanElement | null>(null);
     const speechTailRef = useRef<HTMLSpanElement | null>(null);
 
+    const [activeTilePings, setActiveTilePings] = useState<ActiveTilePingOverlay[]>([]);
+    const activeTilePingsRef = useRef<ActiveTilePingOverlay[]>([]);
+    activeTilePingsRef.current = activeTilePings;
+    const pingLabelElsRef = useRef<Map<number, HTMLDivElement>>(new Map());
+    const pingTimersRef = useRef<Map<number, number>>(new Map());
+    const syncPingLabelsProjectionRef = useRef<(() => void) | null>(null);
+
     const onSelectTileRef = useRef(onSelectTile);
     onSelectTileRef.current = onSelectTile;
+    const onPingTileRef = useRef(onPingTile);
+    onPingTileRef.current = onPingTile;
 
     const playersRef = useRef(players);
     playersRef.current = players;
@@ -573,6 +601,22 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       );
     };
 
+    const clearAllTilePingOverlays = () => {
+      for (const timerId of pingTimersRef.current.values()) {
+        window.clearTimeout(timerId);
+      }
+      pingTimersRef.current.clear();
+      activeTilePingsRef.current = [];
+      setActiveTilePings([]);
+    };
+
+    useLayoutEffect(() => {
+      syncPingLabelsProjectionRef.current?.();
+      if (activeTilePings.length > 0) {
+        wakeRenderRef.current?.();
+      }
+    }, [activeTilePings]);
+
     useImperativeHandle(ref, () => ({
       resetCamera: () => {
         resetCameraActionRef.current?.();
@@ -596,8 +640,73 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         animationDirectorRef.current?.fastForwardAll();
         wakeRenderRef.current?.(true);
       },
+      playBoardTaunt: (
+        kind: BoardTauntKind,
+        fromPlayerId: number,
+        targetPlayerId: number
+      ) => {
+        const resolveWorldXZ = (playerId: number): { x: number; z: number } | null => {
+          const tok = tokenGroupsRef.current.get(playerId);
+          if (tok) {
+            return { x: tok.position.x, z: tok.position.z };
+          }
+          const pl = playersRef.current.find((p) => p.id === playerId);
+          if (!pl) return null;
+          const tf = getTileTransform(pl.position);
+          return { x: tf.x, z: tf.z };
+        };
+
+        const fromPos = resolveWorldXZ(fromPlayerId);
+        const toPos = resolveWorldXZ(targetPlayerId);
+        if (!fromPos || !toPos || !specialEventsRef.current) return;
+
+        specialEventsRef.current.playBoardTaunt(kind, fromPos.x, fromPos.z, toPos.x, toPos.z);
+        wakeRenderRef.current?.();
+      },
+      playTilePing: (tileIndex: number, colorHex: string, label: string) => {
+        if (!Number.isFinite(tileIndex)) return;
+        const normTile = ((Math.trunc(tileIndex) % TOTAL_TILES) + TOTAL_TILES) % TOTAL_TILES;
+        specialEventsRef.current?.playTilePing(normTile, colorHex, 3.5);
+
+        const existingTimer = pingTimersRef.current.get(normTile);
+        if (existingTimer !== undefined) {
+          window.clearTimeout(existingTimer);
+        }
+
+        const cleanLabel = label.trim() || '🎯 Ping!';
+        const safeColor = colorHex || '#FACC15';
+
+        const filtered = activeTilePingsRef.current.filter((item) => item.tileIndex !== normTile);
+        const next = [
+          ...filtered,
+          { tileIndex: normTile, colorHex: safeColor, label: cleanLabel },
+        ];
+        while (next.length > MAX_ACTIVE_TILE_PINGS) {
+          const evicted = next.shift();
+          if (evicted) {
+            const evictedTimer = pingTimersRef.current.get(evicted.tileIndex);
+            if (evictedTimer !== undefined) {
+              window.clearTimeout(evictedTimer);
+              pingTimersRef.current.delete(evicted.tileIndex);
+            }
+          }
+        }
+        activeTilePingsRef.current = next;
+        setActiveTilePings(next);
+
+        const timerId = window.setTimeout(() => {
+          pingTimersRef.current.delete(normTile);
+          const remaining = activeTilePingsRef.current.filter((item) => item.tileIndex !== normTile);
+          activeTilePingsRef.current = remaining;
+          setActiveTilePings(remaining);
+        }, TILE_PING_DURATION_MS);
+        pingTimersRef.current.set(normTile, timerId);
+
+        wakeRenderRef.current?.();
+      },
       cancelPendingAnimations: () => {
         pendingTileLatchesRef.current.clear();
+        clearAllTilePingOverlays();
         diceEffectsRef.current?.cancelAll();
         buildingAnimatorRef.current?.cancelAll();
         specialEventsRef.current?.cancelAll();
@@ -1686,11 +1795,19 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       let downX = 0;
       let downY = 0;
       let pointerDownOnCanvas = false;
+      let rightDownActive = false;
+      let rightDownX = 0;
+      let rightDownY = 0;
+      let maxRightDragDist = 0;
+      let lastRightUpDist = Infinity;
+      let lastRightUpAt = 0;
       let hoveredTileIdx: number | null = null;
       let lastMoveCheck = 0;
 
       clearHoverOnOccludeRef.current = () => {
         pointerDownOnCanvas = false;
+        rightDownActive = false;
+        maxRightDragDist = 0;
         if (hoveredTileIdx !== null) {
           hoveredTileIdx = null;
         }
@@ -1706,6 +1823,16 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       const onPointerDown = (e: PointerEvent) => {
         if (isBoardOccludedRef.current) {
           pointerDownOnCanvas = false;
+          rightDownActive = false;
+          return;
+        }
+        if (e.button === 2) {
+          rightDownActive = true;
+          rightDownX = e.clientX;
+          rightDownY = e.clientY;
+          maxRightDragDist = 0;
+          lastRightUpDist = Infinity;
+          lastRightUpAt = 0;
           return;
         }
         pointerDownOnCanvas = true;
@@ -1745,6 +1872,15 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       };
 
       const onPointerUp = (e: PointerEvent) => {
+        if (e.button === 2) {
+          if (rightDownActive) {
+            const d = Math.hypot(e.clientX - rightDownX, e.clientY - rightDownY);
+            lastRightUpDist = Math.max(maxRightDragDist, d);
+            lastRightUpAt = performance.now();
+            rightDownActive = false;
+          }
+          return;
+        }
         const wasDown = pointerDownOnCanvas;
         pointerDownOnCanvas = false;
         if (!wasDown || isBoardOccludedRef.current) return;
@@ -1753,13 +1889,42 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
         const tIdx = raycastBoardTile(e.clientX, e.clientY);
         if (tIdx !== null) {
+          if (e.altKey && onPingTileRef.current) {
+            onPingTileRef.current(tIdx, 'TARGET');
+            return;
+          }
           onSelectTileRef.current(tIdx);
+        }
+      };
+
+      const onContextMenu = (e: MouseEvent) => {
+        if (isBoardOccludedRef.current || !onPingTileRef.current) return;
+        let dist = Infinity;
+        if (rightDownActive) {
+          const d = Math.hypot(e.clientX - rightDownX, e.clientY - rightDownY);
+          dist = Math.max(maxRightDragDist, d);
+        } else if (performance.now() - lastRightUpAt < 500) {
+          const d = Math.hypot(e.clientX - rightDownX, e.clientY - rightDownY);
+          dist = Math.max(lastRightUpDist, d);
+        }
+        lastRightUpAt = 0;
+        lastRightUpDist = Infinity;
+        if (dist > 6) return;
+
+        e.preventDefault();
+        const tIdx = raycastBoardTile(e.clientX, e.clientY);
+        if (tIdx !== null) {
+          onPingTileRef.current(tIdx, 'TARGET');
         }
       };
 
       let requestRender: (markBackdropDirty?: boolean) => void = () => {};
 
       const onPointerMove = (e: PointerEvent) => {
+        if (rightDownActive) {
+          const d = Math.hypot(e.clientX - rightDownX, e.clientY - rightDownY);
+          if (d > maxRightDragDist) maxRightDragDist = d;
+        }
         if (isBoardOccludedRef.current || e.buttons !== 0) return;
         const now = performance.now();
         if (now - lastMoveCheck < 50) return;
@@ -1777,6 +1942,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
       const onPointerLeave = () => {
         pointerDownOnCanvas = false;
+        rightDownActive = false;
+        maxRightDragDist = 0;
         if (hoveredTileIdx !== null) {
           hoveredTileIdx = null;
           renderer.domElement.style.cursor = 'grab';
@@ -1786,10 +1953,13 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
 
       const onPointerCancel = () => {
         pointerDownOnCanvas = false;
+        rightDownActive = false;
+        maxRightDragDist = 0;
       };
 
       renderer.domElement.addEventListener('pointerdown', onPointerDown);
       renderer.domElement.addEventListener('pointerup', onPointerUp);
+      renderer.domElement.addEventListener('contextmenu', onContextMenu);
       renderer.domElement.addEventListener('pointermove', onPointerMove);
       renderer.domElement.addEventListener('pointerleave', onPointerLeave);
       renderer.domElement.addEventListener('pointercancel', onPointerCancel);
@@ -1840,6 +2010,36 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
       let currentNightFactor = nightModeRef.current ? 1 : 0;
       let appliedNightSnapshot = -1;
       let lastRenderedSpeech = '';
+
+      const syncPingLabelsProjection = () => {
+        const pings = activeTilePingsRef.current;
+        if (pings.length === 0) return;
+        const cw = viewportWidth || container.clientWidth || window.innerWidth;
+        const ch = viewportHeight || container.clientHeight || window.innerHeight;
+        camera.updateMatrixWorld();
+        for (let i = 0; i < pings.length; i++) {
+          const ping = pings[i];
+          const el = pingLabelElsRef.current.get(ping.tileIndex);
+          if (!el) continue;
+          const entry = tileEntriesRef.current[ping.tileIndex];
+          const tf = getTileTransform(ping.tileIndex);
+          const wx = entry ? entry.group.position.x : tf.x;
+          const wy = (entry ? entry.group.position.y : 0) + TILE_SURFACE_Y + 0.85;
+          const wz = entry ? entry.group.position.z : tf.z;
+          _scratchPingProj.set(wx, wy, wz);
+          _scratchPingProj.project(camera);
+          if (_scratchPingProj.z >= -1 && _scratchPingProj.z <= 1) {
+            const sx = (_scratchPingProj.x * 0.5 + 0.5) * cw;
+            const sy = (-_scratchPingProj.y * 0.5 + 0.5) * ch;
+            const clamped = clampSpeechBubbleToViewport(sx, sy, 130, 32, cw, ch, 14);
+            el.style.transform = `translate3d(${clamped.x.toFixed(1)}px, ${clamped.y.toFixed(1)}px, 0) translate(-50%, -100%)`;
+            el.style.opacity = '1';
+          } else {
+            el.style.opacity = '0';
+          }
+        }
+      };
+      syncPingLabelsProjectionRef.current = syncPingLabelsProjection;
 
       const applyQualityTier = (nextTier: GraphicsQualityTier) => {
         if (disposed) return;
@@ -3008,6 +3208,9 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           }
         }
 
+        // 7b. Zero-Reflow World-to-Screen Projected Public Tile Ping Labels (max 4)
+        syncPingLabelsProjection();
+
         return isPausedRef.current ? false : hasActiveMotion;
       };
 
@@ -3215,6 +3418,8 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         wakeRenderRef.current = null;
         clearHoverOnOccludeRef.current = null;
         applyQualityTierRef.current = null;
+        syncPingLabelsProjectionRef.current = null;
+        clearAllTilePingOverlays();
         unsubscribeReducedMotion();
         unsubAnimationCue();
         diceEffectsRef.current = null;
@@ -3252,6 +3457,7 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
         document.removeEventListener('visibilitychange', handleVisibilityChange);
         renderer.domElement.removeEventListener('pointerdown', onPointerDown);
         renderer.domElement.removeEventListener('pointerup', onPointerUp);
+        renderer.domElement.removeEventListener('contextmenu', onContextMenu);
         renderer.domElement.removeEventListener('pointermove', onPointerMove);
         renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
         renderer.domElement.removeEventListener('pointercancel', onPointerCancel);
@@ -3340,22 +3546,47 @@ export const MonopolyCanvas = React.forwardRef<MonopolyCanvasHandle, MonopolyCan
           aria-label="Bàn cờ Tỷ Phú Việt Nam 3D"
         />
 
-        {/* Floating 2D Comic Speech Bubble anchored above Active 3D Character Pawn */}
+        {/* Floating 2D Speech Bubble anchored above Active 3D Character Pawn */}
         <div
           ref={speechBubbleRef}
-          className="pointer-events-none absolute left-0 top-0 z-10 rounded-2xl border-[3px] bg-white px-3.5 py-1.5 shadow-[0_8px_20px_rgba(15,23,42,0.24)] transition-opacity duration-150"
+          className="pointer-events-none absolute left-0 top-0 z-10 rounded-xl border-2 bg-[#faf8f3] px-3 py-1.5 shadow-[0_8px_20px_rgba(20,28,43,0.22)] transition-opacity duration-150"
           style={{ opacity: 0, willChange: 'transform, opacity' }}
         >
           <span
             ref={speechTextSpanRef}
-            className="block whitespace-nowrap text-xs font-extrabold tracking-normal text-slate-800 sm:text-[13px]"
+            className="block whitespace-nowrap text-xs font-extrabold tracking-normal text-[#141c2b] sm:text-[13px]"
           />
           <span
             ref={speechTailRef}
             style={{ transform: 'translateX(-50%) rotate(45deg)' }}
-            className="absolute -bottom-[7px] left-1/2 h-3 w-3 border-b-[3px] border-r-[3px] border-inherit bg-white"
+            className="absolute -bottom-[6px] left-1/2 h-2.5 w-2.5 border-b-2 border-r-2 border-inherit bg-[#faf8f3]"
           />
         </div>
+
+        {/* Floating 2D Public Tile Ping Labels (max 4, 3.5s) */}
+        {activeTilePings.map((ping) => (
+          <div
+            key={ping.tileIndex}
+            ref={(el) => {
+              if (el) {
+                pingLabelElsRef.current.set(ping.tileIndex, el);
+              } else {
+                pingLabelElsRef.current.delete(ping.tileIndex);
+              }
+            }}
+            data-testid={`bt-tile-ping-label-${ping.tileIndex}`}
+            className="pointer-events-none absolute left-0 top-0 z-[15] rounded-full border-2 bg-[#faf8f3] px-2.5 py-1 shadow-[0_6px_16px_rgba(20,28,43,0.22)] transition-opacity duration-150"
+            style={{
+              borderColor: ping.colorHex,
+              opacity: 0,
+              willChange: 'transform, opacity',
+            }}
+          >
+            <span className="block whitespace-nowrap text-[11px] font-black text-[#141c2b] leading-tight">
+              {ping.label}
+            </span>
+          </div>
+        ))}
       </div>
     );
   }

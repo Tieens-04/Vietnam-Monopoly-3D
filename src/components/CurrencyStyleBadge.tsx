@@ -75,7 +75,6 @@ export const CurrencyStyleIcon: React.FC<{
   if (styleId === 'bullion') {
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
-        {/* Tapered 999.9 Gold Ingot Bar */}
         <polygon
           points="2.5,16.5 5.2,9.5 16.8,9.5 19.5,16.5"
           fill="#F59E0B"
@@ -90,7 +89,6 @@ export const CurrencyStyleIcon: React.FC<{
           strokeWidth="1.2"
           strokeLinejoin="round"
         />
-        {/* Luxury Striped Casino Chip */}
         <circle
           cx="17.6"
           cy="15.2"
@@ -109,7 +107,6 @@ export const CurrencyStyleIcon: React.FC<{
     );
   }
 
-  // 'mixed': Polymer Banknote + Gleaming Gold Coin
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
       <rect
@@ -147,7 +144,7 @@ export const CurrencyStylePicker: React.FC<{
 
   return (
     <div data-testid="bt-currency-style-picker" className="bt-currency-picker-wrap space-y-1.5">
-      <div className="bt-currency-grid grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+      <div className="bt-currency-grid bt-segment-well grid grid-cols-2 gap-1 p-1 rounded-xl">
         {CURRENCY_STYLE_OPTIONS.map((opt) => {
           const active = opt.id === value;
           return (
@@ -158,10 +155,10 @@ export const CurrencyStylePicker: React.FC<{
               aria-pressed={active}
               onClick={() => onChange(opt.id)}
               title={`${opt.title}: ${opt.subtitle}`}
-              className={`bt-currency-opt-btn py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 text-[11px] font-black leading-tight text-center transition-all cursor-pointer whitespace-nowrap ${
+              className={`bt-currency-opt-btn py-1.5 px-2 rounded-lg flex items-center justify-center gap-1.5 text-[11px] font-bold leading-tight text-center transition-all cursor-pointer whitespace-nowrap ${
                 active
-                  ? 'bt-btn-gold text-slate-950 shadow-xs'
-                  : 'text-sky-900 hover:bg-white/70'
+                  ? 'bt-segment-active-light ring-1 ring-amber-400/70'
+                  : 'text-[#3f4a5e] hover:bg-white/65 hover:text-[#141c2b]'
               }`}
             >
               <CurrencyStyleIcon styleId={opt.id} className="h-4 w-4 shrink-0" />
@@ -171,7 +168,7 @@ export const CurrencyStylePicker: React.FC<{
         })}
       </div>
       {!compact && (
-        <p className="text-[11px] font-bold text-sky-800/90 leading-snug px-0.5">
+        <p className="text-[11px] font-semibold text-[#525e73] leading-snug px-0.5">
           {activeMeta.subtitle}
         </p>
       )}

@@ -3,7 +3,9 @@ import { COLOR_GROUP_META } from '../game/boardData';
 import {
   getTileTransform,
   RESORT_TILE_INDICES,
+  TOTAL_TILES,
 } from '../game/rules';
+import { BoardTauntKind } from '../game/onlineTypes';
 import {
   ColorGroup,
   GraphicsQualityTier,
@@ -14,8 +16,10 @@ import {
 import {
   AnimationDirector,
   createManagedGsapTimeline,
+  ManagedVisualTimeline,
 } from './animationDirector';
 import { OwnershipBuildingSuiteRefs } from './models';
+import { createTauntProjectilePool } from './tauntProjectiles';
 
 export interface BrinkAlert {
   key: string;
@@ -129,12 +133,21 @@ export interface SpecialEventEffects {
     animateAmbient: boolean
   ) => void;
   playBrinkPulse: (tileIndices: ReadonlyArray<number>, colorHex: string) => void;
+  playBoardTaunt: (
+    kind: BoardTauntKind,
+    fromX: number,
+    fromZ: number,
+    toX: number,
+    toZ: number
+  ) => void;
+  playTilePing: (tileIndex: number, colorHex: string, durationSec?: number) => void;
   cancelAll: () => void;
   dispose: () => void;
 }
 
 const POOL_SHARD_COUNT = 16;
 const POOL_BRINK_RINGS = 4;
+export const POOL_PING_RINGS = 4;
 const TILE_SURFACE_Y = 0.44;
 const CHANCE_DECK_X = -3.68;
 const CHANCE_DECK_Y = 0.34;
@@ -419,6 +432,56 @@ export function createSpecialEventEffects(
     brinkRingPool.push({ mesh, mat });
   }
   let brinkCursor = 0;
+
+  // 10. Pooled Public Tile Ping Rings (Phase 3)
+  interface PingRingEntry {
+    mesh: THREE.Mesh;
+    mat: THREE.MeshBasicMaterial;
+    active: boolean;
+    tileIndex: number | null;
+    lastUsedSeq: number;
+    runToken: number;
+    timeline: ManagedVisualTimeline | null;
+    proxy: { u: number };
+  }
+  const pingRingGeo = trackGeo(new THREE.RingGeometry(0.58, 0.84, 24));
+  pingRingGeo.rotateX(-Math.PI / 2);
+  const pingRingPool: PingRingEntry[] = [];
+  for (let i = 0; i < POOL_PING_RINGS; i++) {
+    const mat = trackMat(
+      new THREE.MeshBasicMaterial({
+        color: 0xfacc15,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      })
+    );
+    const mesh = trackObj(new THREE.Mesh(pingRingGeo, mat));
+    mesh.visible = false;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.renderOrder = 4;
+    pingRingPool.push({
+      mesh,
+      mat,
+      active: false,
+      tileIndex: null,
+      lastUsedSeq: 0,
+      runToken: 0,
+      timeline: null,
+      proxy: { u: 0 },
+    });
+  }
+  let pingUseSeq = 0;
+
+  // 11. Pooled 3D Board Taunt Projectiles (Phase 3)
+  const tauntPool = createTauntProjectilePool({
+    scene,
+    director,
+    getQualityTier,
+    getReducedMotion,
+  });
 
   const syncShardsToGpu = (): void => {
     let count = 0;
@@ -967,6 +1030,117 @@ export function createSpecialEventEffects(
     }
   };
 
+  /** Phase 3: Pooled 3D board taunt projectile between player tokens */
+  const playBoardTaunt = (
+    kind: BoardTauntKind,
+    fromX: number,
+    fromZ: number,
+    toX: number,
+    toZ: number
+  ): void => {
+    if (disposed) return;
+    tauntPool.playTaunt(kind, fromX, fromZ, toX, toZ);
+  };
+
+  const claimPingSlotIndex = (normTile: number): number => {
+    for (let i = 0; i < POOL_PING_RINGS; i++) {
+      const entry = pingRingPool[i];
+      if (entry.active && entry.tileIndex === normTile) {
+        return i;
+      }
+    }
+    for (let i = 0; i < POOL_PING_RINGS; i++) {
+      if (!pingRingPool[i].active) {
+        return i;
+      }
+    }
+    let lruIdx = 0;
+    for (let i = 1; i < POOL_PING_RINGS; i++) {
+      if (pingRingPool[i].lastUsedSeq < pingRingPool[lruIdx].lastUsedSeq) {
+        lruIdx = i;
+      }
+    }
+    return lruIdx;
+  };
+
+  /** Phase 3: Pooled public 3D tile ping ring (default 3.5s) */
+  const playTilePing = (
+    tileIndex: number,
+    colorHex: string,
+    durationSec = 3.5
+  ): void => {
+    if (disposed || !Number.isFinite(tileIndex)) return;
+    const normTile = ((Math.trunc(tileIndex) % TOTAL_TILES) + TOTAL_TILES) % TOTAL_TILES;
+    const slotIdx = claimPingSlotIndex(normTile);
+    const entry = pingRingPool[slotIdx];
+    entry.runToken += 1;
+    const myToken = entry.runToken;
+
+    if (entry.timeline) {
+      entry.timeline.cancel();
+      entry.timeline = null;
+    }
+
+    const reduced = getReducedMotion();
+    const safeDuration =
+      Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 3.5;
+    const tf = getTileTransform(normTile);
+
+    pingUseSeq += 1;
+    entry.active = true;
+    entry.tileIndex = normTile;
+    entry.lastUsedSeq = pingUseSeq;
+    entry.mat.color.set(colorHex || '#FACC15');
+    entry.mat.opacity = reduced ? 0.78 : 0.9;
+    entry.mesh.position.set(tf.x, TILE_SURFACE_Y + 0.04, tf.z);
+    entry.mesh.scale.setScalar(reduced ? 1.0 : 0.92);
+    entry.mesh.visible = true;
+    entry.proxy.u = 0;
+
+    const hidePing = (): void => {
+      if (entry.runToken !== myToken) return;
+      entry.timeline = null;
+      entry.active = false;
+      entry.tileIndex = null;
+      entry.lastUsedSeq = 0;
+      entry.mesh.visible = false;
+      entry.mat.opacity = 0;
+    };
+
+    const tl = createManagedGsapTimeline({
+      id: `event:ping:${slotIdx}`,
+      category: 'event',
+      blocksIdleSleep: true,
+      build: (g) => {
+        g.to(
+          entry.proxy,
+          {
+            u: 1,
+            duration: safeDuration,
+            ease: 'none',
+            onUpdate: () => {
+              const u = entry.proxy.u;
+              const fade = u > 0.86 ? Math.max(0, (1 - u) / 0.14) : 1;
+              if (reduced) {
+                entry.mesh.scale.setScalar(1.0);
+                entry.mat.opacity = 0.78 * fade;
+              } else {
+                const pulse = 0.5 - 0.5 * Math.cos(u * Math.PI * 6);
+                entry.mesh.scale.setScalar(0.92 + pulse * 0.28);
+                entry.mat.opacity = (0.55 + pulse * 0.35) * fade;
+              }
+            },
+          },
+          0
+        );
+      },
+      onComplete: hidePing,
+      onCancel: hidePing,
+    });
+    entry.timeline = tl;
+    director.register(tl, 'cancel');
+  };
+
   const cancelAll = (): void => {
     for (const sh of shardSlots) sh.active = false;
     shardMesh.count = 0;
@@ -983,12 +1157,25 @@ export function createSpecialEventEffects(
       r.mesh.visible = false;
       r.mat.opacity = 0;
     }
+    for (const p of pingRingPool) {
+      p.runToken += 1;
+      const tl = p.timeline;
+      p.timeline = null;
+      if (tl) tl.cancel();
+      p.active = false;
+      p.tileIndex = null;
+      p.lastUsedSeq = 0;
+      p.mesh.visible = false;
+      p.mat.opacity = 0;
+    }
+    tauntPool.cancelAll();
   };
 
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
     cancelAll();
+    tauntPool.dispose();
     islandBarsGroup.visible = false;
     for (const m of lanternMeshes) m.visible = false;
     for (const o of createdObjects) {
@@ -1012,6 +1199,8 @@ export function createSpecialEventEffects(
     playChampionshipSearchlight,
     syncFestivalLanterns,
     playBrinkPulse,
+    playBoardTaunt,
+    playTilePing,
     cancelAll,
     dispose,
   };

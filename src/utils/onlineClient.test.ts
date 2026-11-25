@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React from 'react';
-import type { OnlineRoomSnapshot, ServerToClientMessage } from '../game/onlineTypes';
+import type {
+  OnlineRoomSnapshot,
+  OnlineVisualEvent,
+  RoomChatMessage,
+  RtcSignalPayload,
+  ServerToClientMessage,
+} from '../game/onlineTypes';
 import { useOnlineMultiplayer } from './onlineClient';
 
 const SESSION_STORAGE_KEY = 'bt_online_session_v1';
@@ -244,6 +250,9 @@ function mountHook<T>(useHookFn: () => T) {
     get current() {
       return latest;
     },
+    rerender: () => {
+      render();
+    },
     unmount: () => {
       mounted = false;
       for (const slot of effects) {
@@ -261,6 +270,7 @@ function makeRoomSnapshot(roomCode: string): OnlineRoomSnapshot {
     maxPlayers: 2,
     startingCash: 2_000_000,
     fillBots: false,
+    botDifficulty: 'normal',
     matchMode: 'FFA',
     tacticalDiceEnabled: false,
     hostSeatIndex: 0,
@@ -272,8 +282,10 @@ function makeRoomSnapshot(roomCode: string): OnlineRoomSnapshot {
         color: '#F5B800',
         colorName: 'Vàng kim',
         occupiedByHuman: true,
+        participantId: 'p_host0001',
         connected: true,
         isHost: true,
+        ready: true,
         teamId: 0,
       },
       {
@@ -283,11 +295,32 @@ function makeRoomSnapshot(roomCode: string): OnlineRoomSnapshot {
         color: '#66C61C',
         colorName: 'Xanh cốm',
         occupiedByHuman: false,
+        participantId: null,
         connected: false,
         isHost: false,
+        ready: false,
         teamId: 1,
       },
     ],
+    participants: [
+      {
+        participantId: 'p_host0001',
+        playerName: 'Host',
+        role: 'player',
+        seatIndex: 0,
+        playerId: 0,
+        tokenType: 'car',
+        connected: true,
+        isHost: true,
+        ready: true,
+        micEnabled: false,
+      },
+    ],
+    spectators: [],
+    pendingSeatSwap: null,
+    pendingTakeoverRequest: null,
+    chatHistory: [],
+    seriesStandings: [],
     match: null,
   };
 }
@@ -312,6 +345,7 @@ test('BUG-30a: SESSION_REPLACED preserves localStorage session while clearing ac
       type: 'ROOM_JOINED',
       roomCode: 'AAAA',
       sessionToken: 'token-aaaa-999999',
+      yourParticipantId: 'p_host0001',
       yourSeatIndex: 0,
       yourPlayerId: 0,
       snapshot: makeRoomSnapshot('AAAA'),
@@ -397,6 +431,7 @@ test('BUG-30b: Opening ?room=BBBB with mismatched stored session for AAAA skips 
       type: 'ROOM_JOINED',
       roomCode: 'BBBB',
       sessionToken: 'token-bbbb-111111',
+      yourParticipantId: 'p_guest002',
       yourSeatIndex: 1,
       yourPlayerId: 1,
       snapshot: makeRoomSnapshot('BBBB'),
@@ -465,6 +500,7 @@ test('BUG-30c & BUG-04: pendingQueueRef queues only room bootstrap messages; GAM
       type: 'ROOM_JOINED',
       roomCode: 'AAAA',
       sessionToken: 'token-aaaa-999999',
+      yourParticipantId: 'p_host0001',
       yourSeatIndex: 0,
       yourPlayerId: 0,
       snapshot: playingSnap,
@@ -511,6 +547,7 @@ test('BUG-30c & BUG-04: pendingQueueRef queues only room bootstrap messages; GAM
       type: 'ROOM_JOINED',
       roomCode: 'AAAA',
       sessionToken: 'token-aaaa-999999',
+      yourParticipantId: 'p_host0001',
       yourSeatIndex: 0,
       yourPlayerId: 0,
       snapshot: {
@@ -619,6 +656,7 @@ test('BUG-04 (Review Round 2): delayed onclose from a superseded WebSocket must 
       type: 'ROOM_JOINED',
       roomCode: 'AAAA',
       sessionToken: 'tok-aaaa-111111',
+      yourParticipantId: 'p_host0001',
       yourSeatIndex: 0,
       yourPlayerId: 0,
       snapshot: makeRoomSnapshot('AAAA'),
@@ -644,6 +682,7 @@ test('BUG-04 (Review Round 2): delayed onclose from a superseded WebSocket must 
       type: 'ROOM_JOINED',
       roomCode: 'BBBB',
       sessionToken: 'tok-bbbb-222222',
+      yourParticipantId: 'p_host0001',
       yourSeatIndex: 0,
       yourPlayerId: 0,
       snapshot: makeRoomSnapshot('BBBB'),
@@ -657,6 +696,709 @@ test('BUG-04 (Review Round 2): delayed onclose from a superseded WebSocket must 
     assert.equal(hook.current.isSynced, true);
     assert.equal(hook.current.roomSnapshot?.roomCode, 'BBBB');
   } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+function makeChatMessage(overrides: Partial<RoomChatMessage> = {}): RoomChatMessage {
+  return {
+    id: 1,
+    participantId: 'p_host0001',
+    playerId: 0,
+    senderName: 'Host',
+    senderColor: '#F5B800',
+    role: 'player',
+    channel: 'ALL',
+    text: 'Xin chào!',
+    createdAt: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
+test('Phase 1 Task 5: ROOM_JOINED / ROOM_SNAPSHOT hydrate yourParticipantId & chatMessages, GAME_EVENT(CHAT_MESSAGE) deduplicates by id, and RTC_SIGNAL / onChatMessage update refs across rerenders', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const visualEvents: OnlineVisualEvent[] = [];
+  const receivedChat1: RoomChatMessage[] = [];
+  const receivedChat2: RoomChatMessage[] = [];
+  const receivedSignals1: Array<{ from: string; signal: RtcSignalPayload }> = [];
+  const receivedSignals2: Array<{ from: string; signal: RtcSignalPayload }> = [];
+
+  let activeOnChat = (msg: RoomChatMessage) => {
+    receivedChat1.push(msg);
+  };
+  let activeOnRtc = (fromParticipantId: string, signal: RtcSignalPayload) => {
+    receivedSignals1.push({ from: fromParticipantId, signal });
+  };
+
+  const hook = mountHook(() =>
+    useOnlineMultiplayer(
+      (event) => {
+        visualEvents.push(event);
+      },
+      {
+        onChatMessage: activeOnChat,
+        onRtcSignal: activeOnRtc,
+      }
+    )
+  );
+
+  try {
+    assert.equal(hook.current.yourParticipantId, null);
+    assert.deepEqual(hook.current.chatMessages, []);
+
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    const msg1 = makeChatMessage({ id: 1, text: 'Tin lịch sử 1' });
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'AAAA',
+      sessionToken: 'token-aaaa-999999',
+      yourParticipantId: 'p_host0001',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: {
+        ...makeRoomSnapshot('AAAA'),
+        chatHistory: [msg1],
+      },
+    });
+
+    assert.equal(hook.current.yourParticipantId, 'p_host0001');
+    assert.deepEqual(hook.current.chatMessages, [msg1]);
+    assert.deepEqual(receivedChat1, []);
+
+    // Incoming GAME_EVENT(CHAT_MESSAGE) appends new message and triggers both onChatMessage and onVisualEvent
+    const msg2 = makeChatMessage({ id: 2, participantId: 'p_guest002', playerId: 1, senderName: 'Guest', text: 'Chào Host!' });
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 1,
+        kind: 'CHAT_MESSAGE',
+        message: msg2,
+      },
+    });
+
+    assert.deepEqual(hook.current.chatMessages, [msg1, msg2]);
+    assert.deepEqual(receivedChat1, [msg2]);
+    assert.equal(visualEvents.length, 1);
+    assert.equal(visualEvents[0].kind, 'CHAT_MESSAGE');
+
+    // Duplicate message id even with newer eventSeq must NOT duplicate chatMessages or re-fire onChatMessage
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 2,
+        kind: 'CHAT_MESSAGE',
+        message: msg2,
+      },
+    });
+    // Stale eventSeq visual event must still be deduplicated by lastEventSeqRef
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 2,
+        kind: 'SOUND',
+        effect: 'cashGain',
+      },
+    });
+    assert.deepEqual(hook.current.chatMessages, [msg1, msg2]);
+    assert.deepEqual(receivedChat1, [msg2]);
+    assert.equal(visualEvents.length, 2);
+
+    // Next visual event with higher eventSeq still works
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 3,
+        kind: 'SOUND',
+        effect: 'cashGain',
+      },
+    });
+    assert.equal(visualEvents.length, 3);
+    assert.equal(visualEvents[2].kind, 'SOUND');
+
+    // ROOM_SNAPSHOT hydrates yourParticipantId and chatMessages
+    const msg3 = makeChatMessage({ id: 3, channel: 'TEAM', teamId: 0, text: 'Tin đội mới' });
+    ws.simulateMessage({
+      type: 'ROOM_SNAPSHOT',
+      yourParticipantId: 'p_host_updated',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: {
+        ...makeRoomSnapshot('AAAA'),
+        chatHistory: [msg1, msg2, msg3],
+      },
+    });
+    assert.equal(hook.current.yourParticipantId, 'p_host_updated');
+    assert.deepEqual(hook.current.chatMessages, [msg1, msg2, msg3]);
+
+    // Incoming RTC_SIGNAL forwards to onRtcSignal
+    const offerSignal: RtcSignalPayload = { kind: 'offer', sdp: 'v=0\r\no=- 1 2 IN IP4 127.0.0.1' };
+    ws.simulateMessage({
+      type: 'RTC_SIGNAL',
+      fromParticipantId: 'p_guest002',
+      signal: offerSignal,
+    });
+    assert.deepEqual(receivedSignals1, [{ from: 'p_guest002', signal: offerSignal }]);
+
+    // Update callback handlers on rerender -> socket listener must invoke the latest refs without stale closures
+    activeOnChat = (msg: RoomChatMessage) => {
+      receivedChat2.push(msg);
+    };
+    activeOnRtc = (fromParticipantId: string, signal: RtcSignalPayload) => {
+      receivedSignals2.push({ from: fromParticipantId, signal });
+    };
+    hook.rerender();
+
+    const msg4 = makeChatMessage({ id: 4, text: 'Tin sau rerender' });
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 4,
+        kind: 'CHAT_MESSAGE',
+        message: msg4,
+      },
+    });
+    const iceSignal: RtcSignalPayload = {
+      kind: 'ice',
+      candidate: { candidate: 'candidate:1 1 UDP 1234 127.0.0.1 9999 typ host', sdpMid: '0', sdpMLineIndex: 0 },
+    };
+    ws.simulateMessage({
+      type: 'RTC_SIGNAL',
+      fromParticipantId: 'p_guest002',
+      signal: iceSignal,
+    });
+
+    assert.equal(receivedChat1.length, 1);
+    assert.deepEqual(receivedChat2, [msg4]);
+    assert.equal(receivedSignals1.length, 1);
+    assert.deepEqual(receivedSignals2, [{ from: 'p_guest002', signal: iceSignal }]);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+test('Phase 1 Task 5: sendChatMessage, sendRtcSignal, and updateVoiceState payloads and offline toast suppression', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const hook = mountHook(() => useOnlineMultiplayer());
+
+  try {
+    // When socket is not open/synced:
+    // - sendRtcSignal & updateVoiceState return false and must NOT set errorMessage or increment errorSeq
+    const iceSignal: RtcSignalPayload = {
+      kind: 'ice',
+      candidate: { candidate: 'candidate:0 1 UDP 1 127.0.0.1 5000 typ host', sdpMid: '0', sdpMLineIndex: 0 },
+    };
+    assert.equal(hook.current.sendRtcSignal('p_guest002', iceSignal), false);
+    assert.equal(hook.current.updateVoiceState(true), false);
+    assert.equal(hook.current.errorMessage, null);
+    assert.equal(hook.current.errorSeq, 0);
+    assert.equal(MockWebSocket.instances.length, 0);
+
+    // - sendChatMessage while offline/unsynced returns false and DOES surface sync error toast
+    assert.equal(hook.current.sendChatMessage('ALL', 'Xin chào'), false);
+    assert.equal(hook.current.errorSeq, 1);
+    assert.ok(hook.current.errorMessage);
+    assert.equal(MockWebSocket.instances.length, 1);
+
+    // Join and sync room
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'AAAA',
+      sessionToken: 'token-aaaa-999999',
+      yourParticipantId: 'p_host0001',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: makeRoomSnapshot('AAAA'),
+    });
+    assert.equal(hook.current.errorMessage, null);
+    ws.sent.length = 0;
+
+    // While synced, all three methods return true and emit exact JSON payloads
+    assert.equal(hook.current.sendChatMessage('TEAM', 'Đội mình cố lên!'), true);
+    assert.equal(hook.current.sendRtcSignal('p_guest002', { kind: 'answer', sdp: 'v=0-answer' }), true);
+    assert.equal(hook.current.updateVoiceState(true), true);
+
+    assert.equal(ws.sent.length, 3);
+    assert.deepEqual(JSON.parse(ws.sent[0]), {
+      type: 'SEND_CHAT_MESSAGE',
+      channel: 'TEAM',
+      text: 'Đội mình cố lên!',
+    });
+    assert.deepEqual(JSON.parse(ws.sent[1]), {
+      type: 'RTC_SIGNAL',
+      targetParticipantId: 'p_guest002',
+      signal: { kind: 'answer', sdp: 'v=0-answer' },
+    });
+    assert.deepEqual(JSON.parse(ws.sent[2]), {
+      type: 'UPDATE_VOICE_STATE',
+      micEnabled: true,
+    });
+
+    // After socket drops (unsynced / reconnecting), sendRtcSignal & updateVoiceState suppress error toast
+    ws.simulateClose();
+    const errorSeqBeforeDrop = hook.current.errorSeq;
+    assert.equal(hook.current.sendRtcSignal('p_guest002', iceSignal), false);
+    assert.equal(hook.current.updateVoiceState(false), false);
+    assert.equal(hook.current.errorMessage, null);
+    assert.equal(hook.current.errorSeq, errorSeqBeforeDrop);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+test('Phase 1 Task 5: LEFT_ROOM, leaveRoom(), and terminal room errors reset yourParticipantId and chatMessages (and clear chat dedup across rooms)', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const receivedChats: RoomChatMessage[] = [];
+  const hook = mountHook(() =>
+    useOnlineMultiplayer(undefined, {
+      onChatMessage: (m) => receivedChats.push(m),
+    })
+  );
+
+  try {
+    const joinAndPopulate = (roomCode: string, participantId: string) => {
+      hook.current.createRoom({
+        playerName: 'Host',
+        tokenType: 'car',
+        maxPlayers: 2,
+        startingCash: 2_000_000,
+        fillBots: false,
+      });
+      const ws = MockWebSocket.instances.at(-1)!;
+      if (ws.readyState !== MockWebSocket.OPEN) {
+        ws.simulateOpen();
+      }
+      ws.simulateMessage({
+        type: 'ROOM_JOINED',
+        roomCode,
+        sessionToken: `token-${roomCode}-123456`,
+        yourParticipantId: participantId,
+        yourSeatIndex: 0,
+        yourPlayerId: 0,
+        snapshot: {
+          ...makeRoomSnapshot(roomCode),
+          chatHistory: [makeChatMessage({ id: 1, text: `Welcome ${roomCode}` })],
+        },
+      });
+      assert.equal(hook.current.yourParticipantId, participantId);
+      assert.equal(hook.current.chatMessages.length, 1);
+      return ws;
+    };
+
+    // 1. LEFT_ROOM resets state (also emit chat id=2 first so step 4 proves dedup state resets across rooms)
+    const ws1 = joinAndPopulate('AAAA', 'p_host_a');
+    ws1.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 1,
+        kind: 'CHAT_MESSAGE',
+        message: makeChatMessage({ id: 2, text: 'Room A message 2' }),
+      },
+    });
+    assert.equal(hook.current.chatMessages.length, 2);
+    ws1.simulateMessage({ type: 'LEFT_ROOM' });
+    assert.equal(hook.current.yourParticipantId, null);
+    assert.deepEqual(hook.current.chatMessages, [] as RoomChatMessage[]);
+
+    // 2. leaveRoom() resets state
+    joinAndPopulate('BBBB', 'p_host_b');
+    hook.current.leaveRoom();
+    assert.equal(hook.current.yourParticipantId, null);
+    assert.deepEqual(hook.current.chatMessages, [] as RoomChatMessage[]);
+
+    // 3. Terminal errors reset state
+    const terminalCodes = [
+      'ROOM_NOT_FOUND',
+      'SESSION_EXPIRED',
+      'NOT_IN_ROOM',
+      'SESSION_REPLACED',
+    ] as const;
+
+    for (const code of terminalCodes) {
+      const ws = joinAndPopulate('CCCC', `p_${code}`);
+      ws.simulateMessage({
+        type: 'ERROR',
+        code,
+        message: `Error ${code}`,
+      });
+      assert.equal(hook.current.yourParticipantId, null, `${code} must reset yourParticipantId`);
+      assert.deepEqual(
+        hook.current.chatMessages,
+        [] as RoomChatMessage[],
+        `${code} must reset chatMessages`
+      );
+    }
+
+    // 4. Rejoining a new room accepts chat id=2 after previous room AAAA had chat id=2
+    const wsNew = joinAndPopulate('DDDD', 'p_host_d');
+    const newMsg = makeChatMessage({ id: 2, text: 'Fresh room message 2' });
+    wsNew.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 1,
+        kind: 'CHAT_MESSAGE',
+        message: newMsg,
+      },
+    });
+    assert.equal(hook.current.chatMessages.length, 2);
+    assert.equal(hook.current.chatMessages[1].text, 'Fresh room message 2');
+    assert.equal(receivedChats.length, 2);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+test('Phase 2 Task 5: KICKED_BY_HOST wipes localStorage session, roomSnapshot, yourParticipantId, chatMessages, and avoids reconnect loop', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const hook = mountHook(() => useOnlineMultiplayer());
+
+  try {
+    hook.current.joinRoom({ roomCode: 'KICK', playerName: 'Guest', tokenType: 'yacht' });
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'KICK',
+      sessionToken: 'token-kick-123456',
+      yourParticipantId: 'p_guest002',
+      yourSeatIndex: 1,
+      yourPlayerId: null,
+      snapshot: {
+        ...makeRoomSnapshot('KICK'),
+        chatHistory: [makeChatMessage({ id: 10, text: 'Hello before kick' })],
+      },
+    });
+
+    assert.equal(hook.current.roomSnapshot?.roomCode, 'KICK');
+    assert.equal(hook.current.yourParticipantId, 'p_guest002');
+    assert.equal(hook.current.yourSeatIndex, 1);
+    assert.equal(hook.current.chatMessages.length, 1);
+    assert.equal(env.getHref(), 'http://localhost:3099/?room=KICK');
+    assert.equal(
+      env.storage.get(SESSION_STORAGE_KEY),
+      JSON.stringify({ roomCode: 'KICK', sessionToken: 'token-kick-123456' })
+    );
+
+    ws.simulateMessage({
+      type: 'ERROR',
+      code: 'KICKED_BY_HOST',
+      message: 'Bạn đã bị chủ phòng mời khỏi phòng.',
+    });
+
+    assert.equal(env.storage.get(SESSION_STORAGE_KEY), undefined);
+    assert.equal(env.getHref(), 'http://localhost:3099/');
+    assert.equal(hook.current.roomSnapshot, null);
+    assert.equal(hook.current.yourParticipantId, null);
+    assert.equal(hook.current.yourSeatIndex, null);
+    assert.equal(hook.current.yourPlayerId, null);
+    assert.deepEqual(hook.current.chatMessages, []);
+    assert.equal(hook.current.isSynced, false);
+    assert.equal(hook.current.isSpectator, false);
+    assert.equal(hook.current.errorMessage, 'Bạn đã bị chủ phòng mời khỏi phòng.');
+
+    ws.simulateClose();
+    assert.equal(hook.current.connectionStatus, 'idle');
+    assert.equal(MockWebSocket.instances.length, 1);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+test('Phase 2 Task 5: isSpectator tracks roomSnapshot + yourSeatIndex and Phase 2 actions emit exact ClientToServerMessage payloads', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const hook = mountHook(() => useOnlineMultiplayer());
+
+  try {
+    assert.equal(hook.current.isSpectator, false);
+
+    // Calling Phase 2 action while offline/unsynced returns false
+    assert.equal(hook.current.setReady(true), false);
+
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      botDifficulty: 'hard',
+      matchMode: 'TEAMS_2V2',
+    });
+    const ws = MockWebSocket.instances.at(-1)!;
+    ws.simulateOpen();
+
+    assert.deepEqual(JSON.parse(ws.sent[0]), {
+      type: 'CREATE_ROOM',
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 4,
+      startingCash: 2_000_000,
+      fillBots: true,
+      botDifficulty: 'hard',
+      matchMode: 'TEAMS_2V2',
+    });
+
+    // Joined as spectator (yourSeatIndex === null)
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'SPEC',
+      sessionToken: 'token-spec-123456',
+      yourParticipantId: 'p_spec001',
+      yourSeatIndex: null,
+      yourPlayerId: null,
+      snapshot: makeRoomSnapshot('SPEC'),
+    });
+    assert.equal(hook.current.isSpectator, true);
+
+    // Moved onto seat 2 -> no longer spectator
+    ws.simulateMessage({
+      type: 'ROOM_SNAPSHOT',
+      yourParticipantId: 'p_spec001',
+      yourSeatIndex: 2,
+      yourPlayerId: null,
+      snapshot: makeRoomSnapshot('SPEC'),
+    });
+    assert.equal(hook.current.isSpectator, false);
+
+    ws.sent.length = 0;
+
+    hook.current.updateLobbySettings({ botDifficulty: 'easy' });
+    assert.equal(hook.current.moveToSeat(3), true);
+    assert.equal(hook.current.requestSeatSwap(1), true);
+    assert.equal(hook.current.respondSeatSwap('swap_abc', true), true);
+    assert.equal(hook.current.hostSwapSeats(0, 2), true);
+    assert.equal(hook.current.moveToSpectator(), true);
+    assert.equal(hook.current.setReady(true), true);
+    assert.equal(hook.current.transferHost('p_guest002'), true);
+    assert.equal(hook.current.kickParticipant('p_spec009'), true);
+    assert.equal(hook.current.requestBotTakeover(1), true);
+    assert.equal(hook.current.respondBotTakeover('takeover_xyz', false), true);
+
+    assert.deepEqual(
+      ws.sent.map((raw) => JSON.parse(raw)),
+      [
+        { type: 'UPDATE_LOBBY_SETTINGS', botDifficulty: 'easy' },
+        { type: 'MOVE_TO_SEAT', targetSeatIndex: 3 },
+        { type: 'REQUEST_SEAT_SWAP', targetSeatIndex: 1 },
+        { type: 'RESPOND_SEAT_SWAP', requestId: 'swap_abc', accept: true },
+        { type: 'HOST_SWAP_SEATS', seatA: 0, seatB: 2 },
+        { type: 'MOVE_TO_SPECTATOR' },
+        { type: 'SET_READY', ready: true },
+        { type: 'TRANSFER_HOST', targetParticipantId: 'p_guest002' },
+        { type: 'KICK_PARTICIPANT', targetParticipantId: 'p_spec009' },
+        { type: 'REQUEST_BOT_TAKEOVER', targetPlayerId: 1 },
+        { type: 'RESPOND_BOT_TAKEOVER', requestId: 'takeover_xyz', accept: false },
+      ]
+    );
+
+    ws.simulateMessage({ type: 'LEFT_ROOM' });
+    assert.equal(hook.current.isSpectator, false);
+  } finally {
+    hook.unmount();
+    env.restore();
+  }
+});
+
+test('Phase 3 Task 4: sendBoardTaunt, sendTilePing, resetSeriesScore payloads, cooldowns, spectator/self gating, offline toast suppression, and visual event forwarding', () => {
+  const env = installBrowserShims({ initialUrl: 'http://localhost:3099/' });
+  const visualEvents: OnlineVisualEvent[] = [];
+  const origDateNow = Date.now;
+  let fakeNow = 100_000;
+  Date.now = () => fakeNow;
+
+  const hook = mountHook(() =>
+    useOnlineMultiplayer((event) => {
+      visualEvents.push(event);
+    })
+  );
+
+  try {
+    // 1. Offline/unsynced: sendBoardTaunt and sendTilePing return false without error toast or opening socket
+    assert.equal(hook.current.tauntCooldownUntil, 0);
+    assert.equal(hook.current.pingCooldownUntil, 0);
+    assert.equal(hook.current.sendBoardTaunt(1, 'slipper'), false);
+    assert.equal(hook.current.sendTilePing(5, 'TARGET'), false);
+    assert.equal(hook.current.errorMessage, null);
+    assert.equal(hook.current.errorSeq, 0);
+    assert.equal(MockWebSocket.instances.length, 0);
+
+    // resetSeriesScore while offline/unsynced surfaces sync toast (like other explicit room commands)
+    assert.equal(hook.current.resetSeriesScore(), false);
+    assert.equal(hook.current.errorSeq, 1);
+    assert.ok(hook.current.errorMessage);
+    assert.equal(MockWebSocket.instances.length, 1);
+
+    // 2. Join room as Player 0 (seat 0)
+    hook.current.createRoom({
+      playerName: 'Host',
+      tokenType: 'car',
+      maxPlayers: 2,
+      startingCash: 2_000_000,
+      fillBots: false,
+    });
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    ws.simulateMessage({
+      type: 'ROOM_JOINED',
+      roomCode: 'PH3T',
+      sessionToken: 'token-ph3t-123456',
+      yourParticipantId: 'p_host0001',
+      yourSeatIndex: 0,
+      yourPlayerId: 0,
+      snapshot: makeRoomSnapshot('PH3T'),
+    });
+    assert.equal(hook.current.errorMessage, null);
+    ws.sent.length = 0;
+
+    // Self-target taunt is blocked locally without sending or starting cooldown
+    assert.equal(hook.current.sendBoardTaunt(0, 'slipper'), false);
+    assert.equal(hook.current.tauntCooldownUntil, 0);
+    assert.equal(ws.sent.length, 0);
+
+    // Valid board taunt sends exact payload and starts 4000ms cooldown
+    assert.equal(hook.current.sendBoardTaunt(1, 'slipper'), true);
+    assert.equal(hook.current.tauntCooldownUntil, 104_000);
+    assert.deepEqual(JSON.parse(ws.sent[0]), {
+      type: 'SEND_BOARD_TAUNT',
+      targetPlayerId: 1,
+      tauntKind: 'slipper',
+    });
+
+    // Second taunt at +3999ms is blocked by 4000ms cooldown
+    fakeNow = 103_999;
+    assert.equal(hook.current.sendBoardTaunt(1, 'tomato'), false);
+    assert.equal(ws.sent.length, 1);
+
+    // At +4000ms cooldown expires and next taunt sends cleanly
+    fakeNow = 104_000;
+    assert.equal(hook.current.sendBoardTaunt(1, 'cash_stack'), true);
+    assert.equal(hook.current.tauntCooldownUntil, 108_000);
+    assert.deepEqual(JSON.parse(ws.sent[1]), {
+      type: 'SEND_BOARD_TAUNT',
+      targetPlayerId: 1,
+      tauntKind: 'cash_stack',
+    });
+
+    // Valid tile ping sends exact payload and starts 2500ms cooldown
+    fakeNow = 110_000;
+    assert.equal(hook.current.sendTilePing(7, 'DANGER'), true);
+    assert.equal(hook.current.pingCooldownUntil, 112_500);
+    assert.deepEqual(JSON.parse(ws.sent[2]), {
+      type: 'SEND_TILE_PING',
+      tileIndex: 7,
+      intent: 'DANGER',
+    });
+
+    // Invalid tile index is rejected cleanly without starting cooldown
+    fakeNow = 110_500;
+    assert.equal(hook.current.sendTilePing(-1, 'TARGET'), false);
+    assert.equal(hook.current.sendTilePing(32, 'TARGET'), false);
+    assert.equal(ws.sent.length, 3);
+
+    // Second tile ping within <2500ms is blocked; at >=2500ms succeeds
+    fakeNow = 112_000;
+    assert.equal(hook.current.sendTilePing(12, 'TROPHY'), false);
+    fakeNow = 112_500;
+    assert.equal(hook.current.sendTilePing(12, 'TROPHY'), true);
+    assert.equal(hook.current.pingCooldownUntil, 115_000);
+    assert.deepEqual(JSON.parse(ws.sent[3]), {
+      type: 'SEND_TILE_PING',
+      tileIndex: 12,
+      intent: 'TROPHY',
+    });
+
+    // Wait past cooldown so invalid index check at >= cooldown also never consumes cooldown
+    fakeNow = 116_000;
+    assert.equal(hook.current.sendTilePing(99, 'DANGER'), false);
+    assert.equal(hook.current.pingCooldownUntil, 115_000);
+
+    // resetSeriesScore sends RESET_SERIES_SCORE
+    assert.equal(hook.current.resetSeriesScore(), true);
+    assert.deepEqual(JSON.parse(ws.sent[4]), { type: 'RESET_SERIES_SCORE' });
+
+    // Incoming GAME_EVENT(BOARD_TAUNT) & GAME_EVENT(TILE_PING) forward to onVisualEvent
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 1,
+        kind: 'BOARD_TAUNT',
+        fromPlayerId: 1,
+        fromPlayerName: 'Guest',
+        targetPlayerId: 0,
+        tauntKind: 'confetti',
+      },
+    });
+    ws.simulateMessage({
+      type: 'GAME_EVENT',
+      event: {
+        eventSeq: 2,
+        kind: 'TILE_PING',
+        participantId: 'p_spec001',
+        playerId: null,
+        senderName: 'Khán giả A',
+        senderColor: '#64748b',
+        tileIndex: 16,
+        intent: 'TROPHY',
+      },
+    });
+    assert.equal(visualEvents.length, 2);
+    assert.equal(visualEvents[0].kind, 'BOARD_TAUNT');
+    assert.equal(visualEvents[1].kind, 'TILE_PING');
+
+    // 3. Spectator mode: cannot sendBoardTaunt, CAN sendTilePing!
+    ws.sent.length = 0;
+    fakeNow = 120_000;
+    ws.simulateMessage({
+      type: 'ROOM_SNAPSHOT',
+      yourParticipantId: 'p_spec001',
+      yourSeatIndex: null,
+      yourPlayerId: null,
+      snapshot: makeRoomSnapshot('PH3T'),
+    });
+    assert.equal(hook.current.isSpectator, true);
+    assert.equal(hook.current.sendBoardTaunt(1, 'tomato'), false);
+    assert.equal(ws.sent.length, 0);
+    assert.equal(hook.current.sendTilePing(3, 'TARGET'), true);
+    assert.deepEqual(JSON.parse(ws.sent[0]), {
+      type: 'SEND_TILE_PING',
+      tileIndex: 3,
+      intent: 'TARGET',
+    });
+
+    // 4. Leaving room clears cooldowns & dropping socket suppresses offline toast for taunt/ping
+    ws.simulateMessage({ type: 'LEFT_ROOM' });
+    assert.equal(hook.current.tauntCooldownUntil, 0);
+    assert.equal(hook.current.pingCooldownUntil, 0);
+
+    const errBefore = hook.current.errorSeq;
+    assert.equal(hook.current.sendBoardTaunt(1, 'slipper'), false);
+    assert.equal(hook.current.sendTilePing(3, 'TARGET'), false);
+    assert.equal(hook.current.errorSeq, errBefore);
+    assert.equal(hook.current.errorMessage, null);
+  } finally {
+    Date.now = origDateNow;
     hook.unmount();
     env.restore();
   }
