@@ -5,6 +5,7 @@ import {
   Mic,
   MicOff,
   Radio,
+  RefreshCw,
   Volume2,
   VolumeX,
   X,
@@ -24,6 +25,7 @@ export interface VoiceControlBarProps {
   onSetPushToTalkPressed: (pressed: boolean) => void;
   onSetPeerMuted: (participantId: string, muted: boolean) => void;
   onSetPeerVolume: (participantId: string, volume: number) => void;
+  onReconnectVoice?: () => void;
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -82,8 +84,10 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
   onSetPushToTalkPressed,
   onSetPeerMuted,
   onSetPeerVolume,
+  onReconnectVoice,
 }) => {
   const [localPopoverOpen, setLocalPopoverOpen] = useState(false);
+  const [stalledConnectionWarning, setStalledConnectionWarning] = useState(false);
   const isControlledPopover = controlledPopoverOpen !== undefined;
   const popoverOpen = isControlledPopover ? controlledPopoverOpen : localPopoverOpen;
   const popoverOpenRef = useRef(popoverOpen);
@@ -313,6 +317,37 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
     [participants, myParticipantId]
   );
 
+  const connectedRemotePeers = useMemo(
+    () =>
+      remoteParticipants
+        .filter((p) => p.connected)
+        .map((p) => voiceState.peers[p.participantId])
+        .filter(Boolean),
+    [remoteParticipants, voiceState.peers]
+  );
+
+  const hasFailedOrDisconnectedPeer = connectedRemotePeers.some(
+    (peer) => peer.connectionState === 'failed' || peer.connectionState === 'disconnected'
+  );
+  const hasPendingPeer = connectedRemotePeers.some(
+    (peer) => peer.connectionState === 'new' || peer.connectionState === 'connecting'
+  );
+
+  useEffect(() => {
+    if (!hasPendingPeer || hasFailedOrDisconnectedPeer) {
+      setStalledConnectionWarning(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setStalledConnectionWarning(true);
+    }, 7000);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [hasPendingPeer, hasFailedOrDisconnectedPeer]);
+
+  const hasRtcConnectionIssue = hasFailedOrDisconnectedPeer || stalledConnectionWarning;
+
   const isPttMode = voiceState.inputMode === 'push_to_talk';
   const isMicActive = voiceState.micEnabled || (isPttMode && voiceState.pttPressed);
   const hasPermissionWarning =
@@ -455,7 +490,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
               if (e.detail > 0) e.currentTarget.blur();
               setPopoverOpen((prev) => !prev);
             }}
-            className={`h-7 w-11 px-1.5 rounded-lg text-[10px] font-extrabold flex items-center justify-center gap-0.5 cursor-pointer transition-colors ${
+            className={`relative h-7 w-11 px-1.5 rounded-lg text-[10px] font-extrabold flex items-center justify-center gap-0.5 cursor-pointer transition-colors ${
               popoverOpen ? 'bt-float-circle-active' : 'bg-[#efece4] hover:bg-[#e5e0d4] border border-[#d5cec0] text-[#141c2b]'
             }`}
           >
@@ -464,6 +499,12 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
               aria-hidden="true"
             />
             <span className="font-mono-num">{remoteParticipants.length}</span>
+            {hasRtcConnectionIssue && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-rose-500 border border-white"
+              />
+            )}
           </button>
         </div>
       ) : (
@@ -519,7 +560,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
               if (e.detail > 0) e.currentTarget.blur();
               setPopoverOpen((prev) => !prev);
             }}
-            className={`h-8 px-2.5 rounded-lg text-xs font-extrabold flex items-center gap-1 cursor-pointer transition-colors ${
+            className={`relative h-8 px-2.5 rounded-lg text-xs font-extrabold flex items-center gap-1 cursor-pointer transition-colors ${
               popoverOpen
                 ? 'bg-[#182232] text-white'
                 : 'bg-white hover:bg-[#faf8f3] border border-[#d5cec0] text-[#141c2b]'
@@ -531,6 +572,12 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
               className={`h-3.5 w-3.5 shrink-0 transition-transform ${popoverOpen ? 'rotate-180' : ''}`}
               aria-hidden="true"
             />
+            {hasRtcConnectionIssue && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-rose-500 border border-white"
+              />
+            )}
           </button>
         </div>
       )}
@@ -581,6 +628,44 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
                     {permissionWarningBanner.detail}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {hasRtcConnectionIssue && (
+              <div
+                role="status"
+                data-testid="bt-voice-connection-warning"
+                className="p-2.5 rounded-xl border bg-amber-50 border-amber-300 text-amber-900 space-y-2"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle
+                    className="h-4 w-4 shrink-0 mt-0.5 text-amber-600"
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="font-extrabold leading-snug">
+                      {voiceState.hasTurnServer
+                        ? 'Kết nối thoại P2P đang bị chập chờn'
+                        : 'Chưa nối được thoại qua mạng khác / 4G'}
+                    </div>
+                    <div className="text-[11px] font-medium leading-snug opacity-90">
+                      {voiceState.hasTurnServer
+                        ? 'Mạng hiện tại có thể đang chặn UDP hoặc đổi IP. Hãy thử nối lại thoại.'
+                        : 'Máy chủ chưa cấu hình TURN relay (TURN_URLS / METERED_* / CF_TURN_*). Nếu khác Wi-Fi hoặc dùng 4G, người khác sẽ không nghe được.'}
+                    </div>
+                  </div>
+                </div>
+                {onReconnectVoice && (
+                  <button
+                    type="button"
+                    data-testid="bt-voice-reconnect-btn"
+                    onClick={onReconnectVoice}
+                    className="w-full py-1.5 px-2.5 rounded-lg bg-white hover:bg-amber-100/70 border border-amber-300 text-[11px] font-extrabold text-amber-900 flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <RefreshCw className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span>Thử nối lại thoại</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -705,7 +790,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
                                   : 'Mic tắt'}
                             </span>
                             {peer && (
-                              <span className="text-[9px] font-medium text-[#788497] hidden sm:inline">
+                              <span className="text-[9px] font-medium text-[#788497]">
                                 · {formatRtcStateLabel(peer.connectionState)}
                               </span>
                             )}
