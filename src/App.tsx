@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Check, Clock, Copy, Gamepad2, Globe, X } from 'lucide-react';
 import { soundEngine } from './audio/soundEngine';
 import { ActionDock, ActionDockMenuKind } from './components/ActionDock';
+import { AvatarTauntFlight, AvatarTauntOverlay } from './components/AvatarTauntOverlay';
 import {
   BuyoutDecisionModal,
   ChampionshipDecisionModal,
@@ -9,9 +11,10 @@ import {
   UpgradeDecisionModal,
   WorldTourPrompt,
 } from './components/BusinessTourActionModals';
+import { getEmote3DMeta, parseEmote3DKey } from './components/EmoteAndTaunt3D';
 import { MonopolyCanvas, MonopolyCanvasHandle } from './components/MonopolyCanvas';
 import { OnlineChatDrawer } from './components/OnlineChatDrawer';
-import { setAvatarGraphicsTier } from './components/PlayerAvatar3D';
+import { emitAvatarMoodBurst, setAvatarGraphicsTier } from './components/PlayerAvatar3D';
 import { PlayerHUD } from './components/PlayerHUD';
 import { StartModal } from './components/StartModal';
 import {
@@ -400,6 +403,22 @@ export default function App() {
   const [openTauntTargetPlayerId, setOpenTauntTargetPlayerId] = useState<number | null>(
     null
   );
+  const [offlineTauntCooldownUntil, setOfflineTauntCooldownUntil] = useState<number>(0);
+  const [avatarTauntFlights, setAvatarTauntFlights] = useState<AvatarTauntFlight[]>([]);
+  const avatarTauntIdRef = useRef<number>(1);
+  const triggerAvatarTauntFlight = useCallback(
+    (kind: BoardTauntKind, fromPlayerId: number, targetPlayerId: number) => {
+      const id = avatarTauntIdRef.current++;
+      setAvatarTauntFlights((prev) => [
+        ...prev.slice(-5),
+        { id, kind, fromPlayerId, targetPlayerId, startedAt: Date.now() },
+      ]);
+    },
+    []
+  );
+  const handleAvatarTauntFlightComplete = useCallback((flightId: number) => {
+    setAvatarTauntFlights((prev) => prev.filter((f) => f.id !== flightId));
+  }, []);
   const [botBubbles, setBotBubbles] = useState<Record<number, BotChatBubbleState>>({});
   const [offlinePlayerEmotes, setOfflinePlayerEmotes] = useState<Record<number, string>>({});
   const [onlinePlayerEmotes, setOnlinePlayerEmotes] = useState<Record<number, string>>({});
@@ -559,6 +578,14 @@ export default function App() {
 
     if (event.kind === 'PLAYER_EMOTE') {
       soundEngine.playChatPop();
+      const emote3dKey = parseEmote3DKey(event.emoteText);
+      if (emote3dKey) {
+        emitAvatarMoodBurst({
+          playerId: event.playerId,
+          mood: getEmote3DMeta(emote3dKey).moodBurst,
+          durationMs: 1800,
+        });
+      }
       setOnlinePlayerEmotes((prev) => ({ ...prev, [event.playerId]: event.emoteText }));
       if (onlineEmoteTimersRef.current[event.playerId]) {
         window.clearTimeout(onlineEmoteTimersRef.current[event.playerId]);
@@ -611,6 +638,11 @@ export default function App() {
         viewScreenStateRef.current !== 'title' &&
         viewScreenStateRef.current !== 'gameover'
       ) {
+        triggerAvatarTauntFlight(
+          event.tauntKind,
+          event.fromPlayerId,
+          event.targetPlayerId
+        );
         canvasRef.current?.playBoardTaunt(
           event.tauntKind,
           event.fromPlayerId,
@@ -1150,18 +1182,30 @@ export default function App() {
           (viewTurnPhase === 'CARD_TARGET_SELECTION' && Boolean(viewPendingTacticalCard)) ||
           viewTurnPhase === 'DEBT_RESOLUTION')));
 
+  const offlineTauntActorId = useMemo(() => {
+    if (isOnlineMatch) return null;
+    const activeP = players[activePlayerIndex];
+    if (activeP && !activeP.isBot && !activeP.bankrupt) return activeP.id;
+    const firstHuman = players.find((p) => !p.isBot && !p.bankrupt);
+    return firstHuman ? firstHuman.id : null;
+  }, [isOnlineMatch, players, activePlayerIndex]);
+
+  const activeTauntActorId = isOnlineMatch
+    ? online.isSpectator
+      ? null
+      : online.yourPlayerId
+    : offlineTauntActorId;
+
   const openTauntTargetPlayer =
     openTauntTargetPlayerId !== null
       ? viewPlayers.find((p) => p.id === openTauntTargetPlayerId)
       : undefined;
   const isOpenTauntTargetValid = Boolean(
-    isOnlineMatch &&
-      !online.isSpectator &&
-      viewScreenState === 'playing' &&
+    viewScreenState === 'playing' &&
+      activeTauntActorId !== null &&
       openTauntTargetPlayer &&
       !openTauntTargetPlayer.bankrupt &&
-      online.yourPlayerId !== null &&
-      openTauntTargetPlayer.id !== online.yourPlayerId &&
+      openTauntTargetPlayer.id !== activeTauntActorId &&
       !showRulebookModal &&
       !showAssetsModal &&
       selectedTileIndex === null &&
@@ -4938,6 +4982,14 @@ export default function App() {
       if (!humanActor) return;
 
       soundEngine.playChatPop();
+      const emote3dKey = parseEmote3DKey(emoteText);
+      if (emote3dKey) {
+        emitAvatarMoodBurst({
+          playerId: humanActor.id,
+          mood: getEmote3DMeta(emote3dKey).moodBurst,
+          durationMs: 1800,
+        });
+      }
       setOfflinePlayerEmotes((prev) => ({ ...prev, [humanActor.id]: emoteText }));
       if (offlineEmoteTimersRef.current[humanActor.id]) {
         window.clearTimeout(offlineEmoteTimersRef.current[humanActor.id]);
@@ -4969,7 +5021,7 @@ export default function App() {
     const activeEmote = isOnlineMatch
       ? onlinePlayerEmotes[currentPlayer.id]
       : offlinePlayerEmotes[currentPlayer.id];
-    if (activeEmote) return activeEmote;
+    if (activeEmote && !parseEmote3DKey(activeEmote)) return activeEmote;
     if (viewTurnPhase === 'ROLLING_DICE') return 'Đang đổ xúc xắc... 🎲';
     if (viewTurnPhase === 'REROLL_DECISION') return 'Giữ kết quả hay Đổ lại? 🎲';
     if (viewTurnPhase === 'MOVING_TOKEN') return 'Đang di chuyển...';
@@ -5228,17 +5280,32 @@ export default function App() {
 
   const handleSendBoardTaunt = useCallback(
     (targetPlayerId: number, kind: BoardTauntKind) => {
-      if (
-        !isOnlineMatchRef.current ||
-        onlineIsSpectatorRef.current ||
-        viewScreenStateRef.current !== 'playing'
-      ) {
+      if (viewScreenStateRef.current !== 'playing') {
         return;
       }
+      if (isOnlineMatchRef.current) {
+        if (onlineIsSpectatorRef.current) return;
+        setOpenTauntTargetPlayerId(null);
+        online.sendBoardTaunt(targetPlayerId, kind);
+        return;
+      }
+      const now = Date.now();
+      if (now < offlineTauntCooldownUntil) return;
+      const activeP = playersRef.current[activeIdxRef.current];
+      const actor =
+        (activeP && !activeP.isBot && !activeP.bankrupt ? activeP : null) ||
+        playersRef.current.find((p) => !p.isBot && !p.bankrupt);
+      if (!actor || actor.id === targetPlayerId) return;
+
       setOpenTauntTargetPlayerId(null);
-      online.sendBoardTaunt(targetPlayerId, kind);
+      setOfflineTauntCooldownUntil(now + 4000);
+      if (!disable3dTauntsRef.current) {
+        triggerAvatarTauntFlight(kind, actor.id, targetPlayerId);
+        canvasRef.current?.playBoardTaunt(kind, actor.id, targetPlayerId);
+        soundEngine.playBoardTauntSfx(kind);
+      }
     },
-    [online.sendBoardTaunt]
+    [online.sendBoardTaunt, offlineTauntCooldownUntil, triggerAvatarTauntFlight]
   );
 
   const handlePingTile = useCallback(
@@ -5297,8 +5364,7 @@ export default function App() {
     (targetPlayerId: number | null) => {
       if (
         targetPlayerId !== null &&
-        (!isOnlineMatchRef.current ||
-          onlineIsSpectatorRef.current ||
+        ((isOnlineMatchRef.current && onlineIsSpectatorRef.current) ||
           viewScreenStateRef.current !== 'playing')
       ) {
         setOpenTauntTargetPlayerId(null);
@@ -5536,19 +5602,31 @@ export default function App() {
                   data-testid="bt-online-room-pill"
                   onClick={handleCopyOnlineInvite}
                   title="Nhấn để chép link mời bạn bè"
-                  className="pointer-events-auto px-3 py-1 rounded-full bt-casual-modal text-[11px] font-black text-sky-900 flex items-center gap-1.5 cursor-pointer hover:scale-103 transition-transform whitespace-nowrap"
+                  className="pointer-events-auto px-3 py-1 rounded-full bt-casual-modal text-[11px] font-extrabold text-[#141c2b] flex items-center gap-1.5 cursor-pointer hover:bg-white transition-colors whitespace-nowrap"
                 >
-                  <span>🌐 Phòng</span>
-                  <span className="font-mono-num tracking-wider text-[#0284C7]">
+                  <Globe className="h-3.5 w-3.5 text-[#525e73] shrink-0" aria-hidden="true" />
+                  <span>Phòng</span>
+                  <span className="font-mono-num tracking-wider text-[#141c2b] font-black">
                     {online.roomSnapshot.roomCode}
                   </span>
-                  <span className="text-[10px] font-extrabold text-emerald-700">
-                    {copiedInviteToast ? '✓ Đã chép' : '· Mời'}
+                  <span className="inline-flex items-center gap-0.5 text-[10px] font-extrabold text-emerald-700">
+                    {copiedInviteToast ? (
+                      <>
+                        <Check className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span>Đã chép</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span>Mời</span>
+                      </>
+                    )}
                   </span>
                 </button>
                 {online.connectionStatus === 'reconnecting' && (
-                  <div className="px-3 py-1 rounded-full bg-amber-100 border-2 border-amber-400 text-[11px] font-black text-amber-900 shadow-md whitespace-nowrap">
-                    🟡 Đang kết nối lại...
+                  <div className="px-3 py-1 rounded-full bg-amber-50 border border-amber-300 text-[11px] font-extrabold text-amber-900 shadow-sm flex items-center gap-1.5 whitespace-nowrap">
+                    <span aria-hidden="true" className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                    <span>Đang kết nối lại...</span>
                   </div>
                 )}
               </>
@@ -5559,11 +5637,16 @@ export default function App() {
                 data-testid="bt-match-clock"
                 role="timer"
                 aria-label="Thời gian còn lại của ván đấu"
-                className={`px-3 py-1 rounded-full bt-casual-modal text-[11px] sm:text-xs font-mono-num font-black flex items-center gap-1 whitespace-nowrap ${
-                  viewMatchTimeLeft <= 60 ? 'text-rose-600' : 'text-sky-900'
+                className={`px-3 py-1 rounded-full bt-casual-modal text-[11px] sm:text-xs font-mono-num font-black flex items-center gap-1.5 whitespace-nowrap ${
+                  viewMatchTimeLeft <= 60 ? 'text-rose-600 border-rose-300' : 'text-[#141c2b]'
                 }`}
               >
-                <span aria-hidden="true">⏱</span>
+                <Clock
+                  className={`h-3.5 w-3.5 shrink-0 ${
+                    viewMatchTimeLeft <= 60 ? 'text-rose-600' : 'text-[#525e73]'
+                  }`}
+                  aria-hidden="true"
+                />
                 <span>{formatCountdownClock(viewMatchTimeLeft)}</span>
               </div>
             )}
@@ -5574,7 +5657,7 @@ export default function App() {
               data-testid="bt-landing-cue"
               className="px-3.5 sm:px-4 lg:px-5 py-1.5 lg:py-2 rounded-full bt-casual-modal pointer-events-none animate-pop-in text-center max-w-full"
             >
-              <span className="font-display text-xs sm:text-sm font-black text-sky-900 whitespace-normal leading-snug">
+              <span className="font-display text-xs sm:text-sm font-extrabold text-[#141c2b] whitespace-normal leading-snug">
                 {viewLandingCueText}
               </span>
             </div>
@@ -5584,16 +5667,16 @@ export default function App() {
             <div
               role="alert"
               data-testid="bt-online-error-banner"
-              className="pointer-events-auto px-3 py-1.5 rounded-2xl bg-rose-50 border-2 border-rose-300 text-[11px] font-bold text-rose-800 shadow-md flex items-center gap-2 max-w-full"
+              className="pointer-events-auto px-3 py-1.5 rounded-xl bg-rose-50 border border-rose-300 text-[11px] font-bold text-rose-800 shadow-md flex items-center gap-2 max-w-full"
             >
               <span className="leading-snug">{online.errorMessage}</span>
               <button
                 type="button"
                 onClick={online.clearError}
                 aria-label="Đóng thông báo lỗi"
-                className="icon-hit-target h-5 w-5 rounded-full bg-rose-200 hover:bg-rose-300 text-rose-900 text-[10px] font-black flex items-center justify-center shrink-0 cursor-pointer"
+                className="icon-hit-target h-5 w-5 rounded-full bg-rose-200/80 hover:bg-rose-300 text-rose-900 flex items-center justify-center shrink-0 cursor-pointer"
               >
-                ✕
+                <X className="h-3 w-3" aria-hidden="true" />
               </button>
             </div>
           )}
@@ -5637,23 +5720,38 @@ export default function App() {
             debtPlayerId={activeDebtPlayerId}
             botBubbles={botBubbles}
             localPlayerId={isOnlineMatch ? online.yourPlayerId : null}
+            tauntActorPlayerId={
+              isOnlineMatch
+                ? online.isSpectator
+                  ? null
+                  : online.yourPlayerId
+                : offlineTauntActorId
+            }
             playerEmotes={isOnlineMatch ? onlinePlayerEmotes : offlinePlayerEmotes}
             speakingPlayerIds={isOnlineMatch ? speakingPlayerIds : undefined}
             playerChatBubbles={isOnlineMatch ? playerChatBubbles : undefined}
             onDismissBubble={dismissBotBubble}
             onSelectTile={handleCanvasTileClick}
             onSendBoardTaunt={
-              isOnlineMatch &&
-              !online.isSpectator &&
-              online.yourPlayerId !== null &&
-              viewScreenState === 'playing'
+              viewScreenState === 'playing' &&
+              ((isOnlineMatch && !online.isSpectator && online.yourPlayerId !== null) ||
+                (!isOnlineMatch && offlineTauntActorId !== null))
                 ? handleSendBoardTaunt
                 : undefined
             }
-            tauntCooldownUntil={online.tauntCooldownUntil}
+            tauntCooldownUntil={
+              isOnlineMatch ? online.tauntCooldownUntil : offlineTauntCooldownUntil
+            }
             openTauntTargetPlayerId={effectiveOpenTauntTargetPlayerId}
             onChangeOpenTauntTargetPlayerId={handleChangeOpenTauntTargetPlayerId}
           />
+
+          {viewScreenState === 'playing' && (
+            <AvatarTauntOverlay
+              flights={avatarTauntFlights}
+              onFlightComplete={handleAvatarTauntFlightComplete}
+            />
+          )}
 
           <ActionDock
             currentPlayer={currentPlayer}
@@ -5734,17 +5832,19 @@ export default function App() {
               className="fixed top-[168px] sm:top-[4.25rem] left-1/2 -translate-x-1/2 z-46 w-[min(430px,calc(100vw-1rem))] bt-casual-modal rounded-2xl overflow-hidden animate-pop-in pointer-events-auto shadow-2xl"
             >
               <div className="bt-header-sky px-3.5 py-2 flex items-center justify-between gap-2">
-                <span className="font-display text-xs font-black uppercase tracking-wide">
-                  🎮 Xin Thế Chỗ Bot AI
+                <span className="font-display text-xs font-black uppercase tracking-wide flex items-center gap-1.5">
+                  <Gamepad2 className="h-4 w-4 text-amber-300 shrink-0" aria-hidden="true" />
+                  <span>Xin Thế Chỗ Bot AI</span>
                 </span>
-                <span className="px-2 py-0.5 rounded-full bg-white/25 text-[11px] font-mono-num font-black text-white whitespace-nowrap">
-                  ⏳ {takeoverSecondsLeft}s
+                <span className="px-2 py-0.5 rounded-md bg-white/15 text-[11px] font-mono-num font-black text-amber-300 inline-flex items-center gap-1 whitespace-nowrap">
+                  <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  <span>{takeoverSecondsLeft}s</span>
                 </span>
               </div>
-              <div className="p-3 space-y-2.5 bg-white/95">
-                <p className="text-xs sm:text-sm font-bold text-slate-800 leading-snug">
+              <div className="p-3.5 space-y-2.5 bg-[#faf8f3]">
+                <p className="text-xs sm:text-sm font-semibold text-[#334155] leading-snug">
                   Khán giả{' '}
-                  <span className="font-black text-sky-900">
+                  <span className="font-black text-[#141c2b]">
                     {pendingTakeoverRequest.requesterName}
                   </span>{' '}
                   xin tiếp quản Bot{' '}
@@ -5760,7 +5860,7 @@ export default function App() {
                     onClick={() =>
                       online.respondBotTakeover(pendingTakeoverRequest.requestId, false)
                     }
-                    className="id-btn-crimson px-3.5 py-1.5 rounded-xl text-xs font-black uppercase cursor-pointer whitespace-nowrap"
+                    className="id-btn-crimson px-3.5 py-1.5 rounded-xl text-xs font-extrabold uppercase cursor-pointer whitespace-nowrap"
                   >
                     Từ chối
                   </button>
