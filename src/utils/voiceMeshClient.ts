@@ -22,6 +22,7 @@ export interface VoiceMeshSnapshot {
   pttPressed: boolean;
   permissionStatus: VoicePermissionStatus;
   localSpeaking: boolean;
+  hasTurnServer: boolean;
   peers: Record<string, VoicePeerState>;
 }
 
@@ -29,6 +30,7 @@ export interface AudioTrackLike {
   id?: string;
   kind?: string;
   enabled: boolean;
+  readyState?: MediaStreamTrackState;
   stop?: () => void;
 }
 
@@ -41,6 +43,7 @@ export interface MediaStreamLike {
 export interface RTCRtpSenderLike {
   track?: AudioTrackLike | null;
   replaceTrack?: (withTrack: AudioTrackLike | null) => Promise<void> | void;
+  setStreams?: (...streams: MediaStream[]) => void;
 }
 
 export interface RTCRtpTransceiverLike {
@@ -48,17 +51,20 @@ export interface RTCRtpTransceiverLike {
   mid?: string | null;
   sender: RTCRtpSenderLike;
   receiver?: { track?: AudioTrackLike | null };
+  stop?: () => void;
 }
 
 export interface RTCPeerConnectionLike {
   signalingState: RTCSignalingState;
   connectionState: RTCPeerConnectionState;
+  iceConnectionState?: RTCIceConnectionState;
   localDescription?: RTCSessionDescriptionInit | RTCSessionDescription | null;
   remoteDescription?: RTCSessionDescriptionInit | RTCSessionDescription | null;
   onnegotiationneeded: ((ev?: unknown) => unknown) | null;
   onicecandidate: ((ev: { candidate: RTCIceCandidate | RTCIceCandidateInit | null }) => unknown) | null;
   ontrack: ((ev: { track?: AudioTrackLike; streams?: readonly MediaStreamLike[] }) => unknown) | null;
   onconnectionstatechange: ((ev?: unknown) => unknown) | null;
+  oniceconnectionstatechange?: ((ev?: unknown) => unknown) | null;
   addTransceiver?: (
     trackOrKind: string | AudioTrackLike,
     init?: RTCRtpTransceiverInit
@@ -100,6 +106,8 @@ export interface AudioContextLike {
 export interface RemoteAudioTargetLike {
   muted: boolean;
   volume: number;
+  paused?: boolean;
+  play?: () => Promise<void> | void;
   pause?: () => void;
   remove?: () => void;
 }
@@ -129,7 +137,7 @@ const DEFAULT_ICE_SERVERS: readonly RTCIceServer[] = [
 const DEFAULT_ICE_RESTART_DELAY_MS = 4000;
 const DEFAULT_SPEAKING_POLL_INTERVAL_MS = 120;
 const DEFAULT_SPEAKING_RMS_THRESHOLD = 0.025;
-const RTC_CONFIG_FETCH_TIMEOUT_MS = 2500;
+const RTC_CONFIG_FETCH_TIMEOUT_MS = 6000;
 
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
@@ -148,6 +156,13 @@ function cloneIceServers(servers: readonly RTCIceServer[]): RTCIceServer[] {
     ...server,
     urls: Array.isArray(server.urls) ? [...server.urls] : server.urls,
   }));
+}
+
+function hasTurnServerConfigured(servers: readonly RTCIceServer[]): boolean {
+  return servers.some((server) => {
+    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+    return urls.some((u) => typeof u === 'string' && /^turns?:/i.test(u.trim()));
+  });
 }
 
 function clampVolume(volume: number): number {
@@ -170,7 +185,8 @@ function createBrowserAudioContext(): AudioContextLike | null {
 
 function attachBrowserRemoteAudioElement(
   participantId: string,
-  stream: MediaStreamLike
+  stream: MediaStreamLike,
+  onPlayBlocked?: () => void
 ): RemoteAudioTargetLike | undefined {
   if (typeof document === 'undefined') return undefined;
   const audio = document.createElement('audio');
@@ -182,7 +198,21 @@ function attachBrowserRemoteAudioElement(
   if (document.body) {
     document.body.appendChild(audio);
   }
-  void audio.play().catch(() => {});
+  const tryPlay = () => {
+    try {
+      const p = audio.play();
+      if (p && typeof p.catch === 'function') {
+        void p.catch(() => {
+          onPlayBlocked?.();
+        });
+      }
+      return p;
+    } catch {
+      onPlayBlocked?.();
+      return undefined;
+    }
+  };
+  void tryPlay();
   return {
     get muted() {
       return audio.muted;
@@ -196,6 +226,10 @@ function attachBrowserRemoteAudioElement(
     set volume(value: number) {
       audio.volume = value;
     },
+    get paused() {
+      return audio.paused;
+    },
+    play: tryPlay,
     pause: () => {
       audio.pause();
       audio.srcObject = null;
@@ -240,6 +274,10 @@ interface PeerRecord {
   polite: boolean;
   pc: RTCPeerConnectionLike;
   makingOffer: boolean;
+  needsNegotiation: boolean;
+  holdingOutgoingIce: boolean;
+  pendingOutgoingIceCandidates: RTCIceCandidateInit[];
+  pendingTrackUpdate: Promise<void> | null;
   ignoreOffer: boolean;
   isSettingRemoteAnswerPending: boolean;
   offerEpoch: number;
@@ -272,8 +310,10 @@ export class VoiceMeshClient {
   private readonly createAudioContextFn: () => AudioContextLike | null;
   private readonly attachRemoteAudioElementFn: (
     participantId: string,
-    stream: MediaStreamLike
+    stream: MediaStreamLike,
+    onPlayBlocked?: () => void
   ) => RemoteAudioTargetLike | void;
+  private readonly iceServersFetcher: (() => Promise<RTCIceServer[]>) | null = null;
   private readonly iceRestartDelayMs: number;
   private readonly speakingPollIntervalMs: number;
   private readonly speakingRmsThreshold: number;
@@ -324,14 +364,17 @@ export class VoiceMeshClient {
       options.speakingRmsThreshold ?? DEFAULT_SPEAKING_RMS_THRESHOLD;
 
     if (options.fetchIceServers) {
+      this.iceServersFetcher = options.fetchIceServers;
       this.iceServersReadyPromise = this.loadIceServers(options.fetchIceServers);
     } else if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      this.iceServersFetcher = fetchDefaultIceServers;
       this.iceServersReadyPromise = this.loadIceServers(fetchDefaultIceServers);
     }
   }
 
   private async loadIceServers(fetcher: () => Promise<RTCIceServer[]>): Promise<void> {
     try {
+      const prevHasTurn = hasTurnServerConfigured(this.iceServers);
       const loaded = await fetcher();
       if (this.disposed) return;
       if (Array.isArray(loaded) && loaded.length > 0) {
@@ -344,6 +387,9 @@ export class VoiceMeshClient {
               // Ignore setConfiguration errors if peer is closing or mock rejects
             }
           }
+        }
+        if (hasTurnServerConfigured(this.iceServers) !== prevHasTurn) {
+          this.emitSnapshot();
         }
       }
     } catch {
@@ -456,7 +502,7 @@ export class VoiceMeshClient {
         }
         return;
       }
-      void this.audioContext?.resume?.().catch(() => {});
+      this.unlockRemoteAudioPlayback();
       this.micEnabled = true;
       this.localAudioTrack.enabled = true;
       this.emitSnapshot();
@@ -526,7 +572,7 @@ export class VoiceMeshClient {
       return;
     }
 
-    void this.audioContext?.resume?.().catch(() => {});
+    this.unlockRemoteAudioPlayback();
     // Re-read this.pttPressed after async getUserMedia in case user released key while prompt was open
     const stillHeld = this.inputMode === 'push_to_talk' && this.pttPressed;
     this.micEnabled = stillHeld;
@@ -600,8 +646,33 @@ export class VoiceMeshClient {
       pttPressed: this.pttPressed,
       permissionStatus: this.permissionStatus,
       localSpeaking: this.localSpeaking,
+      hasTurnServer: hasTurnServerConfigured(this.iceServers),
       peers: peersSnapshot,
     };
+  }
+
+  /**
+   * Re-fetches ICE servers if available and requests an ICE restart on any
+   * peer that is not currently connected.
+   */
+  async reconnectAllPeers(): Promise<void> {
+    if (this.disposed) return;
+    if (this.iceServersFetcher) {
+      await this.loadIceServers(this.iceServersFetcher);
+    }
+    if (this.disposed) return;
+    for (const peer of this.peers.values()) {
+      if (peer.disposed || peer.connectionState === 'closed' || peer.connectionState === 'connected') {
+        continue;
+      }
+      peer.needsNegotiation = true;
+      if (typeof peer.pc.restartIce === 'function') {
+        peer.pc.restartIce();
+      }
+      if (peer.pc.signalingState === 'stable' && !peer.makingOffer) {
+        void this.negotiatePeer(peer);
+      }
+    }
   }
 
   subscribe(listener: (snap: VoiceMeshSnapshot) => void): () => void {
@@ -678,6 +749,10 @@ export class VoiceMeshClient {
       polite: isPolitePeer(this.myParticipantId, remoteParticipantId),
       pc,
       makingOffer: false,
+      needsNegotiation: false,
+      holdingOutgoingIce: false,
+      pendingOutgoingIceCandidates: [],
+      pendingTrackUpdate: null,
       ignoreOffer: false,
       isSettingRemoteAnswerPending: false,
       offerEpoch: 0,
@@ -704,6 +779,10 @@ export class VoiceMeshClient {
       const rawCandidate = event.candidate as RTCIceCandidate & RTCIceCandidateInit;
       const candidateInit: RTCIceCandidateInit =
         typeof rawCandidate.toJSON === 'function' ? rawCandidate.toJSON() : rawCandidate;
+      if (peer.holdingOutgoingIce) {
+        peer.pendingOutgoingIceCandidates.push(candidateInit);
+        return;
+      }
       this.sendSignalFn(remoteParticipantId, {
         kind: 'ice',
         candidate: candidateInit,
@@ -712,17 +791,12 @@ export class VoiceMeshClient {
 
     pc.onnegotiationneeded = () => this.negotiatePeer(peer);
 
-    pc.onconnectionstatechange = () => {
+    const handleStateChange = () => {
       if (this.disposed || peer.disposed || this.peers.get(remoteParticipantId) !== peer) return;
-      const nextState = pc.connectionState ?? 'new';
-      peer.connectionState = nextState;
-      if (nextState === 'failed' || nextState === 'disconnected') {
-        this.scheduleIceRestart(peer);
-      } else if (nextState === 'connected' || nextState === 'closed') {
-        this.clearIceRestartTimer(peer);
-      }
-      this.emitSnapshot();
+      this.syncPeerConnectionState(peer);
     };
+    pc.onconnectionstatechange = handleStateChange;
+    pc.oniceconnectionstatechange = handleStateChange;
 
     pc.ontrack = (event) => {
       if (this.disposed || peer.disposed || this.peers.get(remoteParticipantId) !== peer) return;
@@ -732,7 +806,7 @@ export class VoiceMeshClient {
     };
 
     if (options.attachInitial) {
-      if (this.localAudioTrack && this.localStream) {
+      if (this.localAudioTrack && this.localStream && this.localAudioTrack.readyState !== 'ended') {
         this.attachLocalTrackToPeer(peer, this.localAudioTrack, this.localStream);
       } else if (pc.addTransceiver) {
         peer.audioTransceiver = pc.addTransceiver('audio', { direction: 'recvonly' });
@@ -741,6 +815,27 @@ export class VoiceMeshClient {
     }
 
     return peer;
+  }
+
+  private syncPeerConnectionState(peer: PeerRecord): void {
+    const conn = peer.pc.connectionState ?? 'new';
+    const ice = peer.pc.iceConnectionState;
+    let nextState: RTCPeerConnectionState | 'new' = conn;
+    if (conn === 'new' && (ice === 'checking' || ice === 'failed' || ice === 'disconnected')) {
+      nextState = ice === 'checking' ? 'connecting' : ice;
+    } else if (ice === 'failed' && conn !== 'closed') {
+      nextState = 'failed';
+    }
+    const prevState = peer.connectionState;
+    peer.connectionState = nextState;
+    if (nextState === 'failed' || nextState === 'disconnected') {
+      this.scheduleIceRestart(peer);
+    } else if (nextState === 'connected' || nextState === 'closed') {
+      this.clearIceRestartTimer(peer);
+    }
+    if (nextState !== prevState) {
+      this.emitSnapshot();
+    }
   }
 
   private resolveRemoteStream(event: {
@@ -764,11 +859,16 @@ export class VoiceMeshClient {
   private attachRemoteMedia(peer: PeerRecord, stream: MediaStreamLike): void {
     this.cleanupRemoteMedia(peer);
 
-    const target = this.attachRemoteAudioElementFn(peer.participantId, stream);
+    const target = this.attachRemoteAudioElementFn(peer.participantId, stream, () => {
+      this.bindAudioUnlockListeners();
+    });
     if (target) {
       target.muted = peer.mutedLocally;
       target.volume = peer.volume;
       peer.remoteAudioTarget = target;
+      if (target.paused === true) {
+        this.bindAudioUnlockListeners();
+      }
     }
 
     const analyserSetup = this.createStreamAnalyser(stream);
@@ -796,21 +896,56 @@ export class VoiceMeshClient {
     this.stopSpeakingDetectorIfIdle();
   }
 
+  private isAudioTransceiver(peer: PeerRecord, t: RTCRtpTransceiverLike): boolean {
+    return (
+      t.sender?.track?.kind === 'audio' ||
+      t.receiver?.track?.kind === 'audio' ||
+      t.sender === peer.audioSender
+    );
+  }
+
+  private flushPendingOutgoingIceCandidates(peer: PeerRecord): void {
+    while (peer.pendingOutgoingIceCandidates.length > 0) {
+      if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
+      const candidate = peer.pendingOutgoingIceCandidates.shift();
+      if (!candidate) continue;
+      this.sendSignalFn(peer.participantId, {
+        kind: 'ice',
+        candidate,
+      });
+    }
+  }
+
   private async negotiatePeer(peer: PeerRecord): Promise<void> {
     if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
-    if (peer.makingOffer) return;
+    if (peer.makingOffer) {
+      peer.needsNegotiation = true;
+      return;
+    }
 
     const startEpoch = peer.offerEpoch;
     peer.makingOffer = true;
+    let didSendOffer = false;
     try {
       if (this.iceServersReadyPromise) {
         await this.iceServersReadyPromise;
         if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
       }
 
+      if (peer.pendingTrackUpdate) {
+        await peer.pendingTrackUpdate;
+        if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
+      }
+
       if (peer.offerEpoch !== startEpoch || peer.pc.signalingState !== 'stable') {
+        if (peer.pc.signalingState !== 'stable') {
+          peer.needsNegotiation = true;
+        }
         return;
       }
+
+      peer.needsNegotiation = false;
+      peer.holdingOutgoingIce = true;
 
       const offer = await peer.pc.createOffer();
       if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
@@ -828,11 +963,32 @@ export class VoiceMeshClient {
           kind: 'offer',
           sdp: localDesc.sdp,
         });
+        didSendOffer = true;
+        peer.holdingOutgoingIce = false;
+        this.flushPendingOutgoingIceCandidates(peer);
       }
     } catch {
       // Ignore transient WebRTC negotiation errors during glare or teardown
     } finally {
+      if (!didSendOffer) {
+        peer.pendingOutgoingIceCandidates.length = 0;
+        peer.holdingOutgoingIce = false;
+      }
       peer.makingOffer = false;
+      if (
+        !this.disposed &&
+        !peer.disposed &&
+        this.peers.get(peer.participantId) === peer &&
+        peer.pc.signalingState === 'stable'
+      ) {
+        if (!didSendOffer && peer.ignoreOffer) {
+          peer.ignoreOffer = false;
+        }
+        if (peer.needsNegotiation) {
+          peer.needsNegotiation = false;
+          void this.negotiatePeer(peer);
+        }
+      }
     }
   }
 
@@ -858,6 +1014,7 @@ export class VoiceMeshClient {
       peer.isSettingRemoteAnswerPending = signal.kind === 'answer';
       try {
         if (offerCollision && peer.polite && pc.signalingState !== 'stable') {
+          peer.pendingOutgoingIceCandidates.length = 0;
           await pc.setLocalDescription({ type: 'rollback' });
           if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
         }
@@ -867,6 +1024,10 @@ export class VoiceMeshClient {
           sdp: signal.sdp,
         });
         if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
+
+        if (signal.kind === 'offer') {
+          this.adoptAssociatedAudioTransceiver(peer);
+        }
       } finally {
         peer.isSettingRemoteAnswerPending = false;
       }
@@ -879,20 +1040,54 @@ export class VoiceMeshClient {
           await this.iceServersReadyPromise;
           if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
         }
-        if (this.localAudioTrack && this.localStream && !peer.audioSender?.track) {
+        if (
+          this.localAudioTrack &&
+          this.localStream &&
+          this.localAudioTrack.readyState !== 'ended' &&
+          !peer.audioSender?.track
+        ) {
           this.attachLocalTrackToPeer(peer, this.localAudioTrack, this.localStream);
         }
-        const answer = await pc.createAnswer();
-        if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
-        await pc.setLocalDescription(answer);
-        if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
-        const localDesc = pc.localDescription ?? answer;
-        if (localDesc?.sdp) {
-          this.sendSignalFn(peer.participantId, {
-            kind: 'answer',
-            sdp: localDesc.sdp,
-          });
+        if (peer.pendingTrackUpdate) {
+          await peer.pendingTrackUpdate;
+          if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
         }
+
+        let didSendAnswer = false;
+        peer.holdingOutgoingIce = true;
+        try {
+          const answer = await pc.createAnswer();
+          if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
+          await pc.setLocalDescription(answer);
+          if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
+          const localDesc = pc.localDescription ?? answer;
+          if (localDesc?.sdp) {
+            this.sendSignalFn(peer.participantId, {
+              kind: 'answer',
+              sdp: localDesc.sdp,
+            });
+            didSendAnswer = true;
+            peer.holdingOutgoingIce = false;
+            this.flushPendingOutgoingIceCandidates(peer);
+          }
+        } finally {
+          if (!didSendAnswer) {
+            peer.pendingOutgoingIceCandidates.length = 0;
+            peer.holdingOutgoingIce = false;
+          }
+        }
+      }
+
+      if (
+        !this.disposed &&
+        !peer.disposed &&
+        this.peers.get(peer.participantId) === peer &&
+        pc.signalingState === 'stable' &&
+        peer.needsNegotiation &&
+        !peer.makingOffer
+      ) {
+        peer.needsNegotiation = false;
+        void this.negotiatePeer(peer);
       }
       return;
     }
@@ -900,7 +1095,7 @@ export class VoiceMeshClient {
     if (signal.kind === 'ice') {
       if (peer.ignoreOffer) return;
       try {
-        if (!pc.remoteDescription) {
+        if (!pc.remoteDescription || pc.signalingState === 'have-local-offer') {
           peer.pendingIceCandidates.push(signal.candidate);
           return;
         }
@@ -908,6 +1103,36 @@ export class VoiceMeshClient {
       } catch {
         // Ignore ICE candidate errors during offer glare or teardown
       }
+    }
+  }
+
+  private adoptAssociatedAudioTransceiver(peer: PeerRecord): void {
+    const localTransceiver = peer.audioTransceiver;
+    if (
+      !localTransceiver ||
+      (localTransceiver.mid !== null && localTransceiver.mid !== undefined) ||
+      localTransceiver.sender?.track ||
+      typeof localTransceiver.stop !== 'function'
+    ) {
+      return;
+    }
+
+    const transceivers = peer.pc.getTransceivers?.() ?? [];
+    const associatedRemote = transceivers.find(
+      (t) =>
+        t !== localTransceiver &&
+        t.mid !== null &&
+        t.mid !== undefined &&
+        this.isAudioTransceiver(peer, t)
+    );
+    if (!associatedRemote) return;
+
+    try {
+      localTransceiver.stop();
+      peer.audioTransceiver = associatedRemote;
+      peer.audioSender = associatedRemote.sender;
+    } catch {
+      // Ignore if browser rejects stopping unassociated transceiver
     }
   }
 
@@ -926,7 +1151,14 @@ export class VoiceMeshClient {
 
   private async acquireLocalMic(): Promise<boolean> {
     if (this.disposed) return false;
-    if (this.localAudioTrack) return true;
+    if (this.localAudioTrack && this.localAudioTrack.readyState !== 'ended') return true;
+    if (this.localAudioTrack?.readyState === 'ended') {
+      this.localAudioSourceCleanup?.();
+      this.localAudioSourceCleanup = null;
+      this.localAnalyser = null;
+      this.localAudioTrack = null;
+      this.localStream = null;
+    }
     if (this.micRequestPromise) {
       return this.micRequestPromise;
     }
@@ -1029,30 +1261,48 @@ export class VoiceMeshClient {
     const pc = peer.pc;
 
     const transceivers = pc.getTransceivers?.() ?? [];
-    const isAudioTransceiver = (t: RTCRtpTransceiverLike): boolean =>
-      t.sender?.track?.kind === 'audio' ||
-      t.receiver?.track?.kind === 'audio' ||
-      t.sender === peer.audioSender;
     const existingTransceiver =
       peer.audioTransceiver ??
-      transceivers.find((t) => t.mid !== null && t.mid !== undefined && isAudioTransceiver(t)) ??
-      transceivers.find((t) => isAudioTransceiver(t)) ??
+      transceivers.find(
+        (t) => t.mid !== null && t.mid !== undefined && this.isAudioTransceiver(peer, t)
+      ) ??
+      transceivers.find((t) => this.isAudioTransceiver(peer, t)) ??
       transceivers.find((t) => t.mid !== null && t.mid !== undefined) ??
       transceivers[0] ??
       null;
 
+    const applyReplaceTrack = (sender: RTCRtpSenderLike) => {
+      try {
+        sender.setStreams?.(stream as unknown as MediaStream);
+      } catch {
+        // Ignore setStreams errors on mock or unsupported browsers
+      }
+      if (sender.replaceTrack) {
+        const updatePromise = Promise.resolve(sender.replaceTrack(track))
+          .catch(() => {})
+          .finally(() => {
+            if (peer.pendingTrackUpdate === updatePromise) {
+              peer.pendingTrackUpdate = null;
+            }
+          });
+        peer.pendingTrackUpdate = updatePromise;
+      }
+    };
+
     if (existingTransceiver) {
+      const prevDirection = existingTransceiver.direction;
       existingTransceiver.direction = 'sendrecv';
       peer.audioTransceiver = existingTransceiver;
       peer.audioSender = existingTransceiver.sender;
-      if (existingTransceiver.sender?.replaceTrack) {
-        void Promise.resolve(existingTransceiver.sender.replaceTrack(track)).catch(() => {});
+      applyReplaceTrack(existingTransceiver.sender);
+      if (prevDirection !== 'sendrecv' && (peer.makingOffer || pc.signalingState !== 'stable')) {
+        peer.needsNegotiation = true;
       }
       return;
     }
 
     if (peer.audioSender?.replaceTrack) {
-      void Promise.resolve(peer.audioSender.replaceTrack(track)).catch(() => {});
+      applyReplaceTrack(peer.audioSender);
       return;
     }
 
@@ -1070,26 +1320,60 @@ export class VoiceMeshClient {
     }
   }
 
+  private unlockRemoteAudioPlayback(): void {
+    if (this.disposed) return;
+    if (this.audioContext && this.audioContext.state !== 'running') {
+      void this.audioContext.resume?.().catch(() => {});
+    }
+    for (const peer of this.peers.values()) {
+      if (!peer.disposed && peer.remoteAudioTarget && peer.remoteAudioTarget.paused !== false) {
+        try {
+          void Promise.resolve(peer.remoteAudioTarget.play?.()).catch(() => {});
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  private hasLockedAudioPlayback(): boolean {
+    if (this.audioContext && this.audioContext.state !== 'running') {
+      return true;
+    }
+    for (const peer of this.peers.values()) {
+      if (!peer.disposed && peer.remoteAudioTarget?.paused === true) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private readonly handleUserGestureAudioUnlock = (): void => {
     if (this.disposed) {
       this.unbindAudioUnlockListeners();
       return;
     }
     const ctx = this.audioContext;
-    if (!ctx) return;
-    if (ctx.state === 'running') {
-      this.unbindAudioUnlockListeners();
-      return;
+    const resumePromise =
+      ctx && ctx.state !== 'running' && typeof ctx.resume === 'function'
+        ? Promise.resolve(ctx.resume()).catch(() => {})
+        : Promise.resolve();
+
+    for (const peer of this.peers.values()) {
+      if (!peer.disposed && peer.remoteAudioTarget && peer.remoteAudioTarget.paused !== false) {
+        try {
+          void Promise.resolve(peer.remoteAudioTarget.play?.()).catch(() => {});
+        } catch {
+          // ignore
+        }
+      }
     }
-    if (typeof ctx.resume === 'function') {
-      void Promise.resolve(ctx.resume())
-        .then(() => {
-          if (this.disposed || this.audioContext?.state === 'running') {
-            this.unbindAudioUnlockListeners();
-          }
-        })
-        .catch(() => {});
-    }
+
+    void resumePromise.then(() => {
+      if (this.disposed || !this.hasLockedAudioPlayback()) {
+        this.unbindAudioUnlockListeners();
+      }
+    });
   };
 
   private bindAudioUnlockListeners(): void {
@@ -1104,6 +1388,14 @@ export class VoiceMeshClient {
       capture: true,
       passive: true,
     });
+    window.addEventListener('touchend', this.handleUserGestureAudioUnlock, {
+      capture: true,
+      passive: true,
+    });
+    window.addEventListener('click', this.handleUserGestureAudioUnlock, {
+      capture: true,
+      passive: true,
+    });
   }
 
   private unbindAudioUnlockListeners(): void {
@@ -1114,6 +1406,12 @@ export class VoiceMeshClient {
         capture: true,
       });
       window.removeEventListener('keydown', this.handleUserGestureAudioUnlock, {
+        capture: true,
+      });
+      window.removeEventListener('touchend', this.handleUserGestureAudioUnlock, {
+        capture: true,
+      });
+      window.removeEventListener('click', this.handleUserGestureAudioUnlock, {
         capture: true,
       });
     }
@@ -1254,7 +1552,7 @@ export class VoiceMeshClient {
     peer.iceRestartTimer = setTimeout(() => {
       peer.iceRestartTimer = null;
       if (this.disposed || peer.disposed || this.peers.get(peer.participantId) !== peer) return;
-      const state = peer.pc.connectionState;
+      const state = peer.connectionState;
       if (state !== 'failed' && state !== 'disconnected') return;
       if (peer.polite) {
         peer.pc.restartIce?.();
@@ -1273,12 +1571,15 @@ export class VoiceMeshClient {
     peer.disposed = true;
     this.clearIceRestartTimer(peer);
     peer.pendingIceCandidates.length = 0;
+    peer.pendingOutgoingIceCandidates.length = 0;
+    peer.holdingOutgoingIce = false;
     this.cleanupRemoteMedia(peer);
 
     peer.pc.onicecandidate = null;
     peer.pc.onnegotiationneeded = null;
     peer.pc.ontrack = null;
     peer.pc.onconnectionstatechange = null;
+    peer.pc.oniceconnectionstatechange = null;
 
     try {
       peer.pc.close();

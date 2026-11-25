@@ -37,6 +37,10 @@ Server sử dụng chung **1 cổng duy nhất (`PORT`)** cho cả giao diện t
    - **Start Command:** `npm start`
    - **Health Check Path:** `/api/health`
 4. *(Tùy chọn)* Thêm biến môi trường `GEMINI_API_KEY` trong mục **Environment**.
+5. **Bắt buộc nếu dùng Voice Chat qua mạng khác nhau / 4G (NAT đối xứng):** Render không cung cấp sẵn TURN server; nếu hai người chơi khác Wi-Fi hoặc dùng 4G không nghe thấy nhau, hãy thêm một trong các bộ biến môi trường TURN sau vào **Render → Environment**:
+   - **Metered TURN (khuyên dùng, có gói miễn phí):** `METERED_TURN_DOMAIN` + `METERED_API_KEY`
+   - **Cloudflare Calls TURN:** `CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN`
+   - **Static TURN (Coturn / bất kỳ nhà cung cấp nào):** `TURN_URLS` (cách nhau dấu phẩy), `TURN_USERNAME`, `TURN_CREDENTIAL`
 
 ### Railway hoặc Fly.io (dùng `Dockerfile` có sẵn)
 - **Railway:** Tạo project mới từ GitHub repo, Railway sẽ tự nhận [Dockerfile](Dockerfile) (hoặc chạy build/start commands trên).

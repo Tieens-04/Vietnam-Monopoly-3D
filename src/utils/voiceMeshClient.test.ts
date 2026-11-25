@@ -1067,3 +1067,184 @@ test('Consolidated VoiceMeshClient fixes: toggleMic->push_to_talk race, glare of
   }
 });
 
+test('Render Voice Hardening: buffers outgoing ICE behind offer/answer, drops rolled-back ICE, buffers have-local-offer ICE, tracks hasTurnServer, and recovers ended track + paused audio', async () => {
+  // 1. Outgoing ICE emitted during setLocalDescription(offer) is held until offer is sent,
+  //    and incoming ICE arriving while have-local-offer is buffered until answer applies.
+  const sent: Array<{ target: string; signal: RtcSignalPayload }> = [];
+  const pcs: MockRTCPeerConnection[] = [];
+  const setLocalOfferDeferred = createDeferred<void>();
+
+  const client = new VoiceMeshClient({
+    myParticipantId: 'p_0001',
+    sendSignal: (target, signal) => sent.push({ target, signal }),
+    isSecureContext: true,
+    fetchIceServers: async () => [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'turn:relay.example.com:3478', username: 'u', credential: 'p' },
+    ],
+    createPeerConnection: (cfg) => {
+      const pc = new MockRTCPeerConnection(cfg);
+      const origSetLocal = pc.setLocalDescription.bind(pc);
+      pc.setLocalDescription = async (desc?: RTCSessionDescriptionInit) => {
+        await origSetLocal(desc);
+        if (desc?.type === 'offer') {
+          pc.emitIceCandidate({ candidate: 'candidate:early-local 1 udp 1 1.2.3.4 5000 typ host' });
+          await setLocalOfferDeferred.promise;
+        }
+      };
+      pcs.push(pc);
+      return pc;
+    },
+  });
+
+  try {
+    client.syncPeers(['p_0002']);
+    const negoPromise = pcs[0].onnegotiationneeded?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Candidate emitted during setLocalDescription must NOT have overtaken the offer
+    assert.equal(sent.length, 0);
+
+    setLocalOfferDeferred.resolve();
+    await negoPromise;
+
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0].signal.kind, 'offer');
+    assert.equal(sent[1].signal.kind, 'ice');
+    assert.equal(client.getSnapshot().hasTurnServer, true);
+
+    // Simulate existing remoteDescription + renegotiation have-local-offer state
+    pcs[0].remoteDescription = { type: 'answer', sdp: 'prev-answer' };
+    pcs[0].signalingState = 'have-local-offer';
+    await client.handleSignal('p_0002', {
+      kind: 'ice',
+      candidate: { candidate: 'candidate:reneg-remote 1 udp 1 5.6.7.8 6000 typ srflx' },
+    });
+    // Must be buffered while have-local-offer, not passed to old remoteDescription
+    assert.equal(pcs[0].iceCandidatesAdded.length, 0);
+
+    await client.handleSignal('p_0002', {
+      kind: 'answer',
+      sdp: 'new-reneg-answer',
+    });
+    assert.equal(pcs[0].iceCandidatesAdded.length, 1);
+    assert.equal(
+      pcs[0].iceCandidatesAdded[0].candidate,
+      'candidate:reneg-remote 1 udp 1 5.6.7.8 6000 typ srflx'
+    );
+  } finally {
+    client.dispose();
+  }
+
+  // 2. Polite rollback discards stale outgoing ICE candidates from rolled-back offer
+  const politeSent: Array<{ target: string; signal: RtcSignalPayload }> = [];
+  const politePcs: MockRTCPeerConnection[] = [];
+  const politeSetLocalDeferred = createDeferred<void>();
+
+  const politeClient = new VoiceMeshClient({
+    myParticipantId: 'p_0001',
+    sendSignal: (target, signal) => politeSent.push({ target, signal }),
+    isSecureContext: true,
+    createPeerConnection: (cfg) => {
+      const pc = new MockRTCPeerConnection(cfg);
+      const origSetLocal = pc.setLocalDescription.bind(pc);
+      pc.setLocalDescription = async (desc?: RTCSessionDescriptionInit) => {
+        await origSetLocal(desc);
+        if (desc?.type === 'offer') {
+          pc.emitIceCandidate({ candidate: 'candidate:stale-rolled-back 1 udp 1 127.0.0.1 1111 typ host' });
+          await politeSetLocalDeferred.promise;
+        }
+      };
+      politePcs.push(pc);
+      return pc;
+    },
+  });
+
+  try {
+    politeClient.syncPeers(['p_0002']);
+    const negoPromise = politePcs[0].onnegotiationneeded?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await politeClient.handleSignal('p_0002', {
+      kind: 'offer',
+      sdp: 'remote-winner-offer',
+    });
+    politeSetLocalDeferred.resolve();
+    await negoPromise;
+
+    assert.equal(politeSent.length, 1);
+    assert.equal(politeSent[0].signal.kind, 'answer');
+  } finally {
+    politeClient.dispose();
+  }
+
+  // 3. Dead track recovery (readyState === 'ended'), paused audio unlock on toggleMic, and reconnectAllPeers
+  let micAcquireCount = 0;
+  const track1 = createMockTrack('mic-1') as MockAudioTrack & { readyState?: MediaStreamTrackState };
+  track1.readyState = 'live';
+  const track2 = createMockTrack('mic-2') as MockAudioTrack & { readyState?: MediaStreamTrackState };
+  track2.readyState = 'live';
+  const pcs3: MockRTCPeerConnection[] = [];
+  let remotePlayCalls = 0;
+  let fetchCount = 0;
+
+  const client3 = new VoiceMeshClient({
+    myParticipantId: 'p_0001',
+    sendSignal: () => {},
+    isSecureContext: true,
+    fetchIceServers: async () => {
+      fetchCount += 1;
+      return fetchCount === 1
+        ? [{ urls: 'stun:stun.l.google.com:19302' }]
+        : [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'turn:turn2.example.com:3478', username: 'u', credential: 'p' },
+          ];
+    },
+    createPeerConnection: (cfg) => {
+      const pc = new MockRTCPeerConnection(cfg);
+      pcs3.push(pc);
+      return pc;
+    },
+    getUserMedia: async () => {
+      micAcquireCount += 1;
+      return createMockStream([micAcquireCount === 1 ? track1 : track2]);
+    },
+    attachRemoteAudioElement: () => ({
+      muted: false,
+      volume: 1,
+      paused: true,
+      play: async () => {
+        remotePlayCalls += 1;
+      },
+    }),
+  });
+
+  try {
+    client3.syncPeers(['p_0002']);
+    pcs3[0].emitTrack(createMockStream([createMockTrack('remote-1')]));
+    assert.equal(client3.getSnapshot().hasTurnServer, false);
+
+    await client3.toggleMic();
+    assert.equal(micAcquireCount, 1);
+    assert.equal(remotePlayCalls, 1);
+
+    // Toggle off, simulate OS/hardware ending the track, toggle back on -> must re-acquire track2
+    await client3.toggleMic();
+    track1.readyState = 'ended';
+    await client3.toggleMic();
+    assert.equal(micAcquireCount, 2);
+    assert.equal(pcs3[0].transceivers[0].sender.track, track2);
+
+    // Failed peer reconnectAllPeers refreshes ICE config and restarts ICE
+    pcs3[0].emitConnectionState('failed');
+    await client3.reconnectAllPeers();
+    assert.equal(client3.getSnapshot().hasTurnServer, true);
+    assert.equal(pcs3[0].restartIceCalls, 1);
+  } finally {
+    client3.dispose();
+  }
+});
+

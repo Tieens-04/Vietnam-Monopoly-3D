@@ -158,6 +158,7 @@ const DEFAULT_VOICE_SNAPSHOT: VoiceMeshSnapshot = {
   pttPressed: false,
   permissionStatus: 'idle',
   localSpeaking: false,
+  hasTurnServer: false,
   peers: {},
 };
 
@@ -5407,6 +5408,10 @@ export default function App() {
     voiceClientRef.current?.setPeerVolume(participantId, volume);
   }, []);
 
+  const handleReconnectVoice = useCallback(() => {
+    void voiceClientRef.current?.reconnectAllPeers();
+  }, []);
+
   const canUseTeamChannel = Boolean(
     online.roomSnapshot?.matchMode === 'TEAMS_2V2' &&
       !online.isSpectator &&
@@ -5515,6 +5520,7 @@ export default function App() {
         onSetPushToTalkPressed={handleSetVoicePttPressed}
         onSetPeerMuted={handleSetVoicePeerMuted}
         onSetPeerVolume={handleSetVoicePeerVolume}
+        onReconnectVoice={handleReconnectVoice}
       />
     ) : undefined;
 
@@ -5532,6 +5538,7 @@ export default function App() {
         onSetPushToTalkPressed={handleSetVoicePttPressed}
         onSetPeerMuted={handleSetVoicePeerMuted}
         onSetPeerVolume={handleSetVoicePeerVolume}
+        onReconnectVoice={handleReconnectVoice}
       />
     ) : undefined;
 
