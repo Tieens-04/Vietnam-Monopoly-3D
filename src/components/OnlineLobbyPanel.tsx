@@ -1,10 +1,28 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Mic } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  ArrowRight,
+  Check,
+  Clock,
+  Copy,
+  Crown,
+  Dices,
+  Eye,
+  Link2,
+  LogIn,
+  Mic,
+  Pencil,
+  RotateCcw,
+  Sparkles,
+  UserX,
+  X,
+} from 'lucide-react';
 import { CHARACTER_PERSONAS } from '../game/avatarLogic';
 import { BotDifficulty, TokenArchetype } from '../game/onlineTypes';
 import { formatBusinessTourSpaced } from '../game/rules';
 import { MatchMode } from '../game/types';
 import type { useOnlineMultiplayer } from '../utils/onlineClient';
+import { ToggleSwitch } from './GameUiPrimitives';
 import { PlayerAvatar3D } from './PlayerAvatar3D';
 
 const ALL_TOKENS: TokenArchetype[] = ['car', 'yacht', 'jet', 'crown'];
@@ -25,20 +43,20 @@ const BOT_DIFFICULTY_OPTIONS: ReadonlyArray<{
   {
     value: 'easy',
     label: 'Tập sự',
-    activeBtnClass: 'bt-btn-cyan',
-    badgeClass: 'bg-sky-100 border-sky-300 text-sky-800',
+    activeBtnClass: 'bt-segment-active-light',
+    badgeClass: 'bg-slate-100 border-slate-300 text-slate-800',
   },
   {
     value: 'normal',
     label: 'Sành sỏi',
-    activeBtnClass: 'bt-btn-gold text-slate-950',
-    badgeClass: 'bg-amber-100 border-amber-300 text-amber-800',
+    activeBtnClass: 'bt-segment-active-light ring-1 ring-amber-400/80 text-amber-900',
+    badgeClass: 'bg-amber-50 border-amber-300 text-amber-900',
   },
   {
     value: 'hard',
     label: 'Cá mập',
-    activeBtnClass: 'bt-btn-pink',
-    badgeClass: 'bg-rose-100 border-rose-300 text-rose-800',
+    activeBtnClass: 'bt-segment-active-light ring-1 ring-rose-400/80 text-rose-800',
+    badgeClass: 'bg-rose-50 border-rose-300 text-rose-800',
   },
 ];
 
@@ -61,17 +79,17 @@ const BotDifficultyPicker: React.FC<BotDifficultyPickerProps> = ({
   return (
     <div>
       <div className="flex items-center justify-between gap-2 mb-1">
-        <span className="text-xs font-extrabold text-slate-600">Độ khó Bot AI</span>
+        <span className="text-[11px] font-bold text-[#525e73]">Độ khó Bot AI</span>
         {showBadge && (
           <span
             data-testid="bt-bot-difficulty-badge"
-            className={`px-2 py-0.5 rounded-full border text-[10px] font-black uppercase ${activeMeta.badgeClass}`}
+            className={`px-2 py-0.5 rounded-md border text-[10px] font-extrabold uppercase ${activeMeta.badgeClass}`}
           >
             {activeMeta.label}
           </span>
         )}
       </div>
-      <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+      <div className="bt-segment-well grid grid-cols-3 gap-1 p-1 rounded-xl">
         {BOT_DIFFICULTY_OPTIONS.map((opt) => {
           const isSelected = value === opt.value;
           return (
@@ -86,10 +104,10 @@ const BotDifficultyPicker: React.FC<BotDifficultyPickerProps> = ({
                   onSelect(opt.value);
                 }
               }}
-              className={`py-1.5 px-1.5 rounded-xl text-xs font-black uppercase transition-all whitespace-nowrap ${
+              className={`py-1.5 px-1.5 rounded-lg text-[11px] font-extrabold uppercase transition-all whitespace-nowrap ${
                 isSelected
                   ? opt.activeBtnClass
-                  : 'text-sky-900 hover:bg-white/60 disabled:opacity-45'
+                  : 'text-[#4b566a] hover:bg-white/60 disabled:opacity-45'
               } ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
             >
               {opt.label}
@@ -185,7 +203,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
       setCopiedMode(kind);
       window.setTimeout(() => setCopiedMode('none'), 2200);
     } catch {
-      // Fallback: select via prompt or ignore
+      // ignore clipboard errors
     }
   };
 
@@ -269,27 +287,37 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
 
     return (
       <div className="flex-1 min-h-0 flex flex-col">
-        {/* Top Room Code + Invite Link + Voice Bar Strip (kept outside overflow-y-auto so Voice popover never clips) */}
-        <div className="relative z-20 shrink-0 px-3.5 sm:px-4 pt-2.5 pb-2 border-b border-sky-200/80 bg-sky-50/70">
-          <div className="rounded-2xl bg-sky-50 border-2 border-sky-200 p-2 sm:p-2.5 flex flex-col sm:flex-row items-center justify-between gap-2">
+        {/* Top Room Code + Invite Link + Voice Bar Strip */}
+        <div className="relative z-20 shrink-0 px-3.5 sm:px-4 pt-2.5 pb-2 border-b border-[#dad3c4] bg-[#f3efe6]">
+          <div className="rounded-xl bg-white border border-[#ded8ca] p-2 sm:px-3 flex flex-col sm:flex-row items-center justify-between gap-2 shadow-2xs">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="px-3 py-1 rounded-xl bg-white border-2 border-sky-300 shadow-xs text-center shrink-0">
-                <div className="text-[10px] font-extrabold uppercase tracking-wider text-sky-700">
+              <div className="px-3 py-1 rounded-lg bg-[#182232] text-center shrink-0">
+                <div className="text-[9px] font-bold uppercase tracking-wider text-amber-300">
                   Mã Phòng Online
                 </div>
                 <div
                   data-testid="bt-online-room-code"
-                  className="font-mono-num text-lg sm:text-xl font-black tracking-widest text-slate-900 leading-tight"
+                  className="font-mono-num text-base sm:text-lg font-black tracking-widest text-white leading-tight"
                 >
                   {room.roomCode}
                 </div>
               </div>
-              <div className="text-xs font-bold text-slate-700 space-y-0.5 min-w-0">
-                <div className="truncate">Gửi mã hoặc link mời để bạn bè tham gia chung bàn!</div>
-                <div className="text-sky-700 font-extrabold">
-                  {online.connectionStatus === 'connected'
-                    ? '🟢 Kết nối ổn định'
-                    : '🟡 Đang đồng bộ lại kết nối...'}
+              <div className="text-xs font-medium text-[#525e73] space-y-0.5 min-w-0">
+                <div className="truncate text-[#141c2b] font-semibold">
+                  Gửi mã hoặc link mời để bạn bè tham gia chung bàn
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                  <span
+                    aria-hidden="true"
+                    className={`h-2 w-2 rounded-full shrink-0 ${
+                      online.connectionStatus === 'connected' ? 'bg-emerald-500' : 'bg-amber-500'
+                    }`}
+                  />
+                  <span className={online.connectionStatus === 'connected' ? 'text-emerald-700' : 'text-amber-700'}>
+                    {online.connectionStatus === 'connected'
+                      ? 'Kết nối ổn định'
+                      : 'Đang đồng bộ lại kết nối...'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -299,16 +327,36 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
               <button
                 type="button"
                 onClick={() => void handleCopy('link')}
-                className="bt-btn-green px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wide cursor-pointer whitespace-nowrap"
+                className="bt-btn-white px-3 py-1.5 rounded-xl text-xs font-extrabold uppercase tracking-wide flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
               >
-                {copiedMode === 'link' ? '✓ Đã Chép Link!' : '📋 Copy Link Mời'}
+                {copiedMode === 'link' ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
+                    <span className="text-emerald-700">Đã Chép Link!</span>
+                  </>
+                ) : (
+                  <>
+                    <Link2 className="h-3.5 w-3.5 text-[#182232] shrink-0" aria-hidden="true" />
+                    <span>Copy Link Mời</span>
+                  </>
+                )}
               </button>
               <button
                 type="button"
                 onClick={() => void handleCopy('code')}
-                className="bt-btn-white px-3 py-1.5 rounded-xl text-xs font-extrabold uppercase tracking-wide cursor-pointer whitespace-nowrap"
+                className="bt-btn-white px-3 py-1.5 rounded-xl text-xs font-extrabold uppercase tracking-wide flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
               >
-                {copiedMode === 'code' ? '✓ Đã Chép Mã' : 'Copy Mã'}
+                {copiedMode === 'code' ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
+                    <span className="text-emerald-700">Đã Chép Mã</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5 text-[#182232] shrink-0" aria-hidden="true" />
+                    <span>Copy Mã</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -318,16 +366,16 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
           {online.errorMessage && (
             <div
               role="alert"
-              className="px-3.5 py-2 rounded-xl bg-rose-50 border-2 border-rose-200 text-xs font-extrabold text-rose-700 flex items-center justify-between gap-2"
+              className="px-3.5 py-2 rounded-xl bg-rose-50 border border-rose-200 text-xs font-bold text-rose-700 flex items-center justify-between gap-2"
             >
               <span>{online.errorMessage}</span>
               <button
                 type="button"
                 onClick={online.clearError}
                 aria-label="Đóng thông báo lỗi"
-                className="icon-hit-target h-6 w-6 rounded-full flex items-center justify-center shrink-0 text-rose-800 hover:text-rose-950 font-black cursor-pointer"
+                className="icon-hit-target h-6 w-6 rounded-full flex items-center justify-center shrink-0 text-rose-800 hover:bg-rose-100 cursor-pointer"
               >
-                ✕
+                <X className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
             </div>
           )}
@@ -337,18 +385,21 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
               role="status"
               aria-live="polite"
               data-testid="bt-seat-swap-incoming-banner"
-              className="px-3.5 py-2.5 rounded-2xl bg-amber-50 border-2 border-amber-300 text-xs font-extrabold text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-xs"
+              className="px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-300 text-xs font-bold text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-2xs"
             >
-              <span>
-                🔄 <strong>{pendingSwap.fromPlayerName}</strong> (Ghế {pendingSwap.fromSeatIndex + 1}) muốn đổi chỗ sang ghế của bạn (Ghế{' '}
-                {pendingSwap.toSeatIndex + 1}).
+              <span className="flex items-center gap-1.5">
+                <ArrowLeftRight className="h-4 w-4 text-amber-700 shrink-0" aria-hidden="true" />
+                <span>
+                  <strong>{pendingSwap.fromPlayerName}</strong> (Ghế {pendingSwap.fromSeatIndex + 1}) muốn đổi chỗ sang ghế của bạn (Ghế{' '}
+                  {pendingSwap.toSeatIndex + 1}).
+                </span>
               </span>
               <div className="flex items-center gap-2 shrink-0 justify-end">
                 <button
                   type="button"
                   data-testid="bt-seat-swap-accept-btn"
                   onClick={() => online.respondSeatSwap(pendingSwap.requestId, true)}
-                  className="bt-btn-green px-3 py-1 rounded-xl text-xs font-black uppercase cursor-pointer"
+                  className="bt-btn-green px-3 py-1 rounded-lg text-xs font-extrabold uppercase cursor-pointer"
                 >
                   Đồng ý
                 </button>
@@ -356,7 +407,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                   type="button"
                   data-testid="bt-seat-swap-decline-btn"
                   onClick={() => online.respondSeatSwap(pendingSwap.requestId, false)}
-                  className="id-btn-crimson px-3 py-1 rounded-xl text-xs font-black uppercase cursor-pointer"
+                  className="id-btn-crimson px-3 py-1 rounded-lg text-xs font-extrabold uppercase cursor-pointer"
                 >
                   Từ chối
                 </button>
@@ -369,48 +420,64 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
               role="status"
               aria-live="polite"
               data-testid="bt-seat-swap-outgoing-notice"
-              className="px-3.5 py-2 rounded-xl bg-sky-100 border border-sky-300 text-xs font-extrabold text-sky-900"
+              className="px-3.5 py-2 rounded-xl bg-amber-50/80 border border-amber-200 text-xs font-bold text-amber-900 flex items-center gap-1.5"
             >
-              ⏳ Đã gửi lời mời đổi sang Ghế {pendingSwap.toSeatIndex + 1} — đang chờ phản hồi...
+              <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span>Đã gửi lời mời đổi sang Ghế {pendingSwap.toSeatIndex + 1} — đang chờ phản hồi...</span>
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-stretch">
+          {/* Balanced Grid: Wider Seat Roster (5fr) so names never truncate */}
+          <div
+            className={`grid grid-cols-1 gap-3 items-stretch ${
+              onlineChatNode
+                ? 'lg:grid-cols-[minmax(0,3.6fr)_minmax(0,5fr)_minmax(0,3.4fr)]'
+                : 'lg:grid-cols-12'
+            }`}
+          >
             {/* Left: Room Rules */}
             <div
               className={`${
-                onlineChatNode ? 'lg:col-span-4' : 'lg:col-span-5'
-              } rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 space-y-2.5 flex flex-col justify-between`}
+                onlineChatNode ? '' : 'lg:col-span-5'
+              } rounded-2xl bg-[#f3efe6] border border-[#dad3c4] p-3 space-y-2 flex flex-col justify-between`}
             >
-              <div className="space-y-2.5">
-                <div className="pb-1.5 border-b border-sky-200 flex items-center justify-between">
-                  <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
+              <div className="space-y-2">
+                <div className="pb-1.5 border-b border-[#dad3c4] flex items-center justify-between gap-2">
+                  <h2 className="font-display text-xs sm:text-sm font-black uppercase tracking-wide text-[#141c2b]">
                     Cấu Hình Phòng
                   </h2>
-                  <span className="text-[11px] font-extrabold text-[#0284C7]">
-                    {isHost
-                      ? '👑 Bạn là Chủ phòng'
-                      : online.isSpectator
-                        ? '👁️ Khán giả'
-                        : 'Khách mời'}
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[#525e73]">
+                    {isHost ? (
+                      <>
+                        <Crown className="h-3.5 w-3.5 text-amber-600 shrink-0" aria-hidden="true" />
+                        <span className="text-amber-800">Bạn là Chủ phòng</span>
+                      </>
+                    ) : online.isSpectator ? (
+                      <>
+                        <Eye className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        <span>Khán giả</span>
+                      </>
+                    ) : (
+                      <span>Khách mời</span>
+                    )}
                   </span>
                 </div>
 
                 <div>
-                  <span className="block text-xs font-extrabold text-slate-600 mb-1">
+                  <span className="block text-[11px] font-bold text-[#525e73] mb-1">
                     Thể thức đấu
                   </span>
-                  <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+                  <div className="bt-segment-well grid grid-cols-2 gap-1 p-1 rounded-xl">
                     <button
                       type="button"
                       data-testid="bt-mode-ffa"
                       disabled={!isHost}
                       aria-pressed={(room.matchMode ?? 'FFA') === 'FFA'}
                       onClick={() => online.updateLobbySettings({ matchMode: 'FFA' })}
-                      className={`py-1.5 px-2 rounded-xl text-xs font-black uppercase transition-all whitespace-normal text-center leading-tight ${
+                      className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold uppercase transition-all whitespace-normal text-center leading-tight ${
                         (room.matchMode ?? 'FFA') === 'FFA'
-                          ? 'bt-btn-cyan'
-                          : 'text-sky-900 hover:bg-white/60 disabled:opacity-45'
+                          ? 'bt-segment-active-light'
+                          : 'text-[#4b566a] hover:bg-white/60 disabled:opacity-45'
                       } ${isHost ? 'cursor-pointer' : 'cursor-not-allowed'}`}
                     >
                       Đấu Đơn (FFA)
@@ -426,10 +493,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                           maxPlayers: 4,
                         })
                       }
-                      className={`py-1.5 px-2 rounded-xl text-xs font-black uppercase transition-all whitespace-normal text-center leading-tight ${
+                      className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold uppercase transition-all whitespace-normal text-center leading-tight ${
                         (room.matchMode ?? 'FFA') === 'TEAMS_2V2'
-                          ? 'bt-btn-green'
-                          : 'text-sky-900 hover:bg-white/60 disabled:opacity-45'
+                          ? 'bt-segment-active-light ring-1 ring-emerald-500/60 text-emerald-800'
+                          : 'text-[#4b566a] hover:bg-white/60 disabled:opacity-45'
                       } ${isHost ? 'cursor-pointer' : 'cursor-not-allowed'}`}
                     >
                       Đấu Đội 2v2
@@ -438,11 +505,11 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                 </div>
 
                 <div>
-                  <span className="block text-xs font-extrabold text-slate-600 mb-1">
+                  <span className="block text-[11px] font-bold text-[#525e73] mb-1">
                     Số người chơi tối đa{' '}
                     {(room.matchMode ?? 'FFA') === 'TEAMS_2V2' ? '(Khóa 4 cho 2v2)' : ''}
                   </span>
-                  <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+                  <div className="bt-segment-well grid grid-cols-3 gap-1 p-1 rounded-xl">
                     {([2, 3, 4] as const).map((num) => {
                       const lockedFor2v2 = (room.matchMode ?? 'FFA') === 'TEAMS_2V2' && num < 4;
                       const disabledBtn = !isHost || num < humanCount || lockedFor2v2;
@@ -453,10 +520,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                           disabled={disabledBtn}
                           aria-pressed={room.maxPlayers === num}
                           onClick={() => online.updateLobbySettings({ maxPlayers: num })}
-                          className={`py-1.5 px-2 rounded-xl text-xs font-black uppercase transition-all whitespace-nowrap ${
+                          className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold uppercase transition-all whitespace-nowrap ${
                             room.maxPlayers === num
-                              ? 'bt-btn-cyan'
-                              : 'text-sky-900 hover:bg-white/60 disabled:opacity-40'
+                              ? 'bt-segment-active-light'
+                              : 'text-[#4b566a] hover:bg-white/60 disabled:opacity-40'
                           } ${!disabledBtn ? 'cursor-pointer' : 'cursor-not-allowed'}`}
                         >
                           {num} Người
@@ -467,10 +534,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                 </div>
 
                 <div>
-                  <span className="block text-xs font-extrabold text-slate-600 mb-1">
+                  <span className="block text-[11px] font-bold text-[#525e73] mb-1">
                     Ngân sách khởi điểm
                   </span>
-                  <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+                  <div className="bt-segment-well grid grid-cols-2 gap-1 p-1 rounded-xl">
                     {[2_000_000, 3_000_000].map((cash) => (
                       <button
                         key={cash}
@@ -478,40 +545,16 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                         disabled={!isHost}
                         aria-pressed={room.startingCash === cash}
                         onClick={() => online.updateLobbySettings({ startingCash: cash })}
-                        className={`py-1.5 px-2 rounded-xl text-xs font-black font-mono-num transition-all whitespace-nowrap ${
+                        className={`py-1.5 px-2 rounded-lg text-xs font-black font-mono-num transition-all whitespace-nowrap ${
                           room.startingCash === cash
-                            ? 'bt-btn-gold text-slate-950'
-                            : 'text-sky-900 hover:bg-white/60 disabled:opacity-50'
+                            ? 'bt-btn-gold'
+                            : 'text-[#4b566a] hover:bg-white/60 disabled:opacity-50'
                         } ${isHost ? 'cursor-pointer' : 'cursor-not-allowed'}`}
                       >
                         {formatBusinessTourSpaced(cash)}
                       </button>
                     ))}
                   </div>
-                </div>
-
-                <div className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-white border border-sky-200">
-                  <div>
-                    <div className="text-xs font-extrabold text-slate-800">
-                      Bù Bot AI vào ghế trống
-                    </div>
-                    <div className="text-[11px] font-semibold text-slate-500">
-                      Tự điền Bot cho đủ {room.maxPlayers} người khi bắt đầu
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={!isHost}
-                    aria-pressed={room.fillBots}
-                    onClick={() => online.updateLobbySettings({ fillBots: !room.fillBots })}
-                    className={`px-3 py-1 rounded-full text-xs font-black uppercase transition-colors shrink-0 ${
-                      room.fillBots
-                        ? 'bg-[#66C61C] text-white'
-                        : 'bg-slate-200 text-slate-700'
-                    } ${isHost ? 'cursor-pointer' : 'opacity-65 cursor-not-allowed'}`}
-                  >
-                    {room.fillBots ? 'Đang Bật' : 'Đang Tắt'}
-                  </button>
                 </div>
 
                 <BotDifficultyPicker
@@ -523,73 +566,81 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                   }
                 />
 
-                <button
-                  type="button"
-                  data-testid="bt-tactical-dice-toggle"
-                  disabled={!isHost}
-                  aria-pressed={Boolean(room.tacticalDiceEnabled)}
-                  onClick={() =>
-                    online.updateLobbySettings({
-                      tacticalDiceEnabled: !room.tacticalDiceEnabled,
-                    })
-                  }
-                  className={`w-full px-3 py-2 rounded-xl bg-white border border-sky-200 flex items-center justify-between gap-2 text-xs font-extrabold text-slate-800 ${
-                    isHost ? 'cursor-pointer hover:border-sky-300' : 'opacity-65 cursor-not-allowed'
-                  }`}
-                >
-                  <span className="text-left leading-tight">
-                    Xúc xắc chiến thuật (Chẵn/Lẻ/Đổ lại)
-                  </span>
-                  <span
-                    className={`shrink-0 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                      room.tacticalDiceEnabled
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : 'bg-slate-200 text-slate-700'
+                {/* Flat divider-separated option rows */}
+                <div className="rounded-xl bg-white border border-[#ded8ca] divide-y divide-[#ede8dc] overflow-hidden">
+                  <button
+                    type="button"
+                    disabled={!isHost}
+                    aria-pressed={room.fillBots}
+                    onClick={() => online.updateLobbySettings({ fillBots: !room.fillBots })}
+                    className={`w-full px-2.5 py-2 flex items-center justify-between gap-2 text-left transition-colors ${
+                      isHost ? 'cursor-pointer hover:bg-[#faf8f3]' : 'opacity-65 cursor-not-allowed'
                     }`}
                   >
-                    {room.tacticalDiceEnabled ? 'Đang Bật' : 'Đang Tắt'}
-                  </span>
-                </button>
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-[#141c2b] leading-tight">
+                        Bù Bot AI vào ghế trống
+                      </div>
+                      <div className="text-[10.5px] font-medium text-[#64748b] leading-tight">
+                        Tự điền Bot đủ {room.maxPlayers} người khi bắt đầu
+                      </div>
+                    </div>
+                    <ToggleSwitch checked={room.fillBots} disabled={!isHost} size="sm" />
+                  </button>
 
-                <button
-                  type="button"
-                  data-testid="bt-festival-toggle"
-                  disabled={!isHost}
-                  aria-pressed={Boolean(room.festivalEnabled)}
-                  onClick={() =>
-                    online.updateLobbySettings({
-                      festivalEnabled: !room.festivalEnabled,
-                    })
-                  }
-                  className={`w-full px-3 py-2 rounded-xl bg-white border border-sky-200 flex items-center justify-between gap-2 text-xs font-extrabold text-slate-800 ${
-                    isHost ? 'cursor-pointer hover:border-sky-300' : 'opacity-65 cursor-not-allowed'
-                  }`}
-                >
-                  <span className="text-left leading-tight">
-                    🎉 Lễ Hội đầu mùa (3 thành phố ×2 thuê)
-                  </span>
-                  <span
-                    className={`shrink-0 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                      room.festivalEnabled
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : 'bg-slate-200 text-slate-700'
+                  <button
+                    type="button"
+                    data-testid="bt-tactical-dice-toggle"
+                    disabled={!isHost}
+                    aria-pressed={Boolean(room.tacticalDiceEnabled)}
+                    onClick={() =>
+                      online.updateLobbySettings({
+                        tacticalDiceEnabled: !room.tacticalDiceEnabled,
+                      })
+                    }
+                    className={`w-full px-2.5 py-2 flex items-center justify-between gap-2 text-xs font-bold text-[#141c2b] transition-colors ${
+                      isHost ? 'cursor-pointer hover:bg-[#faf8f3]' : 'opacity-65 cursor-not-allowed'
                     }`}
                   >
-                    {room.festivalEnabled ? 'Đang Bật' : 'Đang Tắt'}
-                  </span>
-                </button>
+                    <span className="text-left leading-tight">
+                      Xúc xắc chiến thuật (Chẵn/Lẻ/Đổ lại)
+                    </span>
+                    <ToggleSwitch checked={Boolean(room.tacticalDiceEnabled)} disabled={!isHost} size="sm" />
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="bt-festival-toggle"
+                    disabled={!isHost}
+                    aria-pressed={Boolean(room.festivalEnabled)}
+                    onClick={() =>
+                      online.updateLobbySettings({
+                        festivalEnabled: !room.festivalEnabled,
+                      })
+                    }
+                    className={`w-full px-2.5 py-2 flex items-center justify-between gap-2 text-xs font-bold text-[#141c2b] transition-colors ${
+                      isHost ? 'cursor-pointer hover:bg-[#faf8f3]' : 'opacity-65 cursor-not-allowed'
+                    }`}
+                  >
+                    <span className="text-left leading-tight flex items-center gap-1.5">
+                      <Sparkles className="h-3.5 w-3.5 text-amber-600 shrink-0" aria-hidden="true" />
+                      <span>Lễ Hội đầu mùa (3 thành phố ×2 thuê)</span>
+                    </span>
+                    <ToggleSwitch checked={Boolean(room.festivalEnabled)} disabled={!isHost} size="sm" />
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* Right: Live Lobby Seat Roster + Spectators + Personal Profile Switcher */}
+            {/* Center: Seat Roster + Spectators + Personal Profile */}
             <div
               className={`${
-                onlineChatNode ? 'lg:col-span-4' : 'lg:col-span-7'
-              } rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 flex flex-col justify-between gap-2.5`}
+                onlineChatNode ? '' : 'lg:col-span-7'
+              } rounded-2xl bg-[#f3efe6] border border-[#dad3c4] p-3 flex flex-col justify-between gap-2.5`}
             >
               <div className="space-y-2">
-                <div className="pb-1.5 border-b border-sky-200 flex items-center justify-between gap-2 text-xs">
-                  <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
+                <div className="pb-1.5 border-b border-[#dad3c4] flex items-center justify-between gap-2 text-xs">
+                  <h2 className="font-display text-xs sm:text-sm font-black uppercase tracking-wide text-[#141c2b]">
                     Danh Sách Ghế Ngồi ({humanCount}/{room.maxPlayers} Người)
                   </h2>
                   {isHost ? (
@@ -598,33 +649,44 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                       data-testid="bt-host-swap-mode-btn"
                       aria-pressed={swapModeActive}
                       onClick={handleToggleSwapMode}
-                      className={`px-2.5 py-1 rounded-xl text-[11px] font-black uppercase transition-colors cursor-pointer shrink-0 ${
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold uppercase flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                         swapModeActive
-                          ? 'bg-amber-400 text-slate-950 shadow-xs'
-                          : 'bg-white border border-sky-300 text-sky-800 hover:bg-sky-100'
+                          ? 'bg-amber-400 text-[#141c2b] shadow-2xs'
+                          : 'bg-white border border-[#d5cec0] text-[#182232] hover:bg-[#faf8f3]'
                       }`}
                     >
-                      {swapModeActive ? '✕ Hủy hoán đổi' : '⇄ Hoán đổi ghế'}
+                      {swapModeActive ? (
+                        <>
+                          <X className="h-3 w-3" aria-hidden="true" />
+                          <span>Hủy hoán đổi</span>
+                        </>
+                      ) : (
+                        <>
+                          <ArrowLeftRight className="h-3 w-3" aria-hidden="true" />
+                          <span>Hoán đổi ghế</span>
+                        </>
+                      )}
                     </button>
                   ) : (
-                    <span className="text-sky-700 font-extrabold">Trạng thái</span>
+                    <span className="text-[#525e73] font-bold">Trạng thái</span>
                   )}
                 </div>
 
                 {isHost && swapModeActive && (
                   <div
                     data-testid="bt-host-swap-banner"
-                    className="px-2.5 py-1.5 rounded-xl bg-amber-50 border border-amber-300 text-[11px] font-extrabold text-amber-900 flex items-center justify-between gap-2"
+                    className="px-2.5 py-1.5 rounded-xl bg-amber-50 border border-amber-300 text-[11px] font-bold text-amber-900 flex items-center gap-1.5"
                   >
+                    <ArrowLeftRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     <span>
                       {swapSourceSeat === null
-                        ? '🔄 Bấm chọn ghế thứ nhất muốn hoán đổi.'
-                        : `🔄 Đã chọn Ghế ${swapSourceSeat + 1} — bấm chọn ghế thứ hai để đổi chỗ.`}
+                        ? 'Bấm chọn ghế thứ nhất muốn hoán đổi.'
+                        : `Đã chọn Ghế ${swapSourceSeat + 1} — bấm chọn ghế thứ hai để đổi chỗ.`}
                     </span>
                   </div>
                 )}
 
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {room.seats.map((seat) => {
                     const persona = CHARACTER_PERSONAS[seat.tokenType];
                     const isYou = seat.seatIndex === online.yourSeatIndex;
@@ -661,25 +723,25 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                       seatClickHandler = () => handleSwapSeatPick(seat.seatIndex);
                       seatClickDisabled = bothEmpty;
                       seatActionLabel = isSwapSource
-                        ? '🎯 Đang chọn (Hủy)'
+                        ? 'Đang chọn (Hủy)'
                         : bothEmpty
                           ? '2 ghế cùng trống'
                           : isSwapTargetCandidate
-                            ? `⇄ Đổi với ghế #${swapSourceSeat + 1}`
-                            : '⇄ Chọn đổi chỗ';
+                            ? `Đổi với ghế #${swapSourceSeat + 1}`
+                            : 'Chọn đổi chỗ';
                       seatActionTitle = bothEmpty
                         ? 'Không thể hoán đổi hai ghế cùng đang trống'
                         : undefined;
                     } else if (!seat.occupiedByHuman) {
                       seatClickHandler = () => online.moveToSeat(seat.seatIndex);
-                      seatActionLabel = '👆 Vào ghế này';
+                      seatActionLabel = 'Vào ghế này';
                       seatActionTitle = online.isSpectator
                         ? `Tham gia ngồi vào Ghế ${seat.seatIndex + 1}`
                         : `Chuyển sang Ghế ${seat.seatIndex + 1}`;
                     } else if (!isHost && !online.isSpectator && !isYou) {
                       seatClickHandler = () => online.requestSeatSwap(seat.seatIndex);
                       seatClickDisabled = !seat.connected || Boolean(pendingSwap);
-                      seatActionLabel = '⇄ Mời đổi chỗ';
+                      seatActionLabel = 'Mời đổi chỗ';
                       seatActionTitle = !seat.connected
                         ? 'Người chơi ở ghế này đang mất kết nối'
                         : pendingSwap
@@ -689,28 +751,29 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
 
                     const statusBadge = seat.occupiedByHuman ? (
                       !seat.connected ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-rose-100 text-rose-700">
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase bg-rose-50 border border-rose-200 text-rose-700">
                           Mất mạng
                         </span>
                       ) : seat.isHost ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-100 border border-amber-300 text-amber-800">
-                          👑 Chủ phòng
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase bg-amber-50 border border-amber-300 text-amber-900">
+                          <Crown className="h-3 w-3 text-amber-600 shrink-0" aria-hidden="true" />
+                          <span>Chủ phòng</span>
                         </span>
                       ) : seat.ready ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-100 text-emerald-800">
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase bg-emerald-50 border border-emerald-200 text-emerald-700">
                           Sẵn sàng
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-100 text-amber-800">
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase bg-amber-50 border border-amber-200 text-amber-800">
                           Chờ sẵn sàng
                         </span>
                       )
                     ) : room.fillBots ? (
-                      <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 text-[10px] font-black uppercase">
+                      <span className="px-2 py-0.5 rounded-md bg-[#ebe6da] text-[#475569] text-[10px] font-extrabold uppercase">
                         Bot AI Bù
                       </span>
                     ) : (
-                      <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-black uppercase">
+                      <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-500 text-[10px] font-extrabold uppercase">
                         Ghế Trống
                       </span>
                     );
@@ -723,36 +786,34 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                         seatParticipant
                     );
 
-                    const showActionRow = Boolean(seatClickHandler || showHostSeatControls);
+                    const showInlineAction = Boolean(seatClickHandler || showHostSeatControls);
 
                     return (
                       <div
                         key={seat.seatIndex}
                         data-testid={`bt-lobby-seat-${seat.seatIndex}`}
                         data-speaking={isSpeaking ? 'true' : 'false'}
-                        className={`rounded-2xl border-2 shadow-xs transition-all overflow-hidden ${
+                        className={`rounded-xl border transition-all overflow-hidden ${
                           isSwapSource
-                            ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300'
+                            ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300/60'
                             : isSpeaking
-                              ? 'bg-emerald-50/75 border-emerald-400 ring-2 ring-emerald-300/80 shadow-[0_0_16px_rgba(52,211,153,0.45)]'
+                              ? 'bg-emerald-50/80 border-emerald-400 ring-2 ring-emerald-300/70'
                               : isYou
-                                ? 'bg-amber-50/75 border-amber-300'
-                                : seatClickHandler && !seatClickDisabled
-                                  ? 'bg-white border-sky-200'
-                                  : 'bg-white border-sky-100'
+                                ? 'bg-amber-50/55 border-amber-300'
+                                : 'bg-white border-[#ded8ca]'
                         }`}
                       >
                         <div data-testid={`bt-seat-card-${seat.seatIndex}`}>
-                          <div className="w-full flex items-center gap-2.5 p-2">
+                          <div className="w-full flex items-center gap-2.5 px-2.5 py-2">
                             <span
-                              className="w-1.5 self-stretch rounded-full shrink-0"
+                              className="w-1 self-stretch rounded-full shrink-0"
                               style={{ backgroundColor: seat.color }}
                             />
 
                             <div
-                              className={`relative shrink-0 rounded-xl transition-shadow ${
+                              className={`relative shrink-0 rounded-lg transition-shadow ${
                                 isSpeaking
-                                  ? 'ring-4 ring-emerald-400 shadow-[0_0_16px_rgba(52,211,153,0.85)]'
+                                  ? 'ring-2 ring-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.7)]'
                                   : ''
                               }`}
                             >
@@ -769,50 +830,51 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                                 isBot={!seat.occupiedByHuman && room.fillBots}
                                 showBotStamp={!seat.occupiedByHuman && room.fillBots}
                                 size="sm"
-                                className="!rounded-xl !border-2 !border-white"
+                                className="!rounded-lg !border !border-[#e6e0d3]"
                                 ariaLabel={persona.personaName}
                               />
                             </div>
 
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1 flex-wrap">
-                                <span className="font-display text-sm font-black text-slate-900 truncate">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-display text-[13px] font-black text-[#141c2b] truncate">
                                   {seat.playerName}
                                 </span>
                                 {seat.isHost && !seat.connected && (
-                                  <span className="px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-[10px] font-black text-amber-800">
-                                    👑 Chủ phòng
+                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-300 text-[9px] font-extrabold text-amber-800">
+                                    <Crown className="h-2.5 w-2.5" aria-hidden="true" />
+                                    <span>Chủ phòng</span>
                                   </span>
                                 )}
                                 {isYou && (
-                                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 border border-emerald-300 text-[10px] font-black text-emerald-800">
+                                  <span className="px-1.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-[9px] font-extrabold text-emerald-700 uppercase">
                                     Bạn
                                   </span>
                                 )}
                                 {isTeams2v2 && (
                                   <span
-                                    className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${
+                                    className={`px-1.5 py-0.5 rounded-md text-[9px] font-extrabold border ${
                                       (seat.teamId ?? seat.seatIndex % 2) === 0
-                                        ? 'bg-sky-100 border-sky-300 text-sky-800'
-                                        : 'bg-rose-100 border-rose-300 text-rose-800'
+                                        ? 'bg-sky-50 border-sky-200 text-sky-800'
+                                        : 'bg-rose-50 border-rose-200 text-rose-800'
                                     }`}
                                   >
                                     {(seat.teamId ?? seat.seatIndex % 2) === 0
-                                      ? 'Đội A (Xanh)'
-                                      : 'Đội B (Đỏ)'}
+                                      ? 'Đội A'
+                                      : 'Đội B'}
                                   </span>
                                 )}
                               </div>
-                              <div className="text-[11px] font-semibold text-slate-500 truncate">
+                              <div className="text-[11px] font-medium text-[#64748b] truncate">
                                 Ghế {seat.seatIndex + 1} · {persona.personaName} · {seat.colorName}
                               </div>
                             </div>
 
-                            <div className="shrink-0 text-right flex items-center gap-1">
+                            <div className="shrink-0 text-right flex items-center gap-1.5">
                               {seat.occupiedByHuman && seatParticipant?.micEnabled && (
                                 <span
                                   title="Micro đang bật"
-                                  className="h-5 w-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 flex items-center justify-center shrink-0"
+                                  className="h-5 w-5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 flex items-center justify-center shrink-0"
                                 >
                                   <Mic className="h-3 w-3" aria-hidden="true" />
                                 </span>
@@ -821,8 +883,8 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                             </div>
                           </div>
 
-                          {showActionRow && (
-                            <div className="flex items-center justify-end gap-1.5 flex-wrap px-2 pb-1.5 pt-1 border-t border-sky-100/90 bg-sky-50/40">
+                          {showInlineAction && (
+                            <div className="flex items-center justify-end gap-1.5 flex-wrap px-2.5 pb-1.5 pt-1 border-t border-[#efeae0] bg-[#faf8f3]">
                               {seatClickHandler && seatActionLabel && (
                                 <button
                                   type="button"
@@ -831,15 +893,20 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                                   aria-pressed={isHost && swapModeActive ? isSwapSource : undefined}
                                   title={seatActionTitle}
                                   onClick={seatClickHandler}
-                                  className={`px-2.5 py-0.5 rounded-lg border text-[10px] font-black transition-colors ${
+                                  className={`px-2.5 py-0.5 rounded-md border text-[10px] font-extrabold inline-flex items-center gap-1 transition-colors ${
                                     isSwapSource
-                                      ? 'bg-amber-300 border-amber-500 text-slate-950 hover:bg-amber-200 cursor-pointer'
+                                      ? 'bg-amber-300 border-amber-500 text-[#141c2b] hover:bg-amber-200 cursor-pointer'
                                       : isSwapTargetCandidate && !seatClickDisabled
-                                        ? 'bg-sky-500 border-sky-600 text-white hover:bg-sky-600 cursor-pointer'
-                                        : 'bg-sky-100 hover:bg-sky-200 border-sky-300 text-sky-900 cursor-pointer'
+                                        ? 'bg-[#182232] border-[#0f172a] text-white hover:bg-[#243247] cursor-pointer'
+                                        : 'bg-white hover:bg-[#f3efe6] border-[#d5cec0] text-[#182232] cursor-pointer'
                                   } disabled:opacity-45 disabled:cursor-not-allowed`}
                                 >
-                                  {seatActionLabel}
+                                  {!seat.occupiedByHuman && !swapModeActive ? (
+                                    <LogIn className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                  ) : (
+                                    <ArrowLeftRight className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                  )}
+                                  <span>{seatActionLabel}</span>
                                 </button>
                               )}
 
@@ -856,9 +923,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                                         : 'Chỉ chuyển được cho người chơi đang kết nối'
                                     }
                                     onClick={() => online.transferHost(seatParticipant.participantId)}
-                                    className="px-2 py-0.5 rounded-lg bg-amber-100 hover:bg-amber-200 border border-amber-300 text-[10px] font-black text-amber-900 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                    className="px-2 py-0.5 rounded-md bg-amber-50 hover:bg-amber-100 border border-amber-300 text-[10px] font-extrabold text-amber-900 inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                                   >
-                                    👑 Chuyển Host
+                                    <Crown className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+                                    <span>Chuyển Host</span>
                                   </button>
                                   <button
                                     type="button"
@@ -866,9 +934,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                                     aria-label={`Kick ${seat.playerName} khỏi phòng`}
                                     title={`Mời ${seat.playerName} khỏi phòng`}
                                     onClick={() => online.kickParticipant(seatParticipant.participantId)}
-                                    className="px-2 py-0.5 rounded-lg bg-rose-100 hover:bg-rose-200 border border-rose-300 text-[10px] font-black text-rose-800 transition-colors cursor-pointer"
+                                    className="px-2 py-0.5 rounded-md bg-rose-50 hover:bg-rose-100 border border-rose-200 text-[10px] font-extrabold text-rose-700 inline-flex items-center gap-1 transition-colors cursor-pointer"
                                   >
-                                    🚫 Kick
+                                    <UserX className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+                                    <span>Kick</span>
                                   </button>
                                 </>
                               )}
@@ -883,11 +952,12 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                 {/* Spectator Strip */}
                 <div
                   data-testid="bt-spectators-strip"
-                  className="rounded-xl bg-white/90 border border-sky-200 p-2.5 space-y-1.5"
+                  className="rounded-xl bg-white border border-[#ded8ca] p-2.5 space-y-1.5"
                 >
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <span className="text-xs font-black text-sky-900">
-                      👁️ Khán giả ({spectators.length}/4)
+                    <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-[#141c2b]">
+                      <Eye className="h-3.5 w-3.5 text-[#525e73] shrink-0" aria-hidden="true" />
+                      <span>Khán giả ({spectators.length}/4)</span>
                     </span>
                     {mySeat ? (
                       <button
@@ -902,19 +972,20 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                               : 'Chuyển xuống khu vực khán giả'
                         }
                         onClick={online.moveToSpectator}
-                        className="px-2.5 py-1 rounded-lg bg-sky-100 hover:bg-sky-200 border border-sky-300 text-[11px] font-black text-sky-900 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                        className="px-2.5 py-1 rounded-lg bg-[#f3efe6] hover:bg-[#eae4d6] border border-[#d5cec0] text-[11px] font-bold text-[#182232] inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                       >
-                        👁️ Xuống làm Khán giả
+                        <Eye className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span>Xuống làm Khán giả</span>
                       </button>
                     ) : (
-                      <span className="text-[11px] font-bold text-sky-700">
+                      <span className="text-[11px] font-semibold text-[#525e73]">
                         Bấm ghế trống phía trên để lên chơi
                       </span>
                     )}
                   </div>
 
                   {spectators.length === 0 ? (
-                    <div className="text-[11px] font-semibold text-slate-500">
+                    <div className="text-[11px] font-medium text-[#788497]">
                       Chưa có khán giả nào trong phòng.
                     </div>
                   ) : (
@@ -929,29 +1000,29 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                             key={spec.participantId}
                             data-testid={`bt-lobby-spectator-${spec.participantId}`}
                             data-speaking={isSpecSpeaking ? 'true' : 'false'}
-                            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-xl border text-[11px] font-extrabold transition-shadow ${
+                            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] font-bold transition-shadow ${
                               isSpecSpeaking
-                                ? 'bg-emerald-50 border-emerald-400 ring-2 ring-emerald-300/80 text-emerald-950'
+                                ? 'bg-emerald-50 border-emerald-400 ring-2 ring-emerald-300/70 text-emerald-950'
                                 : isMe
-                                  ? 'bg-amber-50 border-amber-300 text-slate-900'
-                                  : 'bg-sky-50 border-sky-200 text-slate-800'
+                                  ? 'bg-amber-50 border-amber-300 text-[#141c2b]'
+                                  : 'bg-[#faf8f3] border-[#ded8ca] text-[#141c2b]'
                             }`}
                           >
                             <span className="truncate max-w-[120px]">{spec.playerName}</span>
                             {isMe && (
-                              <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[9px] font-black">
+                              <span className="px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[9px] font-extrabold uppercase">
                                 Bạn
                               </span>
                             )}
                             {!spec.connected && (
-                              <span className="px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[9px] font-black">
+                              <span className="px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700 text-[9px] font-extrabold">
                                 Mất mạng
                               </span>
                             )}
                             {spec.micEnabled && (
                               <span
                                 title="Micro đang bật"
-                                className="h-4 w-4 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 flex items-center justify-center shrink-0"
+                                className="h-4 w-4 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 flex items-center justify-center shrink-0"
                               >
                                 <Mic className="h-2.5 w-2.5" aria-hidden="true" />
                               </span>
@@ -963,9 +1034,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                                 aria-label={`Kick khán giả ${spec.playerName}`}
                                 title={`Mời ${spec.playerName} khỏi phòng`}
                                 onClick={() => online.kickParticipant(spec.participantId)}
-                                className="px-1.5 py-0.5 rounded-md bg-rose-100 hover:bg-rose-200 border border-rose-300 text-[9px] font-black text-rose-800 cursor-pointer"
+                                className="px-1.5 py-0.5 rounded-md bg-rose-50 hover:bg-rose-100 border border-rose-200 text-[9px] font-extrabold text-rose-700 inline-flex items-center gap-0.5 cursor-pointer"
                               >
-                                🚫 Kick
+                                <UserX className="h-2.5 w-2.5" aria-hidden="true" />
+                                <span>Kick</span>
                               </button>
                             )}
                           </div>
@@ -978,8 +1050,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
 
               {/* Personal Profile Quick Switcher */}
               {mySeat && (
-                <div className="pt-2.5 border-t border-sky-200 space-y-1.5">
-                  <div className="text-xs font-extrabold text-sky-900">Hồ sơ của bạn trong phòng</div>
+                <div className="pt-2 border-t border-[#dad3c4] space-y-1.5">
+                  <div className="text-[11px] font-bold text-[#525e73]">
+                    Hồ sơ của bạn trong phòng
+                  </div>
                   <div
                     className={`flex flex-col gap-2 ${
                       onlineChatNode ? '' : 'sm:flex-row sm:items-center'
@@ -997,18 +1071,24 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                       <label htmlFor="online-editing-name-input" className="sr-only">
                         Tên hiển thị
                       </label>
-                      <input
-                        id="online-editing-name-input"
-                        type="text"
-                        maxLength={22}
-                        value={editingName}
-                        onChange={(e) => setEditingName(e.target.value)}
-                        placeholder="Tên hiển thị"
-                        className="flex-1 min-w-0 px-2.5 py-1.5 text-xs font-extrabold text-slate-900 bg-white border border-sky-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#29B6F6]"
-                      />
+                      <div className="relative flex-1 min-w-0 flex items-center">
+                        <input
+                          id="online-editing-name-input"
+                          type="text"
+                          maxLength={22}
+                          value={editingName}
+                          onChange={(e) => setEditingName(e.target.value)}
+                          placeholder="Tên hiển thị"
+                          className="w-full min-w-0 pl-2.5 pr-7 py-1.5 text-xs font-bold text-[#141c2b] bg-white border border-[#d5cec0] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#182232]/25"
+                        />
+                        <Pencil
+                          className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-[#8c96a8]"
+                          aria-hidden="true"
+                        />
+                      </div>
                       <button
                         type="submit"
-                        className="bt-btn-cyan px-3 py-1.5 rounded-xl text-xs font-black cursor-pointer whitespace-nowrap shrink-0"
+                        className="bt-btn-cyan px-3 py-1.5 rounded-xl text-xs font-extrabold cursor-pointer whitespace-nowrap shrink-0"
                       >
                         Lưu Tên
                       </button>
@@ -1041,16 +1121,20 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                                 ? `${meta.personaName} (Đã có người chọn)`
                                 : meta.personaName
                             }
-                            className={`h-8.5 rounded-xl flex items-center justify-center border-2 transition-transform ${
+                            className={`h-8 rounded-lg flex items-center justify-center border-2 transition-transform ${
                               isMine
-                                ? 'border-slate-900 scale-105 shadow-md cursor-pointer'
+                                ? 'border-[#141c2b] scale-105 shadow-xs cursor-pointer'
                                 : takenByOther
                                   ? 'border-slate-300 opacity-35 cursor-not-allowed'
                                   : 'border-white opacity-85 hover:opacity-100 cursor-pointer'
                             }`}
                             style={{ backgroundColor: TOKEN_SIGNATURE_HEX[tok] }}
                           >
-                            <span className="h-2.5 w-2.5 rounded-full bg-white/95" />
+                            {isMine ? (
+                              <Check className="h-3.5 w-3.5 text-white stroke-[3]" aria-hidden="true" />
+                            ) : (
+                              <span className="h-2 w-2 rounded-full bg-white/90" />
+                            )}
                           </button>
                         );
                       })}
@@ -1061,7 +1145,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
             </div>
 
             {onlineChatNode && (
-              <div className="lg:col-span-4 flex flex-col min-h-0">
+              <div className="flex flex-col min-h-0">
                 {onlineChatNode}
               </div>
             )}
@@ -1071,14 +1155,14 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
             <section
               data-testid="bt-series-standings-card"
               aria-label="Bảng điểm chuỗi trận"
-              className="rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 space-y-2.5"
+              className="rounded-2xl bg-[#f3efe6] border border-[#dad3c4] p-3.5 space-y-2.5"
             >
-              <div className="pb-1.5 border-b border-sky-200 flex items-center justify-between gap-2 flex-wrap">
+              <div className="pb-1.5 border-b border-[#dad3c4] flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-2 min-w-0">
-                  <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
-                    🏆 Bảng Điểm Chuỗi Trận
+                  <h2 className="font-display text-sm font-black uppercase tracking-wide text-[#141c2b]">
+                    Bảng Điểm Chuỗi Trận
                   </h2>
-                  <span className="px-2 py-0.5 rounded-full bg-sky-100 border border-sky-200 text-[10px] font-extrabold text-sky-800 whitespace-nowrap">
+                  <span className="px-2 py-0.5 rounded-md bg-white border border-[#d5cec0] text-[10px] font-bold text-[#525e73] whitespace-nowrap">
                     {sortedSeriesStandings.length} người chơi
                   </span>
                 </div>
@@ -1088,9 +1172,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                     type="button"
                     data-testid="bt-reset-series-btn"
                     onClick={online.resetSeriesScore}
-                    className="px-2.5 py-1 rounded-xl bg-white hover:bg-rose-50 border border-rose-300 text-[11px] font-black text-rose-700 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                    className="px-2.5 py-1 rounded-lg bg-white hover:bg-rose-50 border border-rose-200 text-[11px] font-bold text-rose-700 inline-flex items-center gap-1 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
                   >
-                    🔄 Reset điểm
+                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    <span>Reset điểm</span>
                   </button>
                 )}
               </div>
@@ -1102,23 +1187,23 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                   );
                   const tokenColor = entry.tokenType
                     ? TOKEN_SIGNATURE_HEX[entry.tokenType]
-                    : '#0284C7';
+                    : '#182232';
                   return (
                     <div
                       key={entry.participantId}
                       data-testid={`bt-series-standing-row-${idx + 1}`}
                       className={`rounded-xl px-3 py-2 border flex items-center justify-between gap-2 min-w-0 ${
                         idx === 0
-                          ? 'bg-amber-50/90 border-amber-300'
+                          ? 'bg-amber-50 border-amber-300'
                           : isMe
-                            ? 'bg-sky-100/70 border-sky-300'
-                            : 'bg-white border-sky-100'
+                            ? 'bg-[#faf8f3] border-[#c5bdaa]'
+                            : 'bg-white border-[#ded8ca]'
                       }`}
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         <span
                           className={`font-mono-num text-xs font-black shrink-0 ${
-                            idx === 0 ? 'text-amber-700' : 'text-sky-700'
+                            idx === 0 ? 'text-amber-700' : 'text-[#525e73]'
                           }`}
                         >
                           #{idx + 1}
@@ -1128,24 +1213,24 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                           className="h-2.5 w-2.5 rounded-full shrink-0 border border-white shadow-2xs"
                           style={{ backgroundColor: tokenColor }}
                         />
-                        <span className="text-xs font-extrabold text-slate-900 truncate">
+                        <span className="text-xs font-bold text-[#141c2b] truncate">
                           {entry.playerName}
                         </span>
                         {isMe && (
-                          <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[9px] font-black shrink-0">
+                          <span className="px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[9px] font-extrabold shrink-0">
                             Bạn
                           </span>
                         )}
                       </div>
 
-                      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 text-[11px] font-black whitespace-nowrap">
-                        <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-mono-num">
-                          🏆 {entry.wins} Cúp
+                      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 text-[11px] font-extrabold whitespace-nowrap">
+                        <span className="px-2 py-0.5 rounded-md bg-amber-100/80 text-amber-900 font-mono-num">
+                          {entry.wins} Cúp
                         </span>
-                        <span className="text-slate-500 font-semibold hidden md:inline font-mono-num">
+                        <span className="text-[#64748b] font-semibold hidden md:inline font-mono-num">
                           {entry.matchesPlayed} trận
                         </span>
-                        <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-900 font-mono-num">
+                        <span className="px-2 py-0.5 rounded-md bg-[#eae4d6] text-[#141c2b] font-mono-num">
                           {entry.seriesPoints} điểm
                         </span>
                       </div>
@@ -1157,12 +1242,12 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
           )}
         </div>
 
-        {/* Pinned Bottom Action Bar (Leave Room & Ready / Start Online Match Always Visible!) */}
-        <div className="bt-lobby-compact-cta shrink-0 px-3.5 sm:px-4 py-2 bg-sky-50/95 border-t border-sky-200/90 rounded-b-[25px] sm:rounded-b-none flex flex-wrap sm:flex-nowrap items-center justify-between gap-2">
+        {/* Pinned Bottom Action Bar */}
+        <div className="bt-lobby-compact-cta shrink-0 px-3.5 sm:px-4 py-2.5 bg-[#f3efe6] border-t border-[#dad3c4] rounded-b-[22px] sm:rounded-b-none flex flex-wrap sm:flex-nowrap items-center justify-between gap-2">
           <button
             type="button"
             onClick={online.leaveRoom}
-            className="id-btn-crimson shrink-0 px-3.5 sm:px-4 py-2 rounded-2xl text-xs font-black uppercase tracking-wide cursor-pointer whitespace-nowrap"
+            className="id-btn-crimson shrink-0 px-3.5 sm:px-4 py-2 rounded-xl text-xs font-extrabold uppercase tracking-wide cursor-pointer whitespace-nowrap"
           >
             Rời Phòng
           </button>
@@ -1172,7 +1257,7 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
               {startHintText && (
                 <div
                   data-testid="bt-online-start-hint"
-                  className="w-full sm:w-auto sm:flex-1 min-w-0 text-[11px] font-extrabold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-1 rounded-xl leading-tight text-center sm:text-right"
+                  className="w-full sm:w-auto sm:flex-1 min-w-0 text-[11px] font-bold text-amber-900 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg leading-tight text-center sm:text-right"
                 >
                   {startHintText}
                 </div>
@@ -1182,17 +1267,18 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                 data-testid="bt-online-start-btn"
                 disabled={!canStart}
                 onClick={online.startMatch}
-                className="bt-btn-green shrink-0 w-full sm:w-auto sm:min-w-[220px] py-2 sm:py-2.5 px-4 sm:px-7 rounded-full font-black text-xs sm:text-base uppercase tracking-wider disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed whitespace-normal sm:whitespace-nowrap text-center leading-tight"
+                className="bt-btn-green shrink-0 w-full sm:w-auto sm:min-w-[220px] py-2 sm:py-2.5 px-5 sm:px-7 rounded-xl font-black text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2 disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed whitespace-normal sm:whitespace-nowrap text-center leading-tight"
               >
-                🎲 Bắt Đầu Ván Online!
+                <Dices className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Bắt Đầu Ván Online!</span>
               </button>
             </div>
           ) : mySeat ? (
             <div className="flex flex-wrap items-center gap-2 justify-end flex-1 min-w-0">
-              <span className="hidden sm:inline px-3 py-1.5 rounded-full bg-sky-100 border border-sky-200 text-xs font-extrabold text-sky-900 text-center">
+              <span className="hidden sm:inline px-3 py-1.5 rounded-lg bg-white border border-[#ded8ca] text-xs font-semibold text-[#525e73] text-center">
                 {mySeat.ready
-                  ? '⏳ Đang chờ Chủ phòng bắt đầu ván đấu...'
-                  : '👉 Bấm Sẵn sàng để Chủ phòng bắt đầu'}
+                  ? 'Đang chờ Chủ phòng bắt đầu ván đấu...'
+                  : 'Bấm Sẵn sàng để Chủ phòng bắt đầu'}
               </span>
               <button
                 type="button"
@@ -1200,18 +1286,20 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                 disabled={!mySeat.connected}
                 aria-pressed={Boolean(mySeat.ready)}
                 onClick={() => online.setReady(!mySeat.ready)}
-                className={`shrink-0 px-5 py-2 rounded-full text-xs sm:text-sm font-black uppercase tracking-wide transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap ${
+                className={`shrink-0 px-5 py-2 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wide inline-flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap ${
                   mySeat.ready
-                    ? 'bg-emerald-100 border-2 border-emerald-400 text-emerald-900 hover:bg-emerald-200/80'
+                    ? 'bg-emerald-50 border border-emerald-400 text-emerald-800 hover:bg-emerald-100'
                     : 'bt-btn-green'
                 }`}
               >
-                {mySeat.ready ? '✅ Đã Sẵn sàng' : '✅ Sẵn sàng'}
+                <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>{mySeat.ready ? 'Đã Sẵn sàng' : 'Sẵn sàng'}</span>
               </button>
             </div>
           ) : (
-            <div className="px-3.5 py-2 rounded-full bg-sky-100 border border-sky-200 text-xs font-extrabold text-sky-900 text-center">
-              👁️ Đang ở chế độ Khán giả — chọn ghế trống để lên chơi
+            <div className="px-3.5 py-2 rounded-lg bg-white border border-[#ded8ca] text-xs font-bold text-[#525e73] inline-flex items-center gap-1.5 text-center">
+              <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>Đang ở chế độ Khán giả — chọn ghế trống để lên chơi</span>
             </div>
           )}
         </div>
@@ -1227,69 +1315,87 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
       {online.errorMessage && (
         <div
           role="alert"
-          className="px-3.5 py-2 rounded-xl bg-rose-50 border-2 border-rose-200 text-xs font-extrabold text-rose-700 flex items-center justify-between gap-2"
+          className="px-3.5 py-2 rounded-xl bg-rose-50 border border-rose-200 text-xs font-bold text-rose-700 flex items-center justify-between gap-2"
         >
           <span>{online.errorMessage}</span>
           <button
             type="button"
             onClick={online.clearError}
             aria-label="Đóng thông báo lỗi"
-            className="icon-hit-target h-6 w-6 rounded-full flex items-center justify-center shrink-0 text-rose-800 hover:text-rose-950 font-black cursor-pointer"
+            className="icon-hit-target h-6 w-6 rounded-full flex items-center justify-center shrink-0 text-rose-800 hover:bg-rose-100 cursor-pointer"
           >
-            ✕
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </div>
       )}
 
       {online.connectionStatus === 'reconnecting' && (
-        <div className="px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-300 text-xs font-extrabold text-amber-800 text-center">
-          🟡 Đang thử kết nối lại phòng cũ...
+        <div className="px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-300 text-xs font-bold text-amber-800 text-center">
+          Đang thử kết nối lại phòng cũ...
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-stretch">
         {/* Identity Column */}
         <div
-          className="lg:col-span-4 rounded-2xl border-2 border-sky-200 p-3.5 flex flex-col items-center justify-between text-center space-y-2.5"
+          className="lg:col-span-4 rounded-2xl border border-[#dad3c4] p-3.5 flex flex-col items-center justify-between text-center space-y-3"
           style={{
             background:
-              'radial-gradient(circle at 50% 28%, #FFFFFF 0%, #E0F2FE 68%, #BAE6FD 100%)',
+              'radial-gradient(circle at 50% 30%, #FFFFFF 0%, #F7F4EC 64%, #ECE6D8 100%)',
           }}
         >
-          <div className="w-full pb-1.5 border-b border-sky-200/80">
-            <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
+          <div className="w-full pb-1.5 border-b border-[#dad3c4]">
+            <h2 className="font-display text-sm font-black uppercase tracking-wide text-[#141c2b]">
               Hồ Sơ Tỷ Phú Online
             </h2>
           </div>
 
-          <div className="animate-float-gentle">
+          <div className="animate-float-gentle my-1">
             <PlayerAvatar3D
               archetype={selectedToken}
               mood="celebrating"
               phaseSeed={0}
               isActive
               size="lg"
-              className="!border-4 !border-white shadow-xl"
+              className="!border-[3px] !border-white shadow-lg ring-1 ring-[#d5cec0]"
               ariaLabel={`Chân dung ${leadPersona.personaName}`}
             />
           </div>
 
-          <div className="w-full space-y-2">
-            <div className="font-display text-sm font-black text-slate-900">
-              {leadPersona.personaName}
+          <div className="w-full space-y-2.5">
+            <div>
+              <div className="font-display text-sm font-black text-[#141c2b]">
+                {leadPersona.personaName}
+              </div>
+              <div className="text-[11px] font-medium text-[#64748b]">
+                {leadPersona.roleTitle}
+              </div>
             </div>
-            <label htmlFor="online-nickname-input" className="sr-only">
-              Tên hiển thị của bạn
-            </label>
-            <input
-              id="online-nickname-input"
-              type="text"
-              maxLength={22}
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              placeholder="Nhập tên của bạn..."
-              className="w-full px-3 py-1.5 text-xs font-extrabold text-slate-900 bg-white border-2 border-sky-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#29B6F6] text-center"
-            />
+
+            <div className="text-left">
+              <label
+                htmlFor="online-nickname-input"
+                className="block text-[11px] font-bold text-[#525e73] mb-1"
+              >
+                Tên hiển thị của bạn
+              </label>
+              <div className="relative flex items-center">
+                <input
+                  id="online-nickname-input"
+                  type="text"
+                  maxLength={22}
+                  value={nickname}
+                  onChange={(e) => setNickname(e.target.value)}
+                  placeholder="Nhập tên của bạn..."
+                  className="w-full pl-3 pr-8 py-2 text-xs font-bold text-[#141c2b] bg-white border border-[#d5cec0] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#182232]/25"
+                />
+                <Pencil
+                  className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-[#8c96a8]"
+                  aria-hidden="true"
+                />
+              </div>
+            </div>
+
             <div className="grid grid-cols-4 gap-2 pt-0.5">
               {ALL_TOKENS.map((tok) => {
                 const selected = selectedToken === tok;
@@ -1304,12 +1410,16 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                     aria-label={`Chọn nhân vật ${meta.personaName}`}
                     className={`h-9 rounded-xl flex items-center justify-center border-2 transition-transform cursor-pointer ${
                       selected
-                        ? 'border-slate-900 scale-108 shadow-md'
-                        : 'border-white opacity-85 hover:opacity-100'
+                        ? 'border-[#141c2b] scale-105 shadow-sm'
+                        : 'border-white opacity-80 hover:opacity-100'
                     }`}
                     style={{ backgroundColor: TOKEN_SIGNATURE_HEX[tok] }}
                   >
-                    <span className="h-3 w-3 rounded-full bg-white/95" />
+                    {selected ? (
+                      <Check className="h-4 w-4 text-white stroke-[3]" aria-hidden="true" />
+                    ) : (
+                      <span className="h-2.5 w-2.5 rounded-full bg-white/90" />
+                    )}
                   </button>
                 );
               })}
@@ -1318,26 +1428,26 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
         </div>
 
         {/* Create Room Card */}
-        <div className="lg:col-span-4 rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 flex flex-col justify-between space-y-3">
-          <div className="space-y-2.5">
-            <div className="pb-1.5 border-b border-sky-200">
-              <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
+        <div className="lg:col-span-4 rounded-2xl bg-[#f3efe6] border border-[#dad3c4] p-3.5 flex flex-col justify-between space-y-3">
+          <div className="space-y-2">
+            <div className="pb-1.5 border-b border-[#dad3c4]">
+              <h2 className="font-display text-sm font-black uppercase tracking-wide text-[#141c2b]">
                 1. Tạo Phòng Mới
               </h2>
             </div>
 
             <div>
-              <span className="block text-xs font-extrabold text-slate-600 mb-1">
+              <span className="block text-[11px] font-bold text-[#525e73] mb-1">
                 Thể thức đấu
               </span>
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+              <div className="bt-segment-well grid grid-cols-2 gap-1 p-1 rounded-xl">
                 <button
                   type="button"
                   data-testid="bt-mode-ffa"
                   aria-pressed={matchMode === 'FFA'}
                   onClick={() => setMatchMode('FFA')}
-                  className={`py-1.5 px-2 rounded-xl text-xs font-black uppercase transition-all cursor-pointer whitespace-normal text-center leading-tight ${
-                    matchMode === 'FFA' ? 'bt-btn-cyan' : 'text-sky-900 hover:bg-white/60'
+                  className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold uppercase transition-all cursor-pointer whitespace-normal text-center leading-tight ${
+                    matchMode === 'FFA' ? 'bt-segment-active-light' : 'text-[#4b566a] hover:bg-white/60'
                   }`}
                 >
                   Đấu Đơn (FFA)
@@ -1350,8 +1460,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                     setMatchMode('TEAMS_2V2');
                     setMaxPlayers(4);
                   }}
-                  className={`py-1.5 px-2 rounded-xl text-xs font-black uppercase transition-all cursor-pointer whitespace-normal text-center leading-tight ${
-                    matchMode === 'TEAMS_2V2' ? 'bt-btn-green' : 'text-sky-900 hover:bg-white/60'
+                  className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold uppercase transition-all cursor-pointer whitespace-normal text-center leading-tight ${
+                    matchMode === 'TEAMS_2V2'
+                      ? 'bt-segment-active-light ring-1 ring-emerald-500/60 text-emerald-800'
+                      : 'text-[#4b566a] hover:bg-white/60'
                   }`}
                 >
                   Đấu Đội 2v2
@@ -1360,10 +1472,10 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
             </div>
 
             <div>
-              <span className="block text-xs font-extrabold text-slate-600 mb-1">
+              <span className="block text-[11px] font-bold text-[#525e73] mb-1">
                 Số người chơi {matchMode === 'TEAMS_2V2' ? '(Khóa 4 cho 2v2)' : ''}
               </span>
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+              <div className="bt-segment-well grid grid-cols-3 gap-1 p-1 rounded-xl">
                 {([2, 3, 4] as const).map((num) => {
                   const lockedFor2v2 = matchMode === 'TEAMS_2V2' && num < 4;
                   return (
@@ -1373,8 +1485,8 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                       disabled={lockedFor2v2}
                       aria-pressed={maxPlayers === num}
                       onClick={() => setMaxPlayers(num)}
-                      className={`py-1.5 px-2 rounded-xl text-xs font-black uppercase transition-all whitespace-nowrap ${
-                        maxPlayers === num ? 'bt-btn-cyan' : 'text-sky-900 hover:bg-white/60'
+                      className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold uppercase transition-all whitespace-nowrap ${
+                        maxPlayers === num ? 'bt-segment-active-light' : 'text-[#4b566a] hover:bg-white/60'
                       } ${lockedFor2v2 ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
                     >
                       {num} Người
@@ -1385,18 +1497,18 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
             </div>
 
             <div>
-              <span className="block text-xs font-extrabold text-slate-600 mb-1">
+              <span className="block text-[11px] font-bold text-[#525e73] mb-1">
                 Ngân sách khởi điểm
               </span>
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-sky-100 border border-sky-200">
+              <div className="bt-segment-well grid grid-cols-2 gap-1 p-1 rounded-xl">
                 {[2_000_000, 3_000_000].map((cash) => (
                   <button
                     key={cash}
                     type="button"
                     aria-pressed={startingCash === cash}
                     onClick={() => setStartingCash(cash)}
-                    className={`py-1.5 px-2 rounded-xl text-xs font-black font-mono-num transition-all cursor-pointer whitespace-nowrap ${
-                      startingCash === cash ? 'bt-btn-gold text-slate-950' : 'text-sky-900 hover:bg-white/60'
+                    className={`py-1.5 px-2 rounded-lg text-xs font-black font-mono-num transition-all cursor-pointer whitespace-nowrap ${
+                      startingCash === cash ? 'bt-btn-gold' : 'text-[#4b566a] hover:bg-white/60'
                     }`}
                   >
                     {formatBusinessTourSpaced(cash)}
@@ -1405,22 +1517,6 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              aria-pressed={fillBots}
-              onClick={() => setFillBots((v) => !v)}
-              className="w-full px-3 py-1.5 rounded-xl bg-white border border-sky-200 flex items-center justify-between text-xs font-extrabold text-slate-800 cursor-pointer"
-            >
-              <span>Bù Bot AI nếu thiếu người</span>
-              <span
-                className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                  fillBots ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
-                }`}
-              >
-                {fillBots ? 'Bật' : 'Tắt'}
-              </span>
-            </button>
-
             <BotDifficultyPicker
               value={botDifficulty}
               disabled={false}
@@ -1428,43 +1524,44 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
               onSelect={setBotDifficulty}
             />
 
-            <button
-              type="button"
-              data-testid="bt-tactical-dice-toggle"
-              aria-pressed={tacticalDiceEnabled}
-              onClick={() => setTacticalDiceEnabled((v) => !v)}
-              className="w-full px-3 py-1.5 rounded-xl bg-white border border-sky-200 flex items-center justify-between gap-2 text-xs font-extrabold text-slate-800 cursor-pointer hover:border-sky-300"
-            >
-              <span className="text-left leading-tight">
-                Xúc xắc chiến thuật (Chẵn/Lẻ/Đổ lại)
-              </span>
-              <span
-                className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                  tacticalDiceEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
-                }`}
+            <div className="rounded-xl bg-white border border-[#ded8ca] divide-y divide-[#ede8dc] overflow-hidden">
+              <button
+                type="button"
+                aria-pressed={fillBots}
+                onClick={() => setFillBots((v) => !v)}
+                className="w-full px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs font-bold text-[#141c2b] cursor-pointer hover:bg-[#faf8f3] transition-colors"
               >
-                {tacticalDiceEnabled ? 'Đang Bật' : 'Đang Tắt'}
-              </span>
-            </button>
+                <span>Bù Bot AI nếu thiếu người</span>
+                <ToggleSwitch checked={fillBots} size="sm" />
+              </button>
 
-            <button
-              type="button"
-              data-testid="bt-festival-toggle"
-              aria-pressed={festivalEnabled}
-              onClick={() => setFestivalEnabled((v) => !v)}
-              className="w-full px-3 py-1.5 rounded-xl bg-white border border-sky-200 flex items-center justify-between gap-2 text-xs font-extrabold text-slate-800 cursor-pointer hover:border-sky-300"
-            >
-              <span className="text-left leading-tight">
-                🎉 Lễ Hội đầu mùa (3 thành phố ×2 thuê)
-              </span>
-              <span
-                className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                  festivalEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
-                }`}
+              <button
+                type="button"
+                data-testid="bt-tactical-dice-toggle"
+                aria-pressed={tacticalDiceEnabled}
+                onClick={() => setTacticalDiceEnabled((v) => !v)}
+                className="w-full px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs font-bold text-[#141c2b] cursor-pointer hover:bg-[#faf8f3] transition-colors"
               >
-                {festivalEnabled ? 'Đang Bật' : 'Đang Tắt'}
-              </span>
-            </button>
+                <span className="text-left leading-tight">
+                  Xúc xắc chiến thuật (Chẵn/Lẻ/Đổ lại)
+                </span>
+                <ToggleSwitch checked={tacticalDiceEnabled} size="sm" />
+              </button>
+
+              <button
+                type="button"
+                data-testid="bt-festival-toggle"
+                aria-pressed={festivalEnabled}
+                onClick={() => setFestivalEnabled((v) => !v)}
+                className="w-full px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs font-bold text-[#141c2b] cursor-pointer hover:bg-[#faf8f3] transition-colors"
+              >
+                <span className="text-left leading-tight flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5 text-amber-600 shrink-0" aria-hidden="true" />
+                  <span>Lễ Hội đầu mùa (3 thành phố ×2 thuê)</span>
+                </span>
+                <ToggleSwitch checked={festivalEnabled} size="sm" />
+              </button>
+            </div>
           </div>
 
           <button
@@ -1483,13 +1580,13 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
                 festivalEnabled,
               })
             }
-            className="bt-btn-green w-full py-2.5 rounded-full font-black text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
+            className="bt-btn-green w-full py-2.5 rounded-xl font-black text-sm uppercase tracking-wide cursor-pointer whitespace-nowrap"
           >
-            ✨ Tạo Phòng &amp; Lấy Mã
+            Tạo Phòng &amp; Lấy Mã
           </button>
         </div>
 
-        {/* Join Room Card */}
+        {/* Join Room Card — Action placed immediately below input (no dead vertical gap) */}
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -1501,44 +1598,58 @@ export const OnlineLobbyPanel: React.FC<OnlineLobbyPanelProps> = ({
               });
             }
           }}
-          className="lg:col-span-4 rounded-2xl bg-sky-50/90 border-2 border-sky-200 p-3.5 flex flex-col justify-between space-y-3"
+          className="lg:col-span-4 rounded-2xl bg-[#f3efe6] border border-[#dad3c4] p-3.5 flex flex-col justify-between space-y-3"
         >
-          <div className="space-y-2.5">
-            <div className="pb-1.5 border-b border-sky-200">
-              <h2 className="font-display text-sm font-black uppercase tracking-wide text-sky-900">
+          <div className="space-y-3">
+            <div className="pb-1.5 border-b border-[#dad3c4]">
+              <h2 className="font-display text-sm font-black uppercase tracking-wide text-[#141c2b]">
                 2. Vào Phòng Bằng Mã
               </h2>
             </div>
 
-            <p className="text-xs font-semibold text-slate-600 leading-relaxed">
-              Nhập mã phòng 6 ký tự từ bạn bè (hoặc mở trực tiếp link mời có dạng{' '}
-              <span className="font-mono-num font-bold text-sky-800">?room=...</span>).
-            </p>
+            <div className="space-y-2.5">
+              <div>
+                <label
+                  htmlFor="online-room-code-input"
+                  className="block text-[11px] font-bold text-[#525e73] mb-1.5"
+                >
+                  Mã phòng (6 ký tự)
+                </label>
+                <input
+                  id="online-room-code-input"
+                  type="text"
+                  maxLength={8}
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                  placeholder="VD: VN2026"
+                  className="w-full px-3 py-2.5 text-center font-mono-num text-lg font-black uppercase tracking-widest text-[#141c2b] bg-white border border-[#c5bdaa] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#182232]/25"
+                />
+              </div>
 
-            <div>
-              <label htmlFor="online-room-code-input" className="block text-xs font-extrabold text-slate-600 mb-1.5">
-                Mã phòng
-              </label>
-              <input
-                id="online-room-code-input"
-                type="text"
-                maxLength={8}
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                placeholder="VD: VN2026"
-                className="w-full px-3 py-2 text-center font-mono-num text-lg font-black uppercase tracking-widest text-slate-900 bg-white border-2 border-sky-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#29B6F6]"
-              />
+              <button
+                type="submit"
+                data-testid="bt-join-room-btn"
+                disabled={joinCode.trim().length < 4}
+                className="bt-btn-cyan w-full py-2.5 rounded-xl font-black text-sm uppercase tracking-wide flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed whitespace-nowrap"
+              >
+                <span>Vào Phòng Ngay</span>
+                <ArrowRight className="h-4 w-4 shrink-0" aria-hidden="true" />
+              </button>
             </div>
           </div>
 
-          <button
-            type="submit"
-            data-testid="bt-join-room-btn"
-            disabled={joinCode.trim().length < 4}
-            className="bt-btn-cyan w-full py-2.5 rounded-full font-black text-sm uppercase tracking-wide disabled:opacity-45 cursor-pointer whitespace-nowrap"
-          >
-            🚀 Vào Phòng Ngay
-          </button>
+          <div className="rounded-xl bg-white/80 border border-[#ded8ca] p-3 space-y-1.5 text-xs text-[#525e73]">
+            <div className="font-extrabold text-[#141c2b] text-[11px] uppercase tracking-wide">
+              Tham gia nhanh
+            </div>
+            <p className="text-[11px] leading-relaxed">
+              Xin mã phòng từ chủ phòng hoặc mở trực tiếp đường dẫn mời dạng{' '}
+              <span className="font-mono-num font-bold text-[#141c2b]">?room=...</span> để vào thẳng bàn đấu.
+            </p>
+            <p className="text-[11px] leading-relaxed text-[#64748b]">
+              Nếu trận đấu đã bắt đầu, bạn sẽ vào ở chế độ Khán giả và có thể xin thế chỗ Bot AI.
+            </p>
+          </div>
         </form>
       </div>
     </div>
