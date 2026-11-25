@@ -346,6 +346,141 @@ export function buildRtcIceServers(): RTCIceServer[] {
   return iceServers;
 }
 
+const RTC_DYNAMIC_CACHE_TTL_MS = 10 * 60_000;
+const RTC_DYNAMIC_FETCH_TIMEOUT_MS = 3500;
+let cachedDynamicIce: { cacheKey: string; expiresAt: number; servers: RTCIceServer[] } | null = null;
+
+function sanitizeIceServerEntries(raw: unknown): RTCIceServer[] {
+  const list = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === 'object' && Array.isArray((raw as { iceServers?: unknown }).iceServers)
+      ? (raw as { iceServers: unknown[] }).iceServers
+      : [];
+
+  const valid: RTCIceServer[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const entry = item as Record<string, unknown>;
+    let urls: string | string[] | null = null;
+    if (typeof entry.urls === 'string' && /^(stuns?|turns?):/i.test(entry.urls.trim())) {
+      urls = entry.urls.trim();
+    } else if (Array.isArray(entry.urls)) {
+      const filtered = entry.urls
+        .filter((u): u is string => typeof u === 'string' && /^(stuns?|turns?):/i.test(u.trim()))
+        .map((u) => u.trim());
+      if (filtered.length > 0) {
+        urls = filtered.length === 1 ? filtered[0] : filtered;
+      }
+    }
+    if (!urls) continue;
+    const server: RTCIceServer = { urls };
+    if (typeof entry.username === 'string' && entry.username.length > 0) {
+      server.username = entry.username;
+    }
+    if (typeof entry.credential === 'string' && entry.credential.length > 0) {
+      server.credential = entry.credential;
+    }
+    valid.push(server);
+  }
+  return valid;
+}
+
+function mergeIceServers(base: RTCIceServer[], extra: RTCIceServer[]): RTCIceServer[] {
+  const seenUrls = new Set<string>();
+  for (const s of base) {
+    const list = Array.isArray(s.urls) ? s.urls : [s.urls];
+    for (const u of list) seenUrls.add(u);
+  }
+  const merged = [...base];
+  for (const s of extra) {
+    const list = Array.isArray(s.urls) ? s.urls : [s.urls];
+    const hasTurn = list.some((u) => /^turns?:/i.test(u));
+    const hasNewUrl = list.some((u) => !seenUrls.has(u));
+    if (hasTurn || hasNewUrl) {
+      merged.push(s);
+      for (const u of list) seenUrls.add(u);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Resolves WebRTC ICE servers including optional dynamic TURN credentials from
+ * Cloudflare Calls (`CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN`), Metered
+ * (`METERED_TURN_DOMAIN` + `METERED_API_KEY`), or `RTC_ICE_CONFIG_URL`.
+ */
+export async function resolveRtcIceServers(
+  fetchImpl: typeof fetch = fetch
+): Promise<RTCIceServer[]> {
+  const baseServers = buildRtcIceServers();
+  const hasStaticTurn = baseServers.some((s) => {
+    const list = Array.isArray(s.urls) ? s.urls : [s.urls];
+    return list.some((u) => /^turns?:/i.test(u));
+  });
+  if (hasStaticTurn) {
+    return baseServers;
+  }
+
+  const cfKeyId = process.env.CF_TURN_KEY_ID?.trim() ?? '';
+  const cfToken = process.env.CF_TURN_API_TOKEN?.trim() ?? '';
+  const meteredDomain = process.env.METERED_TURN_DOMAIN?.trim() ?? '';
+  const meteredKey = process.env.METERED_API_KEY?.trim() ?? '';
+  const customUrl = process.env.RTC_ICE_CONFIG_URL?.trim() ?? '';
+
+  let providerUrl = '';
+  let fetchInit: RequestInit | undefined;
+  if (cfKeyId && cfToken) {
+    providerUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(cfKeyId)}/credentials/generate-ice-servers`;
+    fetchInit = {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${cfToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ttl: 86400 }),
+    };
+  } else if (meteredDomain && meteredKey) {
+    const cleanHost = meteredDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    providerUrl = `https://${cleanHost}/api/v1/turn/credentials?apiKey=${encodeURIComponent(meteredKey)}`;
+  } else if (customUrl && /^https?:\/\//i.test(customUrl)) {
+    providerUrl = customUrl;
+  }
+
+  if (!providerUrl) {
+    return baseServers;
+  }
+
+  const cacheKey = `${providerUrl}:${cfToken ? 'cf' : meteredKey ? 'm' : 'u'}`;
+  const now = Date.now();
+  if (cachedDynamicIce && cachedDynamicIce.cacheKey === cacheKey && now < cachedDynamicIce.expiresAt) {
+    return mergeIceServers(baseServers, cachedDynamicIce.servers);
+  }
+
+  try {
+    const res = await fetchImpl(providerUrl, {
+      ...fetchInit,
+      signal: AbortSignal.timeout(RTC_DYNAMIC_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      return baseServers;
+    }
+    const data: unknown = await res.json();
+    const dynamicServers = sanitizeIceServerEntries(data);
+    if (dynamicServers.length > 0) {
+      cachedDynamicIce = {
+        cacheKey,
+        expiresAt: now + RTC_DYNAMIC_CACHE_TTL_MS,
+        servers: dynamicServers,
+      };
+      return mergeIceServers(baseServers, dynamicServers);
+    }
+  } catch {
+    // Fall back to default STUN servers if dynamic TURN fetch fails or times out
+  }
+
+  return baseServers;
+}
+
 export interface CreateAppServerOptions {
   enableVite?: boolean;
   botQuipRateLimitMax?: number;
@@ -365,6 +500,7 @@ export async function createAppServer(
 ): Promise<CreatedAppServer> {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', 1);
 
   app.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -408,10 +544,11 @@ export async function createAppServer(
     });
   });
 
-  app.get('/api/rtc-config', (_req: Request, res: Response) => {
+  app.get('/api/rtc-config', async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
+    const iceServers = await resolveRtcIceServers();
     res.status(200).json({
-      iceServers: buildRtcIceServers(),
+      iceServers,
     });
   });
 

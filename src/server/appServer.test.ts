@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAppServer } from './appServer';
+import { createAppServer, resolveRtcIceServers } from './appServer';
 
 async function startHttpTestServer(options: {
   botQuipRateLimitMax?: number;
@@ -255,6 +255,120 @@ test('Phase 1 Task 3: GET /api/rtc-config appends TURN server from TURN_URLS (si
       } finally {
         await srv.close();
       }
+    }
+  );
+});
+
+test('Render Voice Hardening: resolveRtcIceServers supports Metered and Cloudflare dynamic TURN APIs with safe STUN fallback', async () => {
+  // 1. Metered dynamic TURN API
+  await withEnv(
+    {
+      TURN_URLS: undefined,
+      CF_TURN_KEY_ID: undefined,
+      CF_TURN_API_TOKEN: undefined,
+      METERED_TURN_DOMAIN: 'testapp.metered.live',
+      METERED_API_KEY: 'metered-key-123',
+      RTC_ICE_CONFIG_URL: undefined,
+    },
+    async () => {
+      let calledUrl = '';
+      const servers = await resolveRtcIceServers((async (input: RequestInfo | URL) => {
+        calledUrl = String(input);
+        return new Response(
+          JSON.stringify([
+            { urls: 'stun:stun.relay.metered.ca:80' },
+            { urls: 'turn:global.relay.metered.ca:80', username: 'm-user', credential: 'm-pass' },
+            { urls: 'invalid:not-stun-or-turn' },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }) as typeof fetch);
+
+      assert.equal(calledUrl, 'https://testapp.metered.live/api/v1/turn/credentials?apiKey=metered-key-123');
+      assert.ok(servers.some((s) => s.urls === 'stun:stun.l.google.com:19302'));
+      assert.ok(
+        servers.some(
+          (s) =>
+            s.urls === 'turn:global.relay.metered.ca:80' &&
+            s.username === 'm-user' &&
+            s.credential === 'm-pass'
+        )
+      );
+      assert.equal(
+        servers.some((s) => String(s.urls).startsWith('invalid:')),
+        false
+      );
+    }
+  );
+
+  // 2. Cloudflare Calls dynamic TURN API
+  await withEnv(
+    {
+      TURN_URLS: undefined,
+      CF_TURN_KEY_ID: 'cf-key-id',
+      CF_TURN_API_TOKEN: 'cf-secret-token',
+      METERED_TURN_DOMAIN: undefined,
+      METERED_API_KEY: undefined,
+      RTC_ICE_CONFIG_URL: undefined,
+    },
+    async () => {
+      let calledUrl = '';
+      let authHeader = '';
+      const servers = await resolveRtcIceServers((async (
+        input: RequestInfo | URL,
+        init?: RequestInit
+      ) => {
+        calledUrl = String(input);
+        authHeader = (init?.headers as Record<string, string>)?.Authorization ?? '';
+        return new Response(
+          JSON.stringify({
+            iceServers: [
+              {
+                urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:5349?transport=tcp'],
+                username: 'cf-u',
+                credential: 'cf-p',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }) as typeof fetch);
+
+      assert.equal(
+        calledUrl,
+        'https://rtc.live.cloudflare.com/v1/turn/keys/cf-key-id/credentials/generate-ice-servers'
+      );
+      assert.equal(authHeader, 'Bearer cf-secret-token');
+      assert.ok(
+        servers.some(
+          (s) =>
+            Array.isArray(s.urls) &&
+            s.urls.includes('turn:turn.cloudflare.com:3478?transport=udp') &&
+            s.username === 'cf-u'
+        )
+      );
+    }
+  );
+
+  // 3. Provider error falls back cleanly to default STUN servers
+  await withEnv(
+    {
+      TURN_URLS: undefined,
+      CF_TURN_KEY_ID: undefined,
+      CF_TURN_API_TOKEN: undefined,
+      METERED_TURN_DOMAIN: 'failing.metered.live',
+      METERED_API_KEY: 'bad-key',
+      RTC_ICE_CONFIG_URL: undefined,
+    },
+    async () => {
+      const servers = await resolveRtcIceServers((async () => {
+        throw new Error('Network failure');
+      }) as unknown as typeof fetch);
+
+      assert.deepEqual(servers, [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+      ]);
     }
   );
 });

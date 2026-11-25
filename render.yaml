@@ -11,3 +11,8 @@ services:
         value: production
       - key: GEMINI_API_KEY
         sync: false
+      # Optional TURN relay variables for WebRTC Voice Chat across 4G / strict NATs.
+      # Configure one of:
+      # 1) Static TURN: TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL
+      # 2) Metered free TURN API: METERED_TURN_DOMAIN, METERED_API_KEY
+      # 3) Cloudflare Calls TURN API: CF_TURN_KEY_ID, CF_TURN_API_TOKEN
