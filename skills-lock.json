@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "skills": {
+    "threejs-fundamentals": {
+      "source": "CloudAI-X/threejs-skills",
+      "commit": "0e181866f095b5f06d005133876e926515390d95",
+      "sourceType": "github",
+      "skillPath": "skills/threejs-fundamentals/SKILL.md",
+      "computedHash": "268a79c9d3f35bd7deffc65293f4bd1bcc141b496c69b0f67e9886fc28def4b2"
+    }
+  }
+}
